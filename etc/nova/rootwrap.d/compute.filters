@@ -31,6 +31,11 @@ qemu-nbd: CommandFilter, qemu-nbd, root
 # nova/virt/disk/mount/loop.py: 'losetup', '--detach', device
 losetup: CommandFilter, losetup, root
 
+# nova/virt/libvirt/volume.py
+ukai: CommandFilter, ukai, root
+ukai_add_image: CommandFilter, ukai_add_image, root
+ukai_remove_image: CommandFilter, ukai_remove_image, root
+
 # nova/virt/libvirt/utils.py: 'blockdev', '--getsize64', path
 # nova/virt/disk/mount/nbd.py: 'blockdev', '--flushbufs', device
 blockdev: RegExpFilter, blockdev, root, blockdev, (--getsize64|--flushbufs), /dev/.*

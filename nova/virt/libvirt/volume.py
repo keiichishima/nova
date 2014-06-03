@@ -72,6 +72,14 @@ volume_opts = [
                help='Directory where the glusterfs volume is mounted on the '
                     'compute node',
                deprecated_group='DEFAULT'),
+    cfg.StrOpt('ukai_mount_point_base',
+               default=paths.state_path_def('mnt'),
+               help='Directory where the UKAI volume is mounted on the'
+               ' compute node',
+               deprecated_group='DEFAULT'),
+    cfg.StrOpt('ukai_mount_options',
+               help='Mount options passed to the UKAI client.',
+               deprecated_group='DEFAULT'),
     cfg.BoolOpt('iscsi_use_multipath',
                 default=False,
                 help='Use multipath connection of the iSCSI volume',
@@ -703,6 +711,76 @@ class LibvirtNFSVolumeDriver(LibvirtBaseVolumeDriver):
 
         try:
             utils.execute(*nfs_cmd, run_as_root=True)
+        except processutils.ProcessExecutionError as exc:
+            if ensure and 'already mounted' in exc.message:
+                LOG.warn(_("%s is already mounted"), nfs_share)
+            else:
+                raise
+
+
+class LibvirtUkaiVolumeDriver(LibvirtBaseVolumeDriver):
+    """Class implements libvirt part of volume driver for UKAI."""
+
+    def __init__(self, connection):
+        """Create back-end to nfs."""
+        super(LibvirtUkaiVolumeDriver,
+              self).__init__(connection, is_block_dev=False)
+
+    def connect_volume(self, connection_info, disk_info):
+        """Connect the volume. Returns xml for libvirt."""
+        conf = super(LibvirtUkaiVolumeDriver,
+                     self).connect_volume(connection_info,
+                                          disk_info)
+        options = connection_info['data'].get('options')
+        path = self._ensure_mounted(connection_info['data']['export'], options)
+        path = os.path.join(path, connection_info['data']['name'])
+        conf.source_type = 'file'
+        conf.source_path = path
+        conf.driver_format = connection_info['data'].get('format', 'raw')
+        utils.execute('ukai_add_image', connection_info['data']['name'])
+        return conf
+
+    def disconnect_volume(self, connection_info, disk_dev):
+        """Disconnect the volume."""
+        pass
+        '''
+        export = connection_info['data']['export']
+        mount_path = os.path.join(CONF.libvirt.ukai_mount_point_base,
+                                  utils.get_hash_str(export))
+
+        try:
+            utils.execute('umount', mount_path, run_as_root=True)
+        except processutils.ProcessExecutionError as exc:
+            if 'target is busy' in exc.message:
+                LOG.debug(_("The NFS share %s is still in use."), export)
+            else:
+                LOG.exception(_("Couldn't unmount the NFS share %s"), export)
+       '''
+
+    def _ensure_mounted(self, dummy_share, options=None):
+        """@type dummy_share: string
+           @type options: string
+        """
+        mount_path = os.path.join(CONF.libvirt.ukai_mount_point_base,
+                                  utils.get_hash_str(dummy_share))
+        if not virtutils.is_mounted(mount_path, dummy_share):
+            self._mount_ukai(mount_path, options, ensure=True)
+        return mount_path
+
+    def _mount_ukai(self, mount_path, options=None, ensure=False):
+        """Mount UKAI share to mount path."""
+        utils.execute('mkdir', '-p', mount_path)
+
+        # Construct the UKAI mount command.
+        ukai_cmd = ['ukai']
+        if CONF.libvirt.ukai_mount_options is not None:
+            ukai_cmd.extend(['-o', CONF.libvirt.ukai_mount_options])
+        if options is not None:
+            ukai_cmd.extend(options.split(' '))
+        ukai_cmd.extend([mount_path])
+
+        try:
+            utils.execute(*ukai_cmd, run_as_root=True)
         except processutils.ProcessExecutionError as exc:
             if ensure and 'already mounted' in exc.message:
                 LOG.warn(_("%s is already mounted"), nfs_share)

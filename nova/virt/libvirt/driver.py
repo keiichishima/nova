@@ -204,6 +204,7 @@ libvirt_opts = [
                   'aoe=nova.virt.libvirt.volume.LibvirtAOEVolumeDriver',
                   'glusterfs='
                       'nova.virt.libvirt.volume.LibvirtGlusterfsVolumeDriver',
+                  'ukai=nova.virt.libvirt.volume.LibvirtUkaiVolumeDriver',
                   'fibre_channel=nova.virt.libvirt.volume.'
                       'LibvirtFibreChannelVolumeDriver',
                   'scality='
