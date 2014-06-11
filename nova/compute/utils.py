@@ -287,8 +287,7 @@ def notify_about_instance_usage(notifier, context, instance, event_suffix,
     if fault:
         # NOTE(johngarbutt) mirrors the format in wrap_exception
         fault_payload = exception_to_dict(fault)
-        LOG.debug(fault_payload["message"], instance=instance,
-                  exc_info=True)
+        LOG.debug(fault_payload["message"], instance=instance)
         usage_info.update(fault_payload)
 
     if event_suffix.endswith("error"):
@@ -426,7 +425,7 @@ class EventReporter(object):
     def __enter__(self):
         for uuid in self.instance_uuids:
             instance_action_obj.InstanceActionEvent.event_start(
-                self.context, uuid, self.event_name)
+                self.context, uuid, self.event_name, want_result=False)
 
         return self
 
@@ -434,7 +433,7 @@ class EventReporter(object):
         for uuid in self.instance_uuids:
             instance_action_obj.InstanceActionEvent.event_finish_with_failure(
                 self.context, uuid, self.event_name, exc_val=exc_val,
-                exc_tb=exc_tb)
+                exc_tb=exc_tb, want_result=False)
         return False
 
 

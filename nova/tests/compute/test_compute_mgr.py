@@ -30,7 +30,6 @@ from nova import db
 from nova import exception
 from nova.network import model as network_model
 from nova import objects
-from nova.objects import block_device as block_device_obj
 from nova.objects import external_event as external_event_obj
 from nova.objects import instance_action as instance_action_obj
 from nova.objects import migration as migration_obj
@@ -315,7 +314,7 @@ class ComputeManagerUnitTestCase(test.NoDBTestCase):
                 vm_state=vm_states.ACTIVE,
                 task_state=task_states.DELETING)
 
-        self.mox.StubOutWithMock(block_device_obj.BlockDeviceMappingList,
+        self.mox.StubOutWithMock(objects.BlockDeviceMappingList,
                                  'get_by_instance_uuid')
         self.mox.StubOutWithMock(self.compute, '_delete_instance')
         self.mox.StubOutWithMock(instance, 'obj_load_attr')
@@ -323,7 +322,7 @@ class ComputeManagerUnitTestCase(test.NoDBTestCase):
         bdms = []
         instance.obj_load_attr('metadata')
         instance.obj_load_attr('system_metadata')
-        block_device_obj.BlockDeviceMappingList.get_by_instance_uuid(
+        objects.BlockDeviceMappingList.get_by_instance_uuid(
                 self.context, instance.uuid).AndReturn(bdms)
         self.compute._delete_instance(self.context, instance, bdms)
 
@@ -488,7 +487,7 @@ class ComputeManagerUnitTestCase(test.NoDBTestCase):
                 uuid='fake',
                 vm_state=vm_states.ERROR,
                 task_state=task_states.DELETING)
-        self.mox.StubOutWithMock(block_device_obj.BlockDeviceMappingList,
+        self.mox.StubOutWithMock(objects.BlockDeviceMappingList,
                                  'get_by_instance_uuid')
         self.mox.StubOutWithMock(self.compute, '_delete_instance')
         self.mox.StubOutWithMock(instance, 'obj_load_attr')
@@ -496,7 +495,7 @@ class ComputeManagerUnitTestCase(test.NoDBTestCase):
         bdms = []
         instance.obj_load_attr('metadata')
         instance.obj_load_attr('system_metadata')
-        block_device_obj.BlockDeviceMappingList.get_by_instance_uuid(
+        objects.BlockDeviceMappingList.get_by_instance_uuid(
                 self.context, instance.uuid).AndReturn(bdms)
         self.compute._delete_instance(self.context, instance, bdms)
         self.mox.ReplayAll()
@@ -1194,8 +1193,7 @@ class ComputeManagerUnitTestCase(test.NoDBTestCase):
             self.assertFalse(allow_reboot)
             self.assertEqual(reboot_type, 'HARD')
 
-    @mock.patch('nova.objects.block_device.BlockDeviceMapping.'
-                'get_by_volume_id')
+    @mock.patch('nova.objects.BlockDeviceMapping.get_by_volume_id')
     @mock.patch('nova.compute.manager.ComputeManager._detach_volume')
     @mock.patch('nova.objects.instance.Instance._from_db_object')
     def test_remove_volume_connection(self, inst_from_db, detach, bdm_get):
@@ -1382,10 +1380,12 @@ class ComputeManagerBuildInstanceTestCase(test.NoDBTestCase):
         self.mox.StubOutWithMock(instance_action_obj.InstanceActionEvent,
                                  'event_finish_with_failure')
         instance_action_obj.InstanceActionEvent.event_start(
-                self.context, self.instance['uuid'], mox.IgnoreArg())
+                self.context, self.instance['uuid'], mox.IgnoreArg(),
+                want_result=False)
         instance_action_obj.InstanceActionEvent.event_finish_with_failure(
                 self.context, self.instance['uuid'], mox.IgnoreArg(),
-                exc_val=mox.IgnoreArg(), exc_tb=mox.IgnoreArg())
+                exc_val=mox.IgnoreArg(), exc_tb=mox.IgnoreArg(),
+                want_result=False)
 
     def test_build_and_run_instance_called_with_proper_args(self):
         self.mox.StubOutWithMock(self.compute, '_build_and_run_instance')
@@ -1535,10 +1535,9 @@ class ComputeManagerBuildInstanceTestCase(test.NoDBTestCase):
                 block_device_mapping=self.block_device_mapping, node=self.node,
                 limits=self.limits)
 
-    def test_unexpected_exception(self):
+    def _test_build_and_run_exceptions(self, exc, set_error=False):
         self.mox.StubOutWithMock(self.compute, '_build_and_run_instance')
         self.mox.StubOutWithMock(self.compute, '_cleanup_allocated_networks')
-        self.mox.StubOutWithMock(self.compute, '_set_instance_error_state')
         self.mox.StubOutWithMock(self.compute.compute_task_api,
                 'build_instances')
         self._do_build_instance_update()
@@ -1546,12 +1545,13 @@ class ComputeManagerBuildInstanceTestCase(test.NoDBTestCase):
                 self.image, self.injected_files, self.admin_pass,
                 self.requested_networks, self.security_groups,
                 self.block_device_mapping, self.node, self.limits,
-                self.filter_properties).AndRaise(
-                        test.TestingException())
+                self.filter_properties).AndRaise(exc)
         self.compute._cleanup_allocated_networks(self.context, self.instance,
                 self.requested_networks)
-        self.compute._set_instance_error_state(self.context,
-                self.instance['uuid'])
+        if set_error:
+            self.mox.StubOutWithMock(self.compute, '_set_instance_error_state')
+            self.compute._set_instance_error_state(self.context,
+                    self.instance['uuid'])
         self._instance_action_events()
         self.mox.ReplayAll()
 
@@ -1564,6 +1564,21 @@ class ComputeManagerBuildInstanceTestCase(test.NoDBTestCase):
                 security_groups=self.security_groups,
                 block_device_mapping=self.block_device_mapping, node=self.node,
                 limits=self.limits)
+        self.mox.UnsetStubs()
+
+    def test_build_and_run_instance_exceptions(self):
+        exceptions = [
+                exception.InstanceNotFound(instance_id=''),
+                exception.UnexpectedDeletingTaskStateError(expected='',
+                    actual='')]
+        error_exceptions = [
+                exception.BuildAbortException(instance_uuid='', reason=''),
+                test.TestingException()]
+
+        for exc in exceptions:
+            self._test_build_and_run_exceptions(exc)
+        for exc in error_exceptions:
+            self._test_build_and_run_exceptions(exc, set_error=True)
 
     def test_instance_not_found(self):
         exc = exception.InstanceNotFound(instance_id=1)
@@ -1930,6 +1945,19 @@ class ComputeManagerBuildInstanceTestCase(test.NoDBTestCase):
         self.compute._build_networks_for_instance(self.context, instance,
                 self.requested_networks, self.security_groups)
 
+    def test_cleanup_allocated_networks_instance_not_found(self):
+        with contextlib.nested(
+                mock.patch.object(self.compute, '_deallocate_network'),
+                mock.patch.object(self.instance, 'save',
+                    side_effect=exception.InstanceNotFound(instance_id=''))
+        ) as (_deallocate_network, save):
+            # Testing that this doesn't raise an exeption
+            self.compute._cleanup_allocated_networks(self.context,
+                    self.instance, self.requested_networks)
+            save.assert_called_once_with()
+            self.assertEqual('False',
+                    self.instance.system_metadata['network_allocated'])
+
 
 class ComputeManagerMigrationTestCase(test.NoDBTestCase):
     def setUp(self):
@@ -1993,7 +2021,7 @@ class ComputeManagerMigrationTestCase(test.NoDBTestCase):
             mock.patch.object(self.compute,
                               '_get_instance_block_device_info',
                               return_value=None),
-            mock.patch.object(block_device_obj.BlockDeviceMappingList,
+            mock.patch.object(objects.BlockDeviceMappingList,
                               'get_by_instance_uuid',
                               return_value=None)
         ) as (meth, event_start, event_finish, fault_create, instance_update,

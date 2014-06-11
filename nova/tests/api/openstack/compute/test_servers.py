@@ -21,6 +21,7 @@ import uuid
 
 import iso8601
 from lxml import etree
+import mock
 import mox
 from oslo.config import cfg
 import six.moves.urllib.parse as urlparse
@@ -788,7 +789,7 @@ class ServersControllerTest(ControllerTest):
                 common_policy.parse_rule("project_id:fake"),
         }
 
-        common_policy.set_rules(common_policy.Rules(rules))
+        policy.set_rules(rules)
 
         req = fakes.HTTPRequest.blank('/fake/servers?all_tenants=1')
         res = self.controller.index(req)
@@ -809,7 +810,7 @@ class ServersControllerTest(ControllerTest):
                 common_policy.parse_rule("project_id:fake"),
         }
 
-        common_policy.set_rules(common_policy.Rules(rules))
+        policy.set_rules(rules)
         self.stubs.Set(db, 'instance_get_all_by_filters',
                        fake_get_all)
 
@@ -1361,7 +1362,7 @@ class ServersControllerUpdateTest(ControllerTest):
 
     def test_update_server_policy_fail(self):
         rule = {'compute:update': common_policy.parse_rule('role:admin')}
-        common_policy.set_rules(common_policy.Rules(rule))
+        policy.set_rules(rule)
         body = {'server': {'name': 'server_test'}}
         req = self._get_request(body, {'name': 'server_test'})
         self.assertRaises(exception.PolicyNotAuthorized,
@@ -1659,7 +1660,7 @@ class ServerStatusTest(test.TestCase):
     def _req_with_policy_fail(self, policy_rule_name):
         rule = {'compute:%s' % policy_rule_name:
                 common_policy.parse_rule('role:admin')}
-        common_policy.set_rules(common_policy.Rules(rule))
+        policy.set_rules(rule)
         return fakes.HTTPRequest.blank('/fake/servers/1234/action')
 
     def test_active(self):
@@ -2447,18 +2448,6 @@ class ServersControllerCreateTest(test.TestCase):
         # The fact that the action doesn't raise is enough validation
         self.controller.create(self.req, self.body)
 
-    def _do_test_create_instance_above_quota(self, resource, allowed, quota,
-                                             expected_msg):
-        fakes.stub_out_instance_quota(self.stubs, allowed, quota, resource)
-        self.body['server']['flavorRef'] = 3
-        self.req.body = jsonutils.dumps(self.body)
-        try:
-            self.assertIn('server',
-                          self.controller.create(self.req, self.body).obj)
-            self.fail('expected quota to be exceeded')
-        except webob.exc.HTTPRequestEntityTooLarge as e:
-            self.assertEqual(e.explanation, expected_msg)
-
     def test_create_instance_with_security_group_disabled(self):
         group = 'foo'
         params = {'security_groups': [{'name': group}]}
@@ -3207,6 +3196,73 @@ class ServersControllerCreateTest(test.TestCase):
         msg = _('Quota exceeded for cores: Requested 2, but'
                 ' already used 9 of 10 cores')
         self._do_test_create_instance_above_quota('cores', 1, 10, msg)
+
+
+class ServersControllerCreateTestWithMock(test.TestCase):
+    image_uuid = '76fa36fc-c930-4bf3-8c8a-ea2a2420deb6'
+    flavor_ref = 'http://localhost/123/flavors/3'
+
+    def setUp(self):
+        """Shared implementation for tests below that create instance."""
+        super(ServersControllerCreateTestWithMock, self).setUp()
+
+        self.flags(verbose=True,
+                   enable_instance_password=True)
+        self.instance_cache_num = 0
+        self.instance_cache_by_id = {}
+        self.instance_cache_by_uuid = {}
+
+        self.ext_mgr = extensions.ExtensionManager()
+        self.ext_mgr.extensions = {}
+        self.controller = servers.Controller(self.ext_mgr)
+
+        self.volume_id = 'fake'
+
+        self.body = {
+            'server': {
+                'min_count': 2,
+                'name': 'server_test',
+                'imageRef': self.image_uuid,
+                'flavorRef': self.flavor_ref,
+                'metadata': {
+                    'hello': 'world',
+                    'open': 'stack',
+                    },
+                'personality': [
+                    {
+                        "path": "/etc/banner.txt",
+                        "contents": "MQ==",
+                    },
+                ],
+            },
+        }
+
+        self.req = fakes.HTTPRequest.blank('/fake/servers')
+        self.req.method = 'POST'
+        self.req.headers["content-type"] = "application/json"
+
+    def _test_create_extra(self, params, no_image=False):
+        self.body['server']['flavorRef'] = 2
+        if no_image:
+            self.body['server'].pop('imageRef', None)
+        self.body['server'].update(params)
+        self.req.body = jsonutils.dumps(self.body)
+        self.controller.create(self.req, self.body).obj['server']
+
+    @mock.patch.object(compute_api.API, 'create')
+    def test_create_instance_with_neutronv2_fixed_ip_already_in_use(self,
+            create_mock):
+        self.flags(network_api_class='nova.network.neutronv2.api.API')
+        network = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa'
+        address = '10.0.2.3'
+        requested_networks = [{'uuid': network, 'fixed-ip': address}]
+        params = {'networks': requested_networks}
+        create_mock.side_effect = exception.FixedIpAlreadyInUse(
+            address=address,
+            instance_uuid=network)
+        self.assertRaises(webob.exc.HTTPBadRequest,
+                          self._test_create_extra, params)
+        self.assertEqual(1, len(create_mock.call_args_list))
 
 
 class TestServerCreateRequestXMLDeserializer(test.TestCase):

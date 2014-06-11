@@ -62,6 +62,8 @@ class FilterScheduler(driver.Scheduler):
         self.compute_rpcapi = compute_rpcapi.ComputeAPI()
         self.notifier = rpc.get_notifier('scheduler')
 
+    # NOTE(alaski): Remove this method when the scheduler rpc interface is
+    # bumped to 4.x as it is no longer used.
     def schedule_run_instance(self, context, request_spec,
                               admin_password, injected_files,
                               requested_networks, is_first_time,
@@ -235,16 +237,13 @@ class FilterScheduler(driver.Scheduler):
             # re-scheduling is disabled.
             return
 
-        retry = filter_properties.pop('retry', {})
-        # retry is enabled, update attempt count:
-        if retry:
-            retry['num_attempts'] += 1
-        else:
-            retry = {
-                'num_attempts': 1,
+        # retry is enabled, update attempt count
+        retry = filter_properties.setdefault(
+            'retry', {
+                'num_attempts': 0,
                 'hosts': []  # list of compute hosts tried
-            }
-        filter_properties['retry'] = retry
+            })
+        retry['num_attempts'] += 1
 
         instance_uuid = instance_properties.get('uuid')
         self._log_compute_error(instance_uuid, retry)

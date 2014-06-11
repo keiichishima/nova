@@ -43,7 +43,7 @@ from nova import db
 from nova.db.sqlalchemy import models
 from nova import exception
 from nova.network import api as network_api
-from nova.objects import block_device as block_device_obj
+from nova import objects
 from nova.openstack.common import importutils
 from nova.openstack.common import jsonutils
 from nova.openstack.common import log as logging
@@ -2709,6 +2709,31 @@ class FlavorDisabledSampleXmlTests(FlavorDisabledSampleJsonTests):
     ctype = "xml"
 
 
+class QuotaClassesSampleJsonTests(ApiSampleTestBaseV2):
+    extension_name = ("nova.api.openstack.compute.contrib.quota_classes."
+                      "Quota_classes")
+    set_id = 'test_class'
+
+    def test_show_quota_classes(self):
+        # Get api sample to show quota classes.
+        response = self._do_get('os-quota-class-sets/%s' % self.set_id)
+        subs = {'set_id': self.set_id}
+        self._verify_response('quota-classes-show-get-resp', subs,
+                              response, 200)
+
+    def test_update_quota_classes(self):
+        # Get api sample to update quota classes.
+        response = self._do_put('os-quota-class-sets/%s' % self.set_id,
+                                'quota-classes-update-post-req',
+                                {})
+        self._verify_response('quota-classes-update-post-resp',
+                              {}, response, 200)
+
+
+class QuotaClassesSampleXmlTests(QuotaClassesSampleJsonTests):
+    ctype = "xml"
+
+
 class CellsSampleJsonTest(ApiSampleTestBaseV2):
     extension_name = "nova.api.openstack.compute.contrib.cells.Cells"
 
@@ -3889,7 +3914,7 @@ class VolumeAttachmentsSampleJsonTest(VolumeAttachmentsSampleBase):
         self.stubs.Set(compute_manager.ComputeManager,
                        'attach_volume',
                        lambda *a, **k: None)
-        self.stubs.Set(block_device_obj.BlockDeviceMapping, 'get_by_volume_id',
+        self.stubs.Set(objects.BlockDeviceMapping, 'get_by_volume_id',
                        classmethod(lambda *a, **k: None))
 
         volume = fakes.stub_volume_get(None, context.get_admin_context(),

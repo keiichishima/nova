@@ -107,22 +107,65 @@ class DbQuotaDriver(object):
 
         return db.quota_get(context, project_id, resource)
 
+    def get_by_class(self, context, quota_class, resource):
+        """Get a specific quota by quota class."""
+
+        return db.quota_class_get(context, quota_class, resource)
+
     def get_defaults(self, context, resources):
         """Given a list of resources, retrieve the default quotas.
+        Use the class quotas named `_DEFAULT_QUOTA_NAME` as default quotas,
+        if it exists.
 
         :param context: The request context, for access checks.
         :param resources: A dictionary of the registered resources.
         """
 
         quotas = {}
+        default_quotas = db.quota_class_get_default(context)
         for resource in resources.values():
-            quotas[resource.name] = resource.default
+            quotas[resource.name] = default_quotas.get(resource.name,
+                                                       resource.default)
+
+        return quotas
+
+    def get_class_quotas(self, context, resources, quota_class,
+                         defaults=True):
+        """Given a list of resources, retrieve the quotas for the given
+        quota class.
+
+        :param context: The request context, for access checks.
+        :param resources: A dictionary of the registered resources.
+        :param quota_class: The name of the quota class to return
+                            quotas for.
+        :param defaults: If True, the default value will be reported
+                         if there is no specific value for the
+                         resource.
+        """
+
+        quotas = {}
+        class_quotas = db.quota_class_get_all_by_name(context, quota_class)
+        for resource in resources.values():
+            if defaults or resource.name in class_quotas:
+                quotas[resource.name] = class_quotas.get(resource.name,
+                                                         resource.default)
 
         return quotas
 
     def _process_quotas(self, context, resources, project_id, quotas,
-                        defaults=True, usages=None, remains=False):
+                        quota_class=None, defaults=True, usages=None,
+                        remains=False):
         modified_quotas = {}
+        # Get the quotas for the appropriate class.  If the project ID
+        # matches the one in the context, we use the quota_class from
+        # the context, otherwise, we use the provided quota_class (if
+        # any)
+        if project_id == context.project_id:
+            quota_class = context.quota_class
+        if quota_class:
+            class_quotas = db.quota_class_get_all_by_name(context, quota_class)
+        else:
+            class_quotas = {}
 
         default_quotas = self.get_defaults(context, resources)
 
@@ -131,7 +174,8 @@ class DbQuotaDriver(object):
             if not defaults and resource.name not in quotas:
                 continue
 
-            limit = quotas.get(resource.name, default_quotas[resource.name])
+            limit = quotas.get(resource.name, class_quotas.get(
+                        resource.name, default_quotas[resource.name]))
             modified_quotas[resource.name] = dict(limit=limit)
 
             # Include usages if desired.  This is optional because one
@@ -157,7 +201,8 @@ class DbQuotaDriver(object):
         return modified_quotas
 
     def get_user_quotas(self, context, resources, project_id, user_id,
-                        defaults=True, usages=True, project_quotas=None,
+                        quota_class=None, defaults=True,
+                        usages=True, project_quotas=None,
                         user_quotas=None):
         """Given a list of resources, retrieve the quotas for the given
         user and project.
@@ -166,6 +211,11 @@ class DbQuotaDriver(object):
         :param resources: A dictionary of the registered resources.
         :param project_id: The ID of the project to return quotas for.
         :param user_id: The ID of the user to return quotas for.
+        :param quota_class: If project_id != context.project_id, the
+                            quota class cannot be determined.  This
+                            parameter allows it to be specified.  It
+                            will be ignored if project_id ==
+                            context.project_id.
         :param defaults: If True, the quota class value (or the
                          default value, if there is no value from the
                          quota class) will be reported if there is no
@@ -190,18 +240,23 @@ class DbQuotaDriver(object):
                                                          project_id,
                                                          user_id)
         return self._process_quotas(context, resources, project_id,
-                                    user_quotas, defaults=defaults,
-                                    usages=user_usages)
+                                    user_quotas, quota_class,
+                                    defaults=defaults, usages=user_usages)
 
     def get_project_quotas(self, context, resources, project_id,
-                           defaults=True, usages=True, remains=False,
-                           project_quotas=None):
+                           quota_class=None, defaults=True,
+                           usages=True, remains=False, project_quotas=None):
         """Given a list of resources, retrieve the quotas for the given
         project.
 
         :param context: The request context, for access checks.
         :param resources: A dictionary of the registered resources.
         :param project_id: The ID of the project to return quotas for.
+        :param quota_class: If project_id != context.project_id, the
+                            quota class cannot be determined.  This
+                            parameter allows it to be specified.  It
+                            will be ignored if project_id ==
+                            context.project_id.
         :param defaults: If True, the quota class value (or the
                          default value, if there is no value from the
                          quota class) will be reported if there is no
@@ -219,7 +274,7 @@ class DbQuotaDriver(object):
             project_usages = db.quota_usage_get_all_by_project(context,
                                                                project_id)
         return self._process_quotas(context, resources, project_id,
-                                    project_quotas,
+                                    project_quotas, quota_class,
                                     defaults=defaults, usages=project_usages,
                                     remains=remains)
 
@@ -326,12 +381,13 @@ class DbQuotaDriver(object):
             # Grab and return the quotas (without usages)
             quotas = self.get_user_quotas(context, sub_resources,
                                           project_id, user_id,
-                                          usages=False,
+                                          context.quota_class, usages=False,
                                           project_quotas=project_quotas)
         else:
             # Grab and return the quotas (without usages)
             quotas = self.get_project_quotas(context, sub_resources,
                                              project_id,
+                                             context.quota_class,
                                              usages=False,
                                              project_quotas=project_quotas)
 
@@ -613,11 +669,34 @@ class NoopQuotaDriver(object):
         # Unlimited
         return -1
 
+    def get_by_class(self, context, quota_class, resource):
+        """Get a specific quota by quota class."""
+        # Unlimited
+        return -1
+
     def get_defaults(self, context, resources):
         """Given a list of resources, retrieve the default quotas.
 
         :param context: The request context, for access checks.
         :param resources: A dictionary of the registered resources.
+        """
+        quotas = {}
+        for resource in resources.values():
+            quotas[resource.name] = -1
+        return quotas
+
+    def get_class_quotas(self, context, resources, quota_class,
+                         defaults=True):
+        """Given a list of resources, retrieve the quotas for the given
+        quota class.
+
+        :param context: The request context, for access checks.
+        :param resources: A dictionary of the registered resources.
+        :param quota_class: The name of the quota class to return
+                            quotas for.
+        :param defaults: If True, the default value will be reported
+                         if there is no specific value for the
+                         resource.
         """
         quotas = {}
         for resource in resources.values():
@@ -637,7 +716,8 @@ class NoopQuotaDriver(object):
         return quotas
 
     def get_user_quotas(self, context, resources, project_id, user_id,
-                        defaults=True, usages=True):
+                        quota_class=None, defaults=True,
+                        usages=True):
         """Given a list of resources, retrieve the quotas for the given
         user and project.
 
@@ -645,6 +725,11 @@ class NoopQuotaDriver(object):
         :param resources: A dictionary of the registered resources.
         :param project_id: The ID of the project to return quotas for.
         :param user_id: The ID of the user to return quotas for.
+        :param quota_class: If project_id != context.project_id, the
+                            quota class cannot be determined.  This
+                            parameter allows it to be specified.  It
+                            will be ignored if project_id ==
+                            context.project_id.
         :param defaults: If True, the quota class value (or the
                          default value, if there is no value from the
                          quota class) will be reported if there is no
@@ -655,13 +740,19 @@ class NoopQuotaDriver(object):
         return self._get_noop_quotas(resources, usages=usages)
 
     def get_project_quotas(self, context, resources, project_id,
-                           defaults=True, usages=True, remains=False):
+                           quota_class=None, defaults=True,
+                           usages=True, remains=False):
         """Given a list of resources, retrieve the quotas for the given
         project.
 
         :param context: The request context, for access checks.
         :param resources: A dictionary of the registered resources.
         :param project_id: The ID of the project to return quotas for.
+        :param quota_class: If project_id != context.project_id, the
+                            quota class cannot be determined.  This
+                            parameter allows it to be specified.  It
+                            will be ignored if project_id ==
+                            context.project_id.
         :param defaults: If True, the quota class value (or the
                          default value, if there is no value from the
                          quota class) will be reported if there is no
@@ -859,16 +950,36 @@ class BaseResource(object):
                            context.  If it is given as None, no
                            project-specific quota will be searched
                            for.
+        :param quota_class: The quota class corresponding to the
+                            project, or for which the quota is to be
+                            looked up.  If not provided, it is taken
+                            from the context.  If it is given as None,
+                            no quota class-specific quota will be
+                            searched for.  Note that the quota class
+                            defaults to the value in the context,
+                            which may not correspond to the project if
+                            project_id is not the same as the one in
+                            the context.
         """
 
         # Get the project ID
         project_id = kwargs.get('project_id', context.project_id)
+
+        # Ditto for the quota class
+        quota_class = kwargs.get('quota_class', context.quota_class)
 
         # Look up the quota for the project
         if project_id:
             try:
                 return driver.get_by_project(context, project_id, self.name)
             except exception.ProjectQuotaNotFound:
+                pass
+
+        # Try for the quota class
+        if quota_class:
+            try:
+                return driver.get_by_class(context, quota_class, self.name)
+            except exception.QuotaClassNotFound:
                 pass
 
         # OK, return the default
@@ -1007,6 +1118,11 @@ class QuotaEngine(object):
 
         return self._driver.get_by_project(context, project_id, resource)
 
+    def get_by_class(self, context, quota_class, resource):
+        """Get a specific quota by quota class."""
+
+        return self._driver.get_by_class(context, quota_class, resource)
+
     def get_defaults(self, context):
         """Retrieve the default quotas.
 
@@ -1015,13 +1131,30 @@ class QuotaEngine(object):
 
         return self._driver.get_defaults(context, self._resources)
 
-    def get_user_quotas(self, context, project_id, user_id, defaults=True,
-                        usages=True):
+    def get_class_quotas(self, context, quota_class, defaults=True):
+        """Retrieve the quotas for the given quota class.
+
+        :param context: The request context, for access checks.
+        :param quota_class: The name of the quota class to return
+                            quotas for.
+        :param defaults: If True, the default value will be reported
+                         if there is no specific value for the
+                         resource.
+        """
+
+        return self._driver.get_class_quotas(context, self._resources,
+                                             quota_class, defaults=defaults)
+
+    def get_user_quotas(self, context, project_id, user_id, quota_class=None,
+                        defaults=True, usages=True):
         """Retrieve the quotas for the given user and project.
 
         :param context: The request context, for access checks.
         :param project_id: The ID of the project to return quotas for.
         :param user_id: The ID of the user to return quotas for.
+        :param quota_class: If project_id != context.project_id, the
+                            quota class cannot be determined.  This
+                            parameter allows it to be specified.
         :param defaults: If True, the quota class value (or the
                          default value, if there is no value from the
                          quota class) will be reported if there is no
@@ -1032,15 +1165,19 @@ class QuotaEngine(object):
 
         return self._driver.get_user_quotas(context, self._resources,
                                             project_id, user_id,
+                                            quota_class=quota_class,
                                             defaults=defaults,
                                             usages=usages)
 
-    def get_project_quotas(self, context, project_id, defaults=True,
-                           usages=True, remains=False):
+    def get_project_quotas(self, context, project_id, quota_class=None,
+                           defaults=True, usages=True, remains=False):
         """Retrieve the quotas for the given project.
 
         :param context: The request context, for access checks.
         :param project_id: The ID of the project to return quotas for.
+        :param quota_class: If project_id != context.project_id, the
+                            quota class cannot be determined.  This
+                            parameter allows it to be specified.
         :param defaults: If True, the quota class value (or the
                          default value, if there is no value from the
                          quota class) will be reported if there is no
@@ -1053,6 +1190,7 @@ class QuotaEngine(object):
 
         return self._driver.get_project_quotas(context, self._resources,
                                               project_id,
+                                              quota_class=quota_class,
                                               defaults=defaults,
                                               usages=usages,
                                               remains=remains)

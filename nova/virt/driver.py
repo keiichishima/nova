@@ -202,9 +202,9 @@ class ComputeDriver(object):
             efficient.
         """
         try:
-            return instance['uuid'] in self.list_instance_uuids()
+            return instance.uuid in self.list_instance_uuids()
         except NotImplementedError:
-            return instance['name'] in self.list_instances()
+            return instance.name in self.list_instances()
 
     def estimate_instance_overhead(self, instance_info):
         """Estimate the virtualization overhead required to build an instance
@@ -1225,7 +1225,7 @@ class ComputeDriver(object):
     def need_legacy_block_device_info(self):
         """Tell the caller if the driver requires legacy block device info.
 
-        Tell the caller weather we expect the legacy format of block
+        Tell the caller whether we expect the legacy format of block
         device info to be passed in to methods that expect it.
         """
         return True

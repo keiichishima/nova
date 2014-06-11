@@ -70,7 +70,7 @@ from nova.compute import vm_mode
 from nova import context as nova_context
 from nova import exception
 from nova import image
-from nova.objects import block_device as block_device_obj
+from nova import objects
 from nova.objects import flavor as flavor_obj
 from nova.objects import instance as instance_obj
 from nova.objects import service as service_obj
@@ -807,7 +807,7 @@ class LibvirtDriver(driver.ComputeDriver):
     def instance_exists(self, instance):
         """Efficient override of base instance_exists method."""
         try:
-            self._lookup_by_name(instance['name'])
+            self._lookup_by_name(instance.name)
             return True
         except exception.NovaException:
             return False
@@ -1796,8 +1796,8 @@ class LibvirtDriver(driver.ComputeDriver):
             raise
 
     def _volume_refresh_connection_info(self, context, instance, volume_id):
-        bdm = block_device_obj.BlockDeviceMapping.get_by_volume_id(context,
-                                                                   volume_id)
+        bdm = objects.BlockDeviceMapping.get_by_volume_id(context,
+                                                          volume_id)
         driver_bdm = driver_block_device.DriverVolumeBlockDevice(bdm)
         driver_bdm.refresh_connection_info(context, instance,
                                            self._volume_api, self)
@@ -5039,6 +5039,33 @@ class LibvirtDriver(driver.ComputeDriver):
                       '-O', 'raw', path, path_raw)
         utils.execute('mv', path_raw, path)
 
+    def _disk_resize(self, info, size):
+        """Attempts to resize a disk to size
+
+        Attempts to resize a disk by checking the capabilities and
+        preparing the format, then calling disk.api.extend.
+
+        Note: Currently only support disk extend.
+        """
+        # If we have a non partitioned image that we can extend
+        # then ensure we're in 'raw' format so we can extend file system.
+        fmt = info['type']
+        pth = info['path']
+        if (size and fmt == 'qcow2' and
+                disk.can_resize_image(pth, size) and
+                disk.is_image_partitionless(pth, use_cow=True)):
+            self._disk_qcow2_to_raw(pth)
+            fmt = 'raw'
+
+        if size:
+            use_cow = fmt == 'qcow2'
+            disk.extend(pth, size, use_cow=use_cow)
+
+        if fmt == 'raw' and CONF.use_cow_images:
+            # back to qcow2 (no backing_file though) so that snapshot
+            # will be available
+            self._disk_raw_to_qcow2(pth)
+
     def finish_migration(self, context, migration, instance, disk_info,
                          network_info, image_meta, resize_instance,
                          block_device_info=None, power_on=True):
@@ -5048,25 +5075,7 @@ class LibvirtDriver(driver.ComputeDriver):
         disk_info = jsonutils.loads(disk_info)
         for info in disk_info:
             size = self._disk_size_from_instance(instance, info)
-
-            # If we have a non partitioned image that we can extend
-            # then ensure we're in 'raw' format so we can extend file system.
-            fmt = info['type']
-            pth = info['path']
-            if (size and fmt == 'qcow2' and
-                    disk.can_resize_image(pth, size) and
-                    disk.is_image_partitionless(pth, use_cow=True)):
-                self._disk_qcow2_to_raw(pth)
-                fmt = 'raw'
-
-            if size:
-                use_cow = fmt == 'qcow2'
-                disk.extend(pth, size, use_cow=use_cow)
-
-            if fmt == 'raw' and CONF.use_cow_images:
-                # back to qcow2 (no backing_file though) so that snapshot
-                # will be available
-                self._disk_raw_to_qcow2(pth)
+            self._disk_resize(info, size)
 
         disk_info = blockinfo.get_disk_info(CONF.libvirt.virt_type,
                                             instance,

@@ -993,7 +993,8 @@ def get_stats_from_cluster(session, cluster):
             for obj in result.objects:
                 hardware_summary = obj.propSet[0].val
                 runtime_summary = obj.propSet[1].val
-                if runtime_summary.connectionState == "connected":
+                if (runtime_summary.inMaintenanceMode == False and
+                    runtime_summary.connectionState == "connected"):
                     # Total vcpus is the sum of all pCPUs of individual hosts
                     # The overcommitment ratio is factored in by the scheduler
                     cpu_info['vcpus'] += hardware_summary.numCpuThreads
@@ -1560,3 +1561,24 @@ def power_on_instance(session, instance, vm_ref=None):
         LOG.debug("Powered on the VM", instance=instance)
     except error_util.InvalidPowerStateException:
         LOG.debug("VM already powered on", instance=instance)
+
+
+def get_values_from_object_properties(session, props, properties):
+    """Get the specific values from a object list.
+
+    The object values will be returned as a dictionary. The keys for the
+    dictionary will be the 'properties'.
+    """
+    dictionary = {}
+    while props:
+        for elem in props.objects:
+            propdict = propset_dict(elem.propSet)
+            dictionary.update(propdict)
+        token = _get_token(props)
+        if not token:
+            break
+
+        props = session._call_method(vim_util,
+                                     "continue_to_get_objects",
+                                     token)
+    return dictionary

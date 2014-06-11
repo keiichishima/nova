@@ -252,6 +252,8 @@ class ComputeAPI(object):
         3.25 - Make detach_volume take an object
         3.26 - Make live_migration() and
                rollback_live_migration_at_destination() take an object
+        ...  - Removed run_instance()
+        3.27 - Make run_instance() accept a new-world object
     '''
 
     VERSION_ALIASES = {
@@ -767,6 +769,8 @@ class ComputeAPI(object):
         cctxt.cast(ctxt, 'rollback_live_migration_at_destination',
                    instance=instance)
 
+    # NOTE(alaski): Remove this method when the scheduler rpc interface is
+    # bumped to 4.x as the only callers of this method will be removed.
     def run_instance(self, ctxt, instance, host, request_spec,
                      filter_properties, requested_networks,
                      injected_files, admin_password,

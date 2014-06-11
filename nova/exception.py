@@ -123,7 +123,7 @@ class NovaException(Exception):
                 # log the issue and the kwargs
                 LOG.exception(_('Exception in string format operation'))
                 for name, value in kwargs.iteritems():
-                    LOG.error("%s: %s" % (name, value))
+                    LOG.error("%s: %s" % (name, value))    # noqa
 
                 if CONF.fatal_exception_format_errors:
                     raise exc_info[0], exc_info[1], exc_info[2]
@@ -1383,6 +1383,10 @@ class OrphanedObjectError(NovaException):
 
 class IncompatibleObjectVersion(NovaException):
     msg_fmt = _('Version %(objver)s of %(objname)s is not supported')
+
+
+class ReadOnlyFieldError(NovaException):
+    msg_fmt = _('Cannot modify readonly field %(field)s')
 
 
 class ObjectActionError(NovaException):
