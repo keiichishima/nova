@@ -737,7 +737,8 @@ class LibvirtUkaiVolumeDriver(LibvirtBaseVolumeDriver):
         conf.source_type = 'file'
         conf.source_path = path
         conf.driver_format = connection_info['data'].get('format', 'raw')
-        utils.execute('ukai_add_image', connection_info['data']['name'])
+        utils.execute('ukai_admin', 'add_image',
+                      connection_info['data']['name'])
         return conf
 
     def disconnect_volume(self, connection_info, disk_dev):
@@ -772,7 +773,7 @@ class LibvirtUkaiVolumeDriver(LibvirtBaseVolumeDriver):
         utils.execute('mkdir', '-p', mount_path)
 
         # Construct the UKAI mount command.
-        ukai_cmd = ['ukai']
+        ukai_cmd = ['ukai_fuse']
         if CONF.libvirt.ukai_mount_options is not None:
             ukai_cmd.extend(['-o', CONF.libvirt.ukai_mount_options])
         if options is not None:
