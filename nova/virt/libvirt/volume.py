@@ -783,8 +783,8 @@ class LibvirtUkaiVolumeDriver(LibvirtBaseVolumeDriver):
         try:
             utils.execute(*ukai_cmd, run_as_root=True)
         except processutils.ProcessExecutionError as exc:
-            if ensure and 'already mounted' in exc.message:
-                LOG.warn(_("%s is already mounted"), nfs_share)
+            if ensure and 'fuse: mountpoint is not empty' in exc.message:
+                LOG.warn(_("already mounted"))
             else:
                 raise
 
