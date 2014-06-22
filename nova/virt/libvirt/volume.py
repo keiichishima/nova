@@ -737,8 +737,6 @@ class LibvirtUkaiVolumeDriver(LibvirtBaseVolumeDriver):
         conf.source_type = 'file'
         conf.source_path = path
         conf.driver_format = connection_info['data'].get('format', 'raw')
-        utils.execute('ukai_admin', 'add_image',
-                      connection_info['data']['name'])
         return conf
 
     def disconnect_volume(self, connection_info, disk_dev):
