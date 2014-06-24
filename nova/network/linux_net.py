@@ -53,8 +53,6 @@ linux_net_opts = [
     cfg.StrOpt('public_interface',
                default='eth0',
                help='Interface for public IP addresses'),
-    cfg.IntOpt('network_device_mtu',
-               help='MTU setting for network interface'),
     cfg.StrOpt('dhcpbridge',
                default=paths.bindir_def('nova-dhcpbridge'),
                help='Location of nova-dhcpbridge'),
@@ -136,6 +134,7 @@ CONF.register_opts(linux_net_opts)
 CONF.import_opt('host', 'nova.netconf')
 CONF.import_opt('use_ipv6', 'nova.netconf')
 CONF.import_opt('my_ip', 'nova.netconf')
+CONF.import_opt('network_device_mtu', 'nova.objects.network')
 
 
 # NOTE(vish): Iptables supports chain names of up to 28 characters,  and we
@@ -826,7 +825,7 @@ def initialize_gateway_device(dev, network_ref):
     _enable_ipv4_forwarding()
 
     # NOTE(vish): The ip for dnsmasq has to be the first address on the
-    #             bridge for it to respond to reqests properly
+    #             bridge for it to respond to requests properly
     try:
         prefix = network_ref.cidr.prefixlen
     except AttributeError:
@@ -1428,7 +1427,7 @@ class LinuxBridgeInterfaceDriver(LinuxNetInterfaceDriver):
                           iface,
                           network, gateway)
 
-        if CONF.share_dhcp_address:
+        if network['share_address'] or CONF.share_dhcp_address:
             isolate_dhcp_address(iface, network['dhcp_server'])
         # NOTE(vish): applying here so we don't get a lock conflict
         iptables_manager.apply()
@@ -1445,7 +1444,7 @@ class LinuxBridgeInterfaceDriver(LinuxNetInterfaceDriver):
             LinuxBridgeInterfaceDriver.remove_bridge(network['bridge'],
                                                      gateway)
 
-        if CONF.share_dhcp_address:
+        if network['share_address'] or CONF.share_dhcp_address:
             remove_isolate_dhcp_address(iface, network['dhcp_server'])
 
         iptables_manager.apply()

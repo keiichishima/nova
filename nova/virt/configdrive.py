@@ -19,6 +19,7 @@ import os
 import shutil
 import tempfile
 
+from nova.openstack.common import strutils
 from oslo.config import cfg
 
 from nova import exception
@@ -93,7 +94,7 @@ class ConfigDriveBuilder(object):
     def add_instance_metadata(self, instance_md):
         for (path, value) in instance_md.metadata_for_config_drive():
             self._add_file(path, value)
-            LOG.debug(_('Added %(filepath)s to config drive'),
+            LOG.debug('Added %(filepath)s to config drive',
                       {'filepath': path})
 
     def _make_iso9660(self, path):
@@ -177,4 +178,6 @@ class ConfigDriveBuilder(object):
 
 
 def required_by(instance):
-    return instance.get('config_drive') or CONF.force_config_drive
+    return (instance.get('config_drive') or
+            'always' == CONF.force_config_drive or
+            strutils.bool_from_string(CONF.force_config_drive))

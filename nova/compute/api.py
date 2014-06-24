@@ -371,7 +371,7 @@ class API(base.Base):
 
             resource = overs[0]
             used = quotas[resource] - headroom[resource]
-            total_allowed = used + headroom[resource]
+            total_allowed = quotas[resource]
             overs = ','.join(overs)
             params = {'overs': overs, 'pid': context.project_id,
                       'min_count': min_count, 'max_count': max_count,
@@ -876,12 +876,14 @@ class API(base.Base):
                 try:
                     volume_id = bdm['volume_id']
                     volume = self.volume_api.get(context, volume_id)
-                    return volume.get('volume_image_metadata', {})
                 except exception.CinderConnectionFailed:
                     raise
                 except Exception:
                     raise exception.InvalidBDMVolume(id=volume_id)
 
+                if not volume.get('bootable', True):
+                    raise exception.InvalidBDMVolumeNotBootable(id=volume_id)
+                return volume.get('volume_image_metadata', {})
         return {}
 
     @staticmethod
@@ -2607,11 +2609,14 @@ class API(base.Base):
     @check_instance_lock
     @check_instance_state(vm_state=[vm_states.ACTIVE])
     def set_admin_password(self, context, instance, password=None):
-        """Set the root/admin password for the given instance."""
-        self.update(context,
-                    instance,
-                    task_state=task_states.UPDATING_PASSWORD,
-                    expected_task_state=[None])
+        """Set the root/admin password for the given instance.
+
+        @param context: Nova auth context.
+        @param instance: Nova instance object.
+        @param password: The admin password for the instance.
+        """
+        instance.task_state = task_states.UPDATING_PASSWORD
+        instance.save(expected_task_state=[None])
 
         self._record_action_start(context, instance,
                                   instance_actions.CHANGE_PASSWORD)
@@ -3354,9 +3359,17 @@ class AggregateAPI(base.Base):
         """
         if 'availability_zone' in metadata:
             _hosts = hosts or aggregate.hosts
+            zones, not_zones = availability_zones.get_availability_zones(
+                context, with_hosts=True)
             for host in _hosts:
-                host_az = availability_zones.get_host_availability_zone(
-                    context, host)
+                # NOTE(sbauza): Host can only be in one AZ, so let's take only
+                #               the first element
+                host_azs = [az for (az, az_hosts) in zones
+                            if host in az_hosts
+                            and az != CONF.internal_service_availability_zone]
+                host_az = host_azs.pop()
+                if host_azs:
+                    LOG.warning(_("More than 1 AZ for host %s"), host)
                 if host_az == CONF.default_availability_zone:
                     # NOTE(sbauza): Aggregate with AZ set to default AZ can
                     #               exist, we need to check
@@ -3937,11 +3950,9 @@ class SecurityGroupAPI(base.Base, security_group_base.SecurityGroupBase):
         if detailed:
             return self.db.security_group_get_by_instance(context,
                                                           instance_uuid)
-        instance = self.db.instance_get_by_uuid(context, instance_uuid)
-        groups = instance.get('security_groups')
-        if groups:
-            return [{'name': group['name']} for group in groups]
-        return []
+        instance = objects.Instance(uuid=instance_uuid)
+        groups = objects.SecurityGroupList.get_by_instance(context, instance)
+        return [{'name': group.name} for group in groups]
 
     def populate_security_groups(self, instance, security_groups):
         if not security_groups:

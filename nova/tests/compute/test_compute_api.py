@@ -1692,6 +1692,36 @@ class _ComputeAPIUnitTestMixIn(object):
         self.compute_api.volume_snapshot_delete(self.context, volume_id,
                 snapshot_id, {})
 
+    def _test_boot_volume_bootable(self, is_bootable=False):
+        def get_vol_data(*args, **kwargs):
+            return {'bootable': is_bootable}
+        block_device_mapping = [{
+            'id': 1,
+            'device_name': 'vda',
+            'no_device': None,
+            'virtual_name': None,
+            'snapshot_id': None,
+            'volume_id': '1',
+            'delete_on_termination': False,
+        }]
+
+        with mock.patch.object(self.compute_api.volume_api, 'get',
+                               side_effect=get_vol_data):
+            if not is_bootable:
+                self.assertRaises(exception.InvalidBDMVolumeNotBootable,
+                                  self.compute_api._get_bdm_image_metadata,
+                                  self.context, block_device_mapping)
+            else:
+                meta = self.compute_api._get_bdm_image_metadata(self.context,
+                                    block_device_mapping)
+                self.assertEqual({}, meta)
+
+    def test_boot_volume_non_bootable(self):
+        self._test_boot_volume_bootable(False)
+
+    def test_boot_volume_bootable(self):
+        self._test_boot_volume_bootable(True)
+
     def _create_instance_with_disabled_disk_config(self, object=False):
         sys_meta = {"image_auto_disk_config": "Disabled"}
         params = {"system_metadata": sys_meta}
@@ -2062,6 +2092,34 @@ class _ComputeAPIUnitTestMixIn(object):
             rpcapi_unrescue_instance.assert_called_once_with(
                 self.context, instance=instance)
 
+    def test_set_admin_password_invalid_state(self):
+        # Tests that InstanceInvalidState is raised when not ACTIVE.
+        instance = self._create_instance_obj({'vm_state': vm_states.STOPPED})
+        self.assertRaises(exception.InstanceInvalidState,
+                          self.compute_api.set_admin_password,
+                          self.context, instance)
+
+    def test_set_admin_password(self):
+        # Ensure instance can have its admin password set.
+        instance = self._create_instance_obj()
+
+        @mock.patch.object(objects.Instance, 'save')
+        @mock.patch.object(self.compute_api, '_record_action_start')
+        @mock.patch.object(self.compute_api.compute_rpcapi,
+                           'set_admin_password')
+        def do_test(compute_rpcapi_mock, record_mock, instance_save_mock):
+            # call the API
+            self.compute_api.set_admin_password(self.context, instance)
+            # make our assertions
+            instance_save_mock.assert_called_once_with(
+                expected_task_state=[None])
+            record_mock.assert_called_once_with(
+                self.context, instance, instance_actions.CHANGE_PASSWORD)
+            compute_rpcapi_mock.assert_called_once_with(
+                self.context, instance=instance, new_pass=None)
+
+        do_test()
+
 
 class ComputeAPIUnitTestCase(_ComputeAPIUnitTestMixIn, test.NoDBTestCase):
     def setUp(self):
@@ -2129,3 +2187,26 @@ class DiffDictTestCase(test.NoDBTestCase):
         diff = compute_api._diff_dict(old, new)
 
         self.assertEqual(diff, dict(b=['-']))
+
+
+class SecurityGroupAPITest(test.NoDBTestCase):
+    def setUp(self):
+        super(SecurityGroupAPITest, self).setUp()
+        self.secgroup_api = compute_api.SecurityGroupAPI()
+        self.user_id = 'fake'
+        self.project_id = 'fake'
+        self.context = context.RequestContext(self.user_id,
+                                              self.project_id)
+
+    @mock.patch('nova.objects.security_group.SecurityGroupList.'
+                'get_by_instance')
+    def test_get_instance_security_groups(self, mock_get):
+        groups = objects.SecurityGroupList()
+        groups.objects = [objects.SecurityGroup(name='foo'),
+                          objects.SecurityGroup(name='bar')]
+        mock_get.return_value = groups
+        names = self.secgroup_api.get_instance_security_groups(self.context,
+                                                               'fake-uuid')
+        self.assertEqual([{'name': 'bar'}, {'name': 'foo'}], sorted(names))
+        self.assertEqual(1, mock_get.call_count)
+        self.assertEqual('fake-uuid', mock_get.call_args_list[0][0][1].uuid)

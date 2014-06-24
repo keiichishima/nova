@@ -36,9 +36,7 @@ LOG = logging.getLogger(__name__)
 libvirt_vif_opts = [
     cfg.BoolOpt('use_virtio_for_bridges',
                 default=True,
-                help='Use virtio for bridge interfaces with KVM/QEMU',
-                deprecated_group='DEFAULT',
-                deprecated_name='libvirt_use_virtio_for_bridges'),
+                help='Use virtio for bridge interfaces with KVM/QEMU'),
 ]
 
 CONF = cfg.CONF
@@ -343,8 +341,8 @@ class LibvirtGenericVIFDriver(LibvirtBaseVIFDriver):
     def get_config(self, instance, vif, image_meta, inst_type):
         vif_type = vif['type']
 
-        LOG.debug(_('vif_type=%(vif_type)s instance=%(instance)s '
-                    'vif=%(vif)s'),
+        LOG.debug('vif_type=%(vif_type)s instance=%(instance)s '
+                  'vif=%(vif)s',
                   {'vif_type': vif_type, 'instance': instance,
                    'vif': vif})
 
@@ -406,7 +404,7 @@ class LibvirtGenericVIFDriver(LibvirtBaseVIFDriver):
             if network.get_meta('should_create_vlan', False):
                 iface = CONF.vlan_interface or \
                         network.get_meta('bridge_interface')
-                LOG.debug(_('Ensuring vlan %(vlan)s and bridge %(bridge)s'),
+                LOG.debug('Ensuring vlan %(vlan)s and bridge %(bridge)s',
                           {'vlan': network.get_meta('vlan'),
                            'bridge': self.get_bridge_name(vif)},
                           instance=instance)
@@ -417,7 +415,7 @@ class LibvirtGenericVIFDriver(LibvirtBaseVIFDriver):
             else:
                 iface = CONF.flat_interface or \
                             network.get_meta('bridge_interface')
-                LOG.debug(_("Ensuring bridge %s"),
+                LOG.debug("Ensuring bridge %s",
                           self.get_bridge_name(vif), instance=instance)
                 linux_net.LinuxBridgeInterfaceDriver.ensure_bridge(
                                         self.get_bridge_name(vif),
@@ -598,8 +596,8 @@ class LibvirtGenericVIFDriver(LibvirtBaseVIFDriver):
     def plug(self, instance, vif):
         vif_type = vif['type']
 
-        LOG.debug(_('vif_type=%(vif_type)s instance=%(instance)s '
-                    'vif=%(vif)s'),
+        LOG.debug('vif_type=%(vif_type)s instance=%(instance)s '
+                  'vif=%(vif)s',
                   {'vif_type': vif_type, 'instance': instance,
                    'vif': vif})
 
@@ -780,8 +778,8 @@ class LibvirtGenericVIFDriver(LibvirtBaseVIFDriver):
     def unplug(self, instance, vif):
         vif_type = vif['type']
 
-        LOG.debug(_('vif_type=%(vif_type)s instance=%(instance)s '
-                    'vif=%(vif)s'),
+        LOG.debug('vif_type=%(vif_type)s instance=%(instance)s '
+                  'vif=%(vif)s',
                   {'vif_type': vif_type, 'instance': instance,
                    'vif': vif})
 

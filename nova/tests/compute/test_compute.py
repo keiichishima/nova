@@ -1156,6 +1156,22 @@ class ComputeTestCase(BaseTestCase):
     @mock.patch.object(instance_action_obj.InstanceActionEvent, 'event_start')
     @mock.patch.object(instance_action_obj.InstanceActionEvent,
                        'event_finish_with_failure')
+    def test_wrap_instance_event_return(self, mock_finish, mock_start):
+        inst = {"uuid": "fake_uuid"}
+
+        @compute_manager.wrap_instance_event
+        def fake_event(self, context, instance):
+            return True
+
+        retval = fake_event(self.compute, self.context, instance=inst)
+
+        self.assertTrue(retval)
+        self.assertTrue(mock_start.called)
+        self.assertTrue(mock_finish.called)
+
+    @mock.patch.object(instance_action_obj.InstanceActionEvent, 'event_start')
+    @mock.patch.object(instance_action_obj.InstanceActionEvent,
+                       'event_finish_with_failure')
     def test_wrap_instance_event_log_exception(self, mock_finish, mock_start):
         inst = {"uuid": "fake_uuid"}
 
@@ -2688,122 +2704,6 @@ class ComputeTestCase(BaseTestCase):
                                                               instance.uuid)
             self.assertEqual(expected_block_device_info, block_device_info)
 
-    def test_set_admin_password(self):
-        # Ensure instance can have its admin password set.
-        instance = jsonutils.to_primitive(self._create_fake_instance())
-        self.compute.run_instance(self.context, instance, {}, {}, [], None,
-                None, True, None, False)
-        db.instance_update(self.context, instance['uuid'],
-                           {'task_state': task_states.UPDATING_PASSWORD})
-
-        inst_ref = db.instance_get_by_uuid(self.context, instance['uuid'])
-        self.assertEqual(inst_ref['vm_state'], vm_states.ACTIVE)
-        self.assertEqual(inst_ref['task_state'], task_states.UPDATING_PASSWORD)
-
-        self.compute.set_admin_password(self.context, instance, None)
-
-        inst_ref = db.instance_get_by_uuid(self.context, instance['uuid'])
-        self.assertEqual(inst_ref['vm_state'], vm_states.ACTIVE)
-        self.assertIsNone(inst_ref['task_state'])
-
-        self.compute.terminate_instance(self.context,
-                self._objectify(inst_ref), [], [])
-
-    def test_set_admin_password_bad_state(self):
-        # Test setting password while instance is rebuilding.
-        instance = jsonutils.to_primitive(self._create_fake_instance())
-        self.compute.run_instance(self.context, instance, {}, {}, [], None,
-                None, True, None, False)
-        db.instance_update(self.context, instance['uuid'], {
-            "power_state": power_state.NOSTATE,
-        })
-        instance = jsonutils.to_primitive(db.instance_get_by_uuid(
-                                          self.context, instance['uuid']))
-
-        self.assertEqual(instance['power_state'], power_state.NOSTATE)
-
-        def fake_driver_get_info(self2, _instance):
-            return {'state': power_state.NOSTATE,
-                    'max_mem': 0,
-                    'mem': 0,
-                    'num_cpu': 2,
-                    'cpu_time': 0}
-
-        self.stubs.Set(nova.virt.fake.FakeDriver, 'get_info',
-                       fake_driver_get_info)
-
-        db.instance_update(self.context, instance['uuid'],
-                           {"task_state": task_states.UPDATING_PASSWORD})
-        self.assertRaises(exception.InstancePasswordSetFailed,
-                          self.compute.set_admin_password,
-                          self.context,
-                          instance, None)
-        self.compute.terminate_instance(self.context,
-                self._objectify(instance), [], [])
-
-    def _do_test_set_admin_password_driver_error(self, exc, expected_vm_state,
-                                                 expected_task_state,
-                                                 expected_exception):
-        """Ensure expected exception is raised if set_admin_password fails."""
-
-        def fake_sleep(_time):
-            pass
-
-        self.stubs.Set(time, 'sleep', fake_sleep)
-
-        def fake_driver_set_pass(self2, _instance, _pwd):
-            raise exc
-
-        self.stubs.Set(nova.virt.fake.FakeDriver, 'set_admin_password',
-                       fake_driver_set_pass)
-
-        instance = jsonutils.to_primitive(self._create_fake_instance())
-        self.compute.run_instance(self.context, instance, {}, {}, [], None,
-                None, True, None, False)
-        db.instance_update(self.context, instance['uuid'],
-                           {'task_state': task_states.UPDATING_PASSWORD})
-
-        inst_ref = db.instance_get_by_uuid(self.context, instance['uuid'])
-        self.assertEqual(inst_ref['vm_state'], vm_states.ACTIVE)
-        self.assertEqual(inst_ref['task_state'], task_states.UPDATING_PASSWORD)
-
-        #error raised from the driver should not reveal internal information
-        #so a new error is raised
-        self.assertRaises(expected_exception,
-                          self.compute.set_admin_password,
-                          self.context,
-                          instance=jsonutils.to_primitive(inst_ref),
-                          new_pass=None)
-
-        inst_ref = db.instance_get_by_uuid(self.context, instance['uuid'])
-        self.assertEqual(inst_ref['vm_state'], expected_vm_state)
-        self.assertEqual(inst_ref['task_state'], expected_task_state)
-
-        self.compute.terminate_instance(self.context,
-                self._objectify(inst_ref), [], [])
-
-    def test_set_admin_password_driver_not_authorized(self):
-        """Ensure expected exception is raised if set_admin_password not
-        authorized.
-        """
-        exc = exception.Forbidden(_('Internal error'))
-        expected_exception = exception.InstancePasswordSetFailed
-        self._do_test_set_admin_password_driver_error(exc,
-                                                vm_states.ERROR,
-                                                None,
-                                                expected_exception)
-
-    def test_set_admin_password_driver_not_implemented(self):
-        """Ensure expected exception is raised if set_admin_password not
-        implemented by driver.
-        """
-        exc = NotImplementedError()
-        expected_exception = NotImplementedError
-        self._do_test_set_admin_password_driver_error(exc,
-                                                      vm_states.ACTIVE,
-                                                      None,
-                                                      expected_exception)
-
     def test_inject_network_info(self):
         # Ensure we can inject network info.
         called = {'inject': False}
@@ -2867,7 +2767,8 @@ class ComputeTestCase(BaseTestCase):
         self.compute.snapshot_instance(self.context, image_id='fakesnap',
                                        instance=inst_obj)
 
-    def _test_snapshot_fails(self, raise_during_cleanup):
+    def _test_snapshot_fails(self, raise_during_cleanup, method,
+                             expected_state=True):
         def fake_snapshot(*args, **kwargs):
             raise test.TestingException()
 
@@ -2883,18 +2784,41 @@ class ComputeTestCase(BaseTestCase):
         self.stubs.Set(fake_image._FakeImageService, 'delete', fake_delete)
 
         inst_obj = self._get_snapshotting_instance()
-        self.assertRaises(test.TestingException,
-                          self.compute.snapshot_instance,
-                          self.context, image_id='fakesnap',
-                          instance=inst_obj)
-        self.assertTrue(self.fake_image_delete_called)
+        if method == 'snapshot':
+            self.assertRaises(test.TestingException,
+                              self.compute.snapshot_instance,
+                              self.context, image_id='fakesnap',
+                              instance=inst_obj)
+        else:
+            self.assertRaises(test.TestingException,
+                              self.compute.backup_instance,
+                              self.context, image_id='fakesnap',
+                              instance=inst_obj, backup_type='fake',
+                              rotation=1)
+
+        self.assertEqual(expected_state, self.fake_image_delete_called)
         self._assert_state({'task_state': None})
 
+    @mock.patch.object(nova.compute.manager.ComputeManager, '_rotate_backups')
+    def test_backup_fails(self, mock_rotate):
+        self._test_snapshot_fails(False, 'backup')
+
+    @mock.patch.object(nova.compute.manager.ComputeManager, '_rotate_backups')
+    def test_backup_fails_cleanup_ignores_exception(self, mock_rotate):
+        self._test_snapshot_fails(True, 'backup')
+
+    @mock.patch.object(nova.compute.manager.ComputeManager, '_rotate_backups')
+    @mock.patch.object(nova.compute.manager.ComputeManager,
+                       '_do_snapshot_instance')
+    def test_backup_fails_rotate_backup(self, mock_snap, mock_rotate):
+        mock_rotate.side_effect = test.TestingException()
+        self._test_snapshot_fails(True, 'backup', False)
+
     def test_snapshot_fails(self):
-        self._test_snapshot_fails(False)
+        self._test_snapshot_fails(False, 'snapshot')
 
     def test_snapshot_fails_cleanup_ignores_exception(self):
-        self._test_snapshot_fails(True)
+        self._test_snapshot_fails(True, 'snapshot')
 
     def _test_snapshot_deletes_image_on_failure(self, exc):
         self.fake_image_delete_called = False
@@ -3437,8 +3361,9 @@ class ComputeTestCase(BaseTestCase):
         self.compute.terminate_instance(self.context,
                 self._objectify(instance), [], [])
 
-    def test_run_instance_usage_notification(self, request_spec={}):
+    def test_run_instance_usage_notification(self, request_spec=None):
         # Ensure run instance generates appropriate usage notification.
+        request_spec = request_spec or {}
         instance = jsonutils.to_primitive(self._create_fake_instance())
         instance_uuid = instance['uuid']
         expected_image_name = request_spec.get('image', {}).get('name', '')
@@ -3940,7 +3865,7 @@ class ComputeTestCase(BaseTestCase):
         self._check_locked_by(instance_uuid, None)
 
     def _test_state_revert(self, instance, operation, pre_task_state,
-                           kwargs=None):
+                           kwargs=None, vm_state=None):
         if kwargs is None:
             kwargs = {}
 
@@ -3970,6 +3895,8 @@ class ComputeTestCase(BaseTestCase):
 
         # Fetch the instance's task_state and make sure it reverted to None.
         instance = db.instance_get_by_uuid(self.context, instance['uuid'])
+        if vm_state:
+            self.assertEqual(instance.vm_state, vm_state)
         self.assertIsNone(instance["task_state"])
 
     def test_state_revert(self):
@@ -3984,6 +3911,10 @@ class ComputeTestCase(BaseTestCase):
                                  'reboot_type': 'SOFT'}),
             ("stop_instance", task_states.POWERING_OFF),
             ("start_instance", task_states.POWERING_ON),
+            ("terminate_instance", task_states.DELETING,
+                                     {'bdms': [],
+                                     'reservations': []},
+                                     vm_states.ERROR),
             ("soft_delete_instance", task_states.SOFT_DELETING,
                                      {'reservations': []}),
             ("restore_instance", task_states.RESTORING),
@@ -5529,8 +5460,8 @@ class ComputeTestCase(BaseTestCase):
         self.assertEqual(msg.event_type,
                          'compute.instance.live_migration.post.dest.end')
 
-        return self.compute.conductor_api.instance_get_by_uuid(self.admin_ctxt,
-                                                        self.instance['uuid'])
+        return objects.Instance.get_by_uuid(self.admin_ctxt,
+                                            self.instance['uuid'])
 
     def test_post_live_migration_at_destination_with_compute_info(self):
         """The instance's node property should be updated correctly."""
@@ -6325,7 +6256,7 @@ class ComputeTestCase(BaseTestCase):
         self.compute.driver.check_instance_shared_storage_local(fake_context,
                 evacuated_instance).AndReturn({'filename': 'tmpfilename'})
         self.compute.compute_rpcapi.check_instance_shared_storage(fake_context,
-                obj_base.obj_to_primitive(evacuated_instance),
+                evacuated_instance,
                 {'filename': 'tmpfilename'}).AndReturn(False)
         self.compute.driver.check_instance_shared_storage_cleanup(fake_context,
                 {'filename': 'tmpfilename'})
@@ -6440,7 +6371,7 @@ class ComputeTestCase(BaseTestCase):
     def test_partial_deletion_raise_exception(self):
         admin_context = context.get_admin_context()
         instance = objects.Instance(admin_context)
-        instance.id = 1
+        instance.uuid = str(uuid.uuid4())
         instance.vm_state = vm_states.DELETED
         instance.deleted = False
 
@@ -7396,34 +7327,6 @@ class ComputeAPITestCase(BaseTestCase):
                                                  display_name='test host')
 
         self.assertEqual('test-host', instances[0]['hostname'])
-
-    def test_set_admin_password(self):
-        # Ensure instance can have its admin password set.
-        instance = jsonutils.to_primitive(self._create_fake_instance())
-        instance_uuid = instance['uuid']
-        self.compute.run_instance(self.context, instance, {}, {}, None, None,
-                None, True, None, False)
-
-        inst_ref = db.instance_get_by_uuid(self.context, instance_uuid)
-        self.assertEqual(inst_ref['vm_state'], vm_states.ACTIVE)
-        self.assertIsNone(inst_ref['task_state'])
-
-        def fake_set_admin_password(self, context, **kwargs):
-            pass
-
-        self.stubs.Set(compute_rpcapi.ComputeAPI,
-                       'set_admin_password',
-                       fake_set_admin_password)
-
-        self.compute_api.set_admin_password(self.context, inst_ref)
-
-        inst_ref = db.instance_get_by_uuid(self.context, instance_uuid)
-        self.assertEqual(inst_ref['vm_state'], vm_states.ACTIVE)
-        self.assertEqual(inst_ref['task_state'],
-                         task_states.UPDATING_PASSWORD)
-
-        self.compute.terminate_instance(self.context,
-                self._objectify(inst_ref), [], [])
 
     def _fake_rescue_block_devices(self, instance, status="in-use"):
         fake_bdms = block_device_obj.block_device_make_list(self.context,
@@ -9665,8 +9568,20 @@ class ComputeAPIAggrTestCase(BaseTestCase):
 
         self.mox.StubOutWithMock(availability_zones,
                                  'update_host_availability_zone_cache')
-        availability_zones.update_host_availability_zone_cache(self.context,
-                                                               fake_host)
+
+        def _stub_update_host_avail_zone_cache(host, az=None):
+            if az is not None:
+                availability_zones.update_host_availability_zone_cache(
+                    self.context, host, az)
+            else:
+                availability_zones.update_host_availability_zone_cache(
+                    self.context, host)
+
+        for avail_zone, hosts in six.iteritems(values):
+            for host in hosts:
+                _stub_update_host_avail_zone_cache(
+                    host, CONF.default_availability_zone)
+        _stub_update_host_avail_zone_cache(fake_host)
         self.mox.ReplayAll()
 
         fake_notifier.NOTIFICATIONS = []
@@ -10171,7 +10086,8 @@ class ComputeReschedulingTestCase(BaseTestCase):
             raise test.TestingException("just need an exception")
         except test.TestingException:
             exc_info = sys.exc_info()
-            exc_str = traceback.format_exception(*exc_info)
+            exc_str = traceback.format_exception_only(exc_info[0],
+                                                      exc_info[1])
 
         self.assertTrue(self._reschedule(filter_properties=filter_properties,
             request_spec=request_spec, exc_info=exc_info))
@@ -10958,3 +10874,13 @@ class CheckRequestedImageTestCase(test.TestCase):
 
         self.compute_api._check_requested_image(self.context, image['id'],
                 image, self.instance_type)
+
+
+class ComputeHooksTestCase(test.BaseHookTestCase):
+    def test_delete_instance_has_hook(self):
+        delete_func = compute_manager.ComputeManager._delete_instance
+        self.assert_has_hook('delete_instance', delete_func)
+
+    def test_create_instance_has_hook(self):
+        create_func = compute_api.API.create
+        self.assert_has_hook('create_instance', create_func)

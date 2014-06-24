@@ -46,6 +46,7 @@ from nova import exception
 from nova.image import glance
 from nova.network import manager
 from nova.network.neutronv2 import api as neutron_api
+from nova import objects
 from nova.objects import instance as instance_obj
 from nova.objects import service as service_obj
 from nova.openstack.common.gettextutils import _
@@ -625,7 +626,7 @@ class ServersControllerTest(ControllerTest):
                          limit=None, marker=None, want_objects=False):
             db_list = [fakes.stub_instance(100, uuid=server_uuid)]
             return instance_obj._make_instance_list(
-                context, instance_obj.InstanceList(), db_list, FIELDS)
+                context, objects.InstanceList(), db_list, FIELDS)
 
         self.stubs.Set(compute_api.API, 'get_all', fake_get_all)
 
@@ -646,7 +647,7 @@ class ServersControllerTest(ControllerTest):
             self.assertEqual(search_opts['image'], '12345')
             db_list = [fakes.stub_instance(100, uuid=server_uuid)]
             return instance_obj._make_instance_list(
-                context, instance_obj.InstanceList(), db_list, FIELDS)
+                context, objects.InstanceList(), db_list, FIELDS)
 
         self.stubs.Set(compute_api.API, 'get_all', fake_get_all)
 
@@ -830,7 +831,7 @@ class ServersControllerTest(ControllerTest):
             self.assertEqual(search_opts['flavor'], '12345')
             db_list = [fakes.stub_instance(100, uuid=server_uuid)]
             return instance_obj._make_instance_list(
-                context, instance_obj.InstanceList(), db_list, FIELDS)
+                context, objects.InstanceList(), db_list, FIELDS)
 
         self.stubs.Set(compute_api.API, 'get_all', fake_get_all)
 
@@ -863,7 +864,7 @@ class ServersControllerTest(ControllerTest):
             self.assertEqual(search_opts['vm_state'], [vm_states.ACTIVE])
             db_list = [fakes.stub_instance(100, uuid=server_uuid)]
             return instance_obj._make_instance_list(
-                context, instance_obj.InstanceList(), db_list, FIELDS)
+                context, objects.InstanceList(), db_list, FIELDS)
 
         self.stubs.Set(compute_api.API, 'get_all', fake_get_all)
 
@@ -889,7 +890,7 @@ class ServersControllerTest(ControllerTest):
             db_list = [fakes.stub_instance(100, uuid=server_uuid,
                                                 task_state=task_state)]
             return instance_obj._make_instance_list(
-                context, instance_obj.InstanceList(), db_list, FIELDS)
+                context, objects.InstanceList(), db_list, FIELDS)
 
         self.stubs.Set(compute_api.API, 'get_all', fake_get_all)
 
@@ -912,7 +913,7 @@ class ServersControllerTest(ControllerTest):
 
             db_list = [fakes.stub_instance(100, uuid=server_uuid)]
             return instance_obj._make_instance_list(
-                context, instance_obj.InstanceList(), db_list, FIELDS)
+                context, objects.InstanceList(), db_list, FIELDS)
 
         self.stubs.Set(compute_api.API, 'get_all', fake_get_all)
 
@@ -946,7 +947,7 @@ class ServersControllerTest(ControllerTest):
 
             db_list = [fakes.stub_instance(100, uuid=server_uuid)]
             return instance_obj._make_instance_list(
-                context, instance_obj.InstanceList(), db_list, FIELDS)
+                context, objects.InstanceList(), db_list, FIELDS)
 
         self.stubs.Set(compute_api.API, 'get_all', fake_get_all)
 
@@ -968,7 +969,7 @@ class ServersControllerTest(ControllerTest):
             self.assertEqual(search_opts['name'], 'whee.*')
             db_list = [fakes.stub_instance(100, uuid=server_uuid)]
             return instance_obj._make_instance_list(
-                context, instance_obj.InstanceList(), db_list, FIELDS)
+                context, objects.InstanceList(), db_list, FIELDS)
 
         self.stubs.Set(compute_api.API, 'get_all', fake_get_all)
 
@@ -992,7 +993,7 @@ class ServersControllerTest(ControllerTest):
             self.assertNotIn('deleted', search_opts)
             db_list = [fakes.stub_instance(100, uuid=server_uuid)]
             return instance_obj._make_instance_list(
-                context, instance_obj.InstanceList(), db_list, FIELDS)
+                context, objects.InstanceList(), db_list, FIELDS)
 
         self.stubs.Set(compute_api.API, 'get_all', fake_get_all)
 
@@ -1028,7 +1029,7 @@ class ServersControllerTest(ControllerTest):
             self.assertNotIn('unknown_option', search_opts)
             db_list = [fakes.stub_instance(100, uuid=server_uuid)]
             return instance_obj._make_instance_list(
-                context, instance_obj.InstanceList(), db_list, FIELDS)
+                context, objects.InstanceList(), db_list, FIELDS)
 
         self.stubs.Set(compute_api.API, 'get_all', fake_get_all)
 
@@ -1059,7 +1060,7 @@ class ServersControllerTest(ControllerTest):
             self.assertIn('unknown_option', search_opts)
             db_list = [fakes.stub_instance(100, uuid=server_uuid)]
             return instance_obj._make_instance_list(
-                context, instance_obj.InstanceList(), db_list, FIELDS)
+                context, objects.InstanceList(), db_list, FIELDS)
 
         self.stubs.Set(compute_api.API, 'get_all', fake_get_all)
 
@@ -1083,7 +1084,7 @@ class ServersControllerTest(ControllerTest):
             self.assertEqual(search_opts['ip'], '10\..*')
             db_list = [fakes.stub_instance(100, uuid=server_uuid)]
             return instance_obj._make_instance_list(
-                context, instance_obj.InstanceList(), db_list, FIELDS)
+                context, objects.InstanceList(), db_list, FIELDS)
 
         self.stubs.Set(compute_api.API, 'get_all', fake_get_all)
 
@@ -1107,7 +1108,7 @@ class ServersControllerTest(ControllerTest):
             self.assertEqual(search_opts['ip6'], 'ffff.*')
             db_list = [fakes.stub_instance(100, uuid=server_uuid)]
             return instance_obj._make_instance_list(
-                context, instance_obj.InstanceList(), db_list, FIELDS)
+                context, objects.InstanceList(), db_list, FIELDS)
 
         self.stubs.Set(compute_api.API, 'get_all', fake_get_all)
 
@@ -1426,7 +1427,7 @@ class ServersControllerDeleteTest(ControllerTest):
             fakes.fake_instance_get(vm_state=vm_states.ACTIVE,
                                     task_state=task_states.DELETING,
                                     host='fake_host'))
-        self.stubs.Set(instance_obj.Instance, 'save',
+        self.stubs.Set(objects.Instance, 'save',
                        lambda *args, **kwargs: None)
 
         @classmethod
@@ -1447,7 +1448,7 @@ class ServersControllerDeleteTest(ControllerTest):
             fakes.fake_instance_get(vm_state=vm_states.ACTIVE,
                                     task_state=task_states.DELETING,
                                     host='fake_host'))
-        self.stubs.Set(instance_obj.Instance, 'save',
+        self.stubs.Set(objects.Instance, 'save',
                        lambda *args, **kwargs: None)
 
         @classmethod
@@ -2645,6 +2646,21 @@ class ServersControllerCreateTest(test.TestCase):
         self.stubs.Set(compute_api.API, 'create', create)
         self._test_create_extra(params)
 
+    @mock.patch('nova.compute.api.API._get_bdm_image_metadata')
+    def test_create_instance_non_bootable_volume_fails(self, fake_bdm_meta):
+        self.ext_mgr.extensions = {'os-volumes': 'fake'}
+        bdm = [{
+            'id': 1,
+            'bootable': False,
+            'volume_id': self.volume_id,
+            'status': 'active',
+            'device_name': 'vda',
+        }]
+        params = {'block_device_mapping': bdm}
+        fake_bdm_meta.side_effect = exception.InvalidBDMVolumeNotBootable(id=1)
+        self.assertRaises(webob.exc.HTTPBadRequest,
+                          self._test_create_extra, params, no_image=True)
+
     def test_create_instance_with_device_name_not_string(self):
         self.ext_mgr.extensions = {'os-volumes': 'fake'}
         old_create = compute_api.API.create
@@ -2748,7 +2764,7 @@ class ServersControllerCreateTest(test.TestCase):
             self.validation_fail_instance_destroy_called = True
 
         self.stubs.Set(compute_api.API, '_validate_bdm', _validate_bdm)
-        self.stubs.Set(instance_obj.Instance, 'destroy', _instance_destroy)
+        self.stubs.Set(objects.Instance, 'destroy', _instance_destroy)
 
         for _ in xrange(len(bdm_exceptions)):
             params = {'block_device_mapping_v2': [bdm.copy()]}
@@ -3255,7 +3271,7 @@ class ServersControllerCreateTestWithMock(test.TestCase):
         self.flags(network_api_class='nova.network.neutronv2.api.API')
         network = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa'
         address = '10.0.2.3'
-        requested_networks = [{'uuid': network, 'fixed-ip': address}]
+        requested_networks = [{'uuid': network, 'fixed_ip': address}]
         params = {'networks': requested_networks}
         create_mock.side_effect = exception.FixedIpAlreadyInUse(
             address=address,

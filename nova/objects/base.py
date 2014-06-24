@@ -143,8 +143,6 @@ class NovaObjectMetaclass(type):
 # requested action and the result will be returned here.
 def remotable_classmethod(fn):
     """Decorator for remotable classmethods."""
-    fn.remotable = True
-
     @functools.wraps(fn)
     def wrapper(cls, context, *args, **kwargs):
         if NovaObject.indirection_api:
@@ -156,6 +154,10 @@ def remotable_classmethod(fn):
             if isinstance(result, NovaObject):
                 result._context = context
         return result
+
+    # NOTE(danms): Make this discoverable
+    wrapper.remotable = True
+    wrapper.original_fn = fn
     return classmethod(wrapper)
 
 
@@ -166,8 +168,6 @@ def remotable_classmethod(fn):
 # "orphaned" and remotable methods cannot be called.
 def remotable(fn):
     """Decorator for remotable object methods."""
-    fn.remotable = True
-
     @functools.wraps(fn)
     def wrapper(self, *args, **kwargs):
         ctxt = self._context
@@ -194,6 +194,9 @@ def remotable(fn):
             return result
         else:
             return fn(self, ctxt, *args, **kwargs)
+
+    wrapper.remotable = True
+    wrapper.original_fn = fn
     return wrapper
 
 
@@ -501,6 +504,12 @@ class ObjectListBase(object):
     # we can support backleveling our contents based on the version
     # requested of the list object.
     child_versions = {}
+
+    def __init__(self, *args, **kwargs):
+        super(ObjectListBase, self).__init__(*args, **kwargs)
+        if 'objects' not in kwargs:
+            self.objects = []
+            self._changed_fields.discard('objects')
 
     def __iter__(self):
         """List iterator interface."""

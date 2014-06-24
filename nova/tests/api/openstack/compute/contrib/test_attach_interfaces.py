@@ -93,8 +93,8 @@ def fake_show_port(self, context, port_id, **kwargs):
 def fake_attach_interface(self, context, instance, network_id, port_id,
                           requested_ip='192.168.1.3'):
     if not network_id:
-    # if no network_id is given when add a port to an instance, use the
-    # first default network.
+        # if no network_id is given when add a port to an instance, use the
+        # first default network.
         network_id = fake_networks[0]
     if network_id == 'bad_id':
         raise exception.NetworkNotFound(network_id=network_id)
@@ -121,9 +121,9 @@ def fake_get_instance(self, *args, **kwargs):
 class InterfaceAttachTests(test.NoDBTestCase):
     def setUp(self):
         super(InterfaceAttachTests, self).setUp()
-        self.flags(neutron_auth_strategy=None)
-        self.flags(neutron_url='http://anyhost/')
-        self.flags(neutron_url_timeout=30)
+        self.flags(auth_strategy=None, group='neutron')
+        self.flags(url='http://anyhost/', group='neutron')
+        self.flags(url_timeout=30, group='neutron')
         self.stubs.Set(network_api.API, 'show_port', fake_show_port)
         self.stubs.Set(network_api.API, 'list_ports', fake_list_ports)
         self.stubs.Set(compute_api.API, 'get', fake_get_instance)
@@ -286,9 +286,9 @@ class InterfaceAttachTests(test.NoDBTestCase):
 class InterfaceAttachTestsWithMock(test.NoDBTestCase):
     def setUp(self):
         super(InterfaceAttachTestsWithMock, self).setUp()
-        self.flags(neutron_auth_strategy=None)
-        self.flags(neutron_url='http://anyhost/')
-        self.flags(neutron_url_timeout=30)
+        self.flags(auth_strategy=None, group='neutron')
+        self.flags(url='http://anyhost/', group='neutron')
+        self.flags(url_timeout=30, group='neutron')
         self.context = context.get_admin_context()
 
     @mock.patch.object(compute_api.API, 'get')

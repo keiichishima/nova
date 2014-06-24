@@ -53,8 +53,7 @@ opts = [
                help='A list of additional capabilities corresponding to '
                'flavor_extra_specs for this compute '
                'host to advertise. Valid entries are name=value, pairs '
-               'For example, "key1:val1, key2:val2"',
-               deprecated_name='instance_type_extra_specs'),
+               'For example, "key1:val1, key2:val2"'),
     cfg.StrOpt('driver',
                default='nova.virt.baremetal.pxe.PXE',
                help='Baremetal driver back-end (pxe or tilera)'),
@@ -116,8 +115,15 @@ class BareMetalDriver(driver.ComputeDriver):
         "supports_recreate": False,
         }
 
+    def _do_deprecation_warning(self):
+        LOG.warning(_('The baremetal driver is deprecated, untested, '
+                      'unmaintained and will be replaced by an Ironic '
+                      'driver in the future.'))
+
     def __init__(self, virtapi, read_only=False):
         super(BareMetalDriver, self).__init__(virtapi)
+
+        self._do_deprecation_warning()
 
         self.driver = importutils.import_object(
                 CONF.baremetal.driver, virtapi)

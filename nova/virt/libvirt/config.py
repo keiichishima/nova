@@ -24,7 +24,6 @@ helpers for populating up config object instances.
 """
 
 from nova import exception
-from nova.openstack.common.gettextutils import _
 from nova.openstack.common import log as logging
 from nova.openstack.common import units
 
@@ -68,7 +67,7 @@ class LibvirtConfigObject(object):
     def to_xml(self, pretty_print=True):
         root = self.format_dom()
         xml_str = etree.tostring(root, pretty_print=pretty_print)
-        LOG.debug(_("Generated XML %s "), (xml_str,))
+        LOG.debug("Generated XML %s ", (xml_str,))
         return xml_str
 
 
@@ -250,6 +249,15 @@ class LibvirtConfigCPUFeature(LibvirtConfigObject):
 
         return ft
 
+    def __eq__(self, obj):
+        return obj.name == self.name
+
+    def __ne__(self, obj):
+        return obj.name != self.name
+
+    def __hash__(self):
+        return hash(self.name)
+
 
 class LibvirtConfigCPU(LibvirtConfigObject):
 
@@ -265,7 +273,7 @@ class LibvirtConfigCPU(LibvirtConfigObject):
         self.cores = None
         self.threads = None
 
-        self.features = []
+        self.features = set()
 
     def parse_dom(self, xmldoc):
         super(LibvirtConfigCPU, self).parse_dom(xmldoc)
@@ -305,13 +313,14 @@ class LibvirtConfigCPU(LibvirtConfigObject):
             top.set("threads", str(self.threads))
             cpu.append(top)
 
-        for f in self.features:
+        # sorting the features to allow more predictable tests
+        for f in sorted(self.features, key=lambda x: x.name):
             cpu.append(f.format_dom())
 
         return cpu
 
     def add_feature(self, feat):
-        self.features.append(feat)
+        self.features.add(feat)
 
 
 class LibvirtConfigGuestCPUFeature(LibvirtConfigCPUFeature):
@@ -1298,7 +1307,7 @@ class LibvirtConfigGuestSnapshot(LibvirtConfigObject):
 
 
 class LibvirtConfigNodeDevice(LibvirtConfigObject):
-    """Libvirt Node Devices parser"""
+    """Libvirt Node Devices parser."""
 
     def __init__(self, **kwargs):
         super(LibvirtConfigNodeDevice, self).__init__(root_name="device",
@@ -1323,7 +1332,7 @@ class LibvirtConfigNodeDevice(LibvirtConfigObject):
 
 
 class LibvirtConfigNodeDevicePciCap(LibvirtConfigObject):
-    """Libvirt Node Devices pci capability parser"""
+    """Libvirt Node Devices pci capability parser."""
 
     def __init__(self, **kwargs):
         super(LibvirtConfigNodeDevicePciCap, self).__init__(

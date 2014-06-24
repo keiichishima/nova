@@ -112,20 +112,17 @@ class NWFilterFirewall(base_firewall.FirewallDriver):
         LOG.info(_('Ensuring static filters'), instance=instance)
         self._ensure_static_filters()
 
-        allow_dhcp = False
+        nodhcp_base_filter = self.get_base_filter_list(instance, False)
+        dhcp_base_filter = self.get_base_filter_list(instance, True)
+
         for vif in network_info:
-            if not vif['network'] or not vif['network']['subnets']:
-                continue
+            _base_filter = nodhcp_base_filter
             for subnet in vif['network']['subnets']:
                 if subnet.get_meta('dhcp_server'):
-                    allow_dhcp = True
+                    _base_filter = dhcp_base_filter
                     break
-
-        base_filter = self.get_base_filter_list(instance, allow_dhcp)
-
-        for vif in network_info:
             self._define_filter(self._get_instance_filter_xml(instance,
-                                                              base_filter,
+                                                              _base_filter,
                                                               vif))
 
     def _get_instance_filter_parameters(self, vif):
@@ -250,7 +247,7 @@ class NWFilterFirewall(base_firewall.FirewallDriver):
                     # This happens when the instance filter is still in
                     # use (ie. when the instance has not terminated properly)
                     raise
-                LOG.debug(_('The nwfilter(%s) is not found.'),
+                LOG.debug('The nwfilter(%s) is not found.',
                           instance_filter_name, instance=instance)
 
     @staticmethod
@@ -268,8 +265,8 @@ class NWFilterFirewall(base_firewall.FirewallDriver):
                 self._conn.nwfilterLookupByName(instance_filter_name)
             except libvirt.libvirtError:
                 name = instance['name']
-                LOG.debug(_('The nwfilter(%(instance_filter_name)s) for'
-                            '%(name)s is not found.'),
+                LOG.debug('The nwfilter(%(instance_filter_name)s) for'
+                          '%(name)s is not found.',
                           {'instance_filter_name': instance_filter_name,
                            'name': name},
                           instance=instance)
@@ -286,7 +283,7 @@ class IptablesFirewallDriver(base_firewall.IptablesFirewallDriver):
         """Set up provider rules and basic NWFilter."""
         self.nwfilter.setup_basic_filtering(instance, network_info)
         if not self.basically_filtered:
-            LOG.debug(_('iptables firewall: Setup Basic Filtering'),
+            LOG.debug('iptables firewall: Setup Basic Filtering',
                       instance=instance)
             self.refresh_provider_fw_rules()
             self.basically_filtered = True

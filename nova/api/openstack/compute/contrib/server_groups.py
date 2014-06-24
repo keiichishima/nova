@@ -23,7 +23,7 @@ from nova.api.openstack import extensions
 from nova.api.openstack import wsgi
 from nova.api.openstack import xmlutil
 import nova.exception
-from nova.objects import instance as instance_obj
+from nova import objects
 from nova.objects import instance_group as instance_group_obj
 from nova.openstack.common.gettextutils import _
 from nova import utils
@@ -143,7 +143,7 @@ class ServerGroupController(wsgi.Controller):
         if group.members:
             # Display the instances that are not deleted.
             filters = {'uuid': group.members, 'deleted': False}
-            instances = instance_obj.InstanceList.get_by_filters(
+            instances = objects.InstanceList.get_by_filters(
                 context, filters=filters)
             members = [instance.uuid for instance in instances]
         server_group['members'] = members
@@ -165,6 +165,11 @@ class ServerGroupController(wsgi.Controller):
                          if policy not in SUPPORTED_POLICIES]
         if not_supported:
             msg = _("Invalid policies: %s") % ', '.join(not_supported)
+            raise nova.exception.InvalidInput(reason=msg)
+
+        # Note(wingwj): It doesn't make sense to store duplicate policies.
+        if sorted(set(policies)) != sorted(policies):
+            msg = _("Duplicate policies configured!")
             raise nova.exception.InvalidInput(reason=msg)
 
     def _validate_input_body(self, body, entity_name):

@@ -61,7 +61,9 @@ class ComputeManagerUnitTestCase(test.NoDBTestCase):
         self.mox.StubOutWithMock(self.compute, '_instance_update')
         self.mox.StubOutWithMock(time, 'sleep')
 
-        instance = fake_instance.fake_db_instance(system_metadata={})
+        instance = fake_instance.fake_instance_obj(
+                       self.context, expected_attrs=['system_metadata'])
+
         is_vpn = 'fake-is-vpn'
         req_networks = 'fake-req-networks'
         macs = 'fake-macs'
@@ -324,7 +326,8 @@ class ComputeManagerUnitTestCase(test.NoDBTestCase):
         instance.obj_load_attr('system_metadata')
         objects.BlockDeviceMappingList.get_by_instance_uuid(
                 self.context, instance.uuid).AndReturn(bdms)
-        self.compute._delete_instance(self.context, instance, bdms)
+        self.compute._delete_instance(self.context, instance, bdms,
+                                      mox.IgnoreArg())
 
         self.mox.ReplayAll()
         self.compute._init_instance(self.context, instance)
@@ -497,7 +500,8 @@ class ComputeManagerUnitTestCase(test.NoDBTestCase):
         instance.obj_load_attr('system_metadata')
         objects.BlockDeviceMappingList.get_by_instance_uuid(
                 self.context, instance.uuid).AndReturn(bdms)
-        self.compute._delete_instance(self.context, instance, bdms)
+        self.compute._delete_instance(self.context, instance, bdms,
+                                      mox.IgnoreArg())
         self.mox.ReplayAll()
 
         self.compute._init_instance(self.context, instance)
@@ -1316,6 +1320,176 @@ class ComputeManagerUnitTestCase(test.NoDBTestCase):
             instance_save.assert_called_once_with(
                 expected_task_state=task_states.UNRESCUING)
 
+    @mock.patch.object(objects.InstanceActionEvent, 'event_start')
+    @mock.patch.object(objects.InstanceActionEvent,
+                       'event_finish_with_failure')
+    @mock.patch('nova.compute.manager.ComputeManager._get_power_state',
+                return_value=power_state.RUNNING)
+    @mock.patch.object(objects.Instance, 'save')
+    @mock.patch('nova.utils.generate_password', return_value='fake-pass')
+    def test_set_admin_password(self, gen_password_mock,
+                                instance_save_mock, power_state_mock,
+                                event_finish_mock, event_start_mock):
+        # Ensure instance can have its admin password set.
+        instance = fake_instance.fake_instance_obj(
+            self.context,
+            vm_state=vm_states.ACTIVE,
+            task_state=task_states.UPDATING_PASSWORD)
+
+        @mock.patch.object(self.context, 'elevated', return_value=self.context)
+        @mock.patch.object(self.compute.driver, 'set_admin_password')
+        def do_test(driver_mock, elevated_mock):
+            # call the manager method
+            self.compute.set_admin_password(self.context, instance, None)
+            # make our assertions
+            self.assertEqual(vm_states.ACTIVE, instance.vm_state)
+            self.assertIsNone(instance.task_state)
+
+            power_state_mock.assert_called_once_with(self.context, instance)
+            driver_mock.assert_called_once_with(instance, 'fake-pass')
+            instance_save_mock.assert_called_once_with(
+                expected_task_state=task_states.UPDATING_PASSWORD)
+
+        do_test()
+
+    @mock.patch.object(objects.InstanceActionEvent, 'event_start')
+    @mock.patch.object(objects.InstanceActionEvent,
+                       'event_finish_with_failure')
+    @mock.patch('nova.compute.manager.ComputeManager._get_power_state',
+                return_value=power_state.NOSTATE)
+    @mock.patch.object(objects.Instance, 'save')
+    @mock.patch.object(compute_utils, 'add_instance_fault_from_exc')
+    def test_set_admin_password_bad_state(self, add_fault_mock,
+                                          instance_save_mock, power_state_mock,
+                                          event_finish_mock, event_start_mock):
+        # Test setting password while instance is rebuilding.
+        instance = fake_instance.fake_instance_obj(self.context)
+        with mock.patch.object(self.context, 'elevated',
+                               return_value=self.context):
+            # call the manager method
+            self.assertRaises(exception.InstancePasswordSetFailed,
+                              self.compute.set_admin_password,
+                              self.context, instance, None)
+
+        # make our assertions
+        power_state_mock.assert_called_once_with(self.context, instance)
+        instance_save_mock.assert_called_once_with(
+            expected_task_state=task_states.UPDATING_PASSWORD)
+        add_fault_mock.assert_called_once_with(
+            self.context, instance, mock.ANY, mock.ANY)
+
+    @mock.patch.object(objects.InstanceActionEvent, 'event_start')
+    @mock.patch.object(objects.InstanceActionEvent,
+                       'event_finish_with_failure')
+    @mock.patch('nova.utils.generate_password', return_value='fake-pass')
+    @mock.patch('nova.compute.manager.ComputeManager._get_power_state',
+                return_value=power_state.RUNNING)
+    @mock.patch('nova.compute.manager.ComputeManager._instance_update')
+    @mock.patch.object(objects.Instance, 'save')
+    @mock.patch.object(compute_utils, 'add_instance_fault_from_exc')
+    def _do_test_set_admin_password_driver_error(self, exc,
+                                                 expected_vm_state,
+                                                 expected_task_state,
+                                                 expected_exception,
+                                                 add_fault_mock,
+                                                 instance_save_mock,
+                                                 update_mock,
+                                                 power_state_mock,
+                                                 gen_password_mock,
+                                                 event_finish_mock,
+                                                 event_start_mock):
+        # Ensure expected exception is raised if set_admin_password fails.
+        instance = fake_instance.fake_instance_obj(
+            self.context,
+            vm_state=vm_states.ACTIVE,
+            task_state=task_states.UPDATING_PASSWORD)
+
+        @mock.patch.object(self.context, 'elevated', return_value=self.context)
+        @mock.patch.object(self.compute.driver, 'set_admin_password',
+                           side_effect=exc)
+        def do_test(driver_mock, elevated_mock):
+            # error raised from the driver should not reveal internal
+            # information so a new error is raised
+            self.assertRaises(expected_exception,
+                              self.compute.set_admin_password,
+                              self.context,
+                              instance=instance,
+                              new_pass=None)
+
+            # NOTE(mriedem): Currently instance.save is only called for
+            # NotImplementedError so if that's not the expected_exception then
+            # we have to check update_mock.
+            if expected_exception == NotImplementedError:
+                instance_save_mock.assert_called_once_with(
+                    expected_task_state=task_states.UPDATING_PASSWORD)
+                self.assertEqual(expected_vm_state, instance.vm_state)
+                self.assertEqual(expected_task_state, instance.task_state)
+                # check revert_task_state decorator
+                update_mock.assert_called_once_with(
+                    self.context, instance.uuid,
+                    task_state=expected_task_state)
+            else:
+                self.assertFalse(instance_save_mock.called)
+                calls = [
+                    # _set_instance_error_state
+                    mock.call(self.context, instance.uuid,
+                              vm_state=expected_vm_state),
+                    # revert_task_state
+                    mock.call(self.context, instance.uuid,
+                              task_state=expected_task_state)
+                ]
+                update_mock.assert_has_calls(calls)
+
+            add_fault_mock.assert_called_once_with(
+                self.context, instance, mock.ANY, mock.ANY)
+
+        do_test()
+
+    def test_set_admin_password_driver_not_authorized(self):
+        # Ensure expected exception is raised if set_admin_password not
+        # authorized.
+        exc = exception.Forbidden('Internal error')
+        expected_exception = exception.InstancePasswordSetFailed
+        self._do_test_set_admin_password_driver_error(
+            exc, vm_states.ERROR, None, expected_exception)
+
+    def test_set_admin_password_driver_not_implemented(self):
+        # Ensure expected exception is raised if set_admin_password not
+        # implemented by driver.
+        exc = NotImplementedError()
+        expected_exception = NotImplementedError
+        self._do_test_set_admin_password_driver_error(
+            exc, vm_states.ACTIVE, None, expected_exception)
+
+    def test_init_host_with_partial_migration(self):
+        our_host = self.compute.host
+        instance_1 = objects.Instance(self.context)
+        instance_1.uuid = 'foo'
+        instance_1.task_state = task_states.MIGRATING
+        instance_1.host = 'not-' + our_host
+        instance_2 = objects.Instance(self.context)
+        instance_2.uuid = 'bar'
+        instance_2.task_state = None
+        instance_2.host = 'not-' + our_host
+
+        with contextlib.nested(
+            mock.patch.object(self.compute, '_get_instances_on_driver',
+                               return_value=[instance_1,
+                                             instance_2]),
+            mock.patch.object(self.compute, '_get_instance_nw_info',
+                               return_value=None),
+            mock.patch.object(self.compute, '_get_instance_block_device_info',
+                               return_value={}),
+            mock.patch.object(self.compute, '_is_instance_storage_shared',
+                               return_value=False),
+            mock.patch.object(self.compute.driver, 'destroy')
+        ) as (_get_instances_on_driver, _get_instance_nw_info,
+              _get_instance_block_device_info, _is_instance_storage_shared,
+              destroy):
+            self.compute._destroy_evacuated_instances(self.context)
+            destroy.assert_called_once_with(self.context, instance_2, None,
+                                            {}, True)
+
 
 class ComputeManagerBuildInstanceTestCase(test.NoDBTestCase):
     def setUp(self):
@@ -1834,6 +2008,30 @@ class ComputeManagerBuildInstanceTestCase(test.NoDBTestCase):
             _build_networks.assert_has_calls(
                     mock.call(self.context, self.instance,
                         self.requested_networks, self.security_groups))
+
+    def test_build_resources_with_network_info_obj_on_spawn_failure(self):
+        self.mox.StubOutWithMock(self.compute, '_cleanup_build_resources')
+        self.mox.StubOutWithMock(self.compute, '_build_networks_for_instance')
+        self.compute._build_networks_for_instance(self.context, self.instance,
+                self.requested_networks, self.security_groups).AndReturn(
+                        network_model.NetworkInfo())
+        self._build_resources_instance_update()
+        self.compute._cleanup_build_resources(self.context, self.instance,
+                self.block_device_mapping)
+        self.mox.ReplayAll()
+
+        test_exception = test.TestingException()
+
+        def fake_spawn():
+            raise test_exception
+
+        try:
+            with self.compute._build_resources(self.context, self.instance,
+                    self.requested_networks, self.security_groups,
+                    self.image, self.block_device_mapping):
+                fake_spawn()
+        except Exception as e:
+            self.assertEqual(test_exception, e)
 
     def test_build_resources_cleans_up_and_reraises_on_spawn_failure(self):
         self.mox.StubOutWithMock(self.compute, '_cleanup_build_resources')

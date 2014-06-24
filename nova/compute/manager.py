@@ -332,7 +332,7 @@ def wrap_instance_event(function):
 
         event_name = 'compute_{0}'.format(function.func_name)
         with compute_utils.EventReporter(context, event_name, instance_uuid):
-            function(self, context, *args, **kwargs)
+            return function(self, context, *args, **kwargs)
 
     return decorated_function
 
@@ -561,7 +561,7 @@ class ComputeVirtAPI(virtapi.VirtAPI):
 class ComputeManager(manager.Manager):
     """Manages the running instances from creation to destruction."""
 
-    target = messaging.Target(version='3.27')
+    target = messaging.Target(version='3.29')
 
     def __init__(self, compute_driver=None, *args, **kwargs):
         """Load configuration options and connect to the hypervisor."""
@@ -609,17 +609,21 @@ class ComputeManager(manager.Manager):
             self._resource_tracker_dict[nodename] = rt
         return rt
 
+    def _update_resource_tracker(self, context, instance):
+        """Let the resource tracker know that an instance has changed state."""
+
+        if (instance['host'] == self.host and
+                self.driver.node_is_available(instance['node'])):
+            rt = self._get_resource_tracker(instance.get('node'))
+            rt.update_usage(context, instance)
+
     def _instance_update(self, context, instance_uuid, **kwargs):
         """Update an instance in the database using kwargs as value."""
 
         instance_ref = self.conductor_api.instance_update(context,
                                                           instance_uuid,
                                                           **kwargs)
-        if (instance_ref['host'] == self.host and
-                self.driver.node_is_available(instance_ref['node'])):
-            rt = self._get_resource_tracker(instance_ref.get('node'))
-            rt.update_usage(context, instance_ref)
-
+        self._update_resource_tracker(context, instance_ref)
         return instance_ref
 
     def _set_instance_error_state(self, context, instance_uuid):
@@ -676,13 +680,24 @@ class ComputeManager(manager.Manager):
         While nova-compute was down, the instances running on it could be
         evacuated to another host. Check that the instances reported
         by the driver are still associated with this host.  If they are
-        not, destroy them.
+        not, destroy them, with the exception of instances which are in
+        the MIGRATING state.
         """
         our_host = self.host
         filters = {'deleted': False}
         local_instances = self._get_instances_on_driver(context, filters)
         for instance in local_instances:
             if instance.host != our_host:
+                if instance.task_state in [task_states.MIGRATING]:
+                    LOG.debug('Will not delete instance as its host ('
+                              '%(instance_host)s) is not equal to our '
+                              'host (%(our_host)s) but its state is '
+                              '(%(task_state)s)',
+                              {'instance_host': instance.host,
+                               'our_host': our_host,
+                               'task_state': instance.task_state},
+                              instance=instance)
+                    continue
                 LOG.info(_('Deleting instance as its host ('
                            '%(instance_host)s) is not equal to our '
                            'host (%(our_host)s).'),
@@ -716,8 +731,7 @@ class ComputeManager(manager.Manager):
             if data:
                 shared_storage = (self.compute_rpcapi.
                                   check_instance_shared_storage(context,
-                                  obj_base.obj_to_primitive(instance),
-                                  data))
+                                  instance, data))
         except NotImplementedError:
             LOG.warning(_('Hypervisor driver does not support '
                           'instance shared storage check, '
@@ -793,8 +807,7 @@ class ComputeManager(manager.Manager):
                 # we don't want that an exception blocks the init_host
                 msg = _('Failed to complete a deletion')
                 LOG.exception(msg, instance=instance)
-            finally:
-                return
+            return
 
         if (instance.vm_state == vm_states.BUILDING or
             instance.task_state in [task_states.SCHEDULING,
@@ -846,8 +859,7 @@ class ComputeManager(manager.Manager):
                 msg = _('Failed to complete a deletion')
                 LOG.exception(msg, instance=instance)
                 self._set_instance_error_state(context, instance['uuid'])
-            finally:
-                return
+            return
 
         try_reboot, reboot_type = self._retry_reboot(context, instance)
         current_power_state = self._get_power_state(context, instance)
@@ -887,8 +899,7 @@ class ComputeManager(manager.Manager):
                 # we don't want that an exception blocks the init_host
                 msg = _('Failed to stop instance')
                 LOG.exception(msg, instance=instance)
-            finally:
-                return
+            return
 
         if instance.task_state == task_states.POWERING_ON:
             try:
@@ -900,8 +911,7 @@ class ComputeManager(manager.Manager):
                 # we don't want that an exception blocks the init_host
                 msg = _('Failed to start instance')
                 LOG.exception(msg, instance=instance)
-            finally:
-                return
+            return
 
         net_info = compute_utils.get_nw_info_for_instance(instance)
         try:
@@ -1468,7 +1478,8 @@ class ComputeManager(manager.Manager):
 
         if exc_info:
             # stringify to avoid circular ref problem in json serialization:
-            retry['exc'] = traceback.format_exception(*exc_info)
+            retry['exc'] = traceback.format_exception_only(exc_info[0],
+                                    exc_info[1])
 
         scheduler_method(context, *method_args)
         return True
@@ -1532,11 +1543,9 @@ class ComputeManager(manager.Manager):
                         dhcp_options=dhcp_options)
                 LOG.debug('Instance network_info: |%s|', nwinfo,
                           instance=instance)
-                # NOTE(alaski): This can be done more cleanly once we're sure
-                # we'll receive an object.
-                sys_meta = utils.metadata_to_dict(instance['system_metadata'])
+                sys_meta = instance.system_metadata
                 sys_meta['network_allocated'] = 'True'
-                self._instance_update(context, instance['uuid'],
+                self._instance_update(context, instance.uuid,
                         system_metadata=sys_meta)
                 return nwinfo
             except Exception:
@@ -1603,11 +1612,12 @@ class ComputeManager(manager.Manager):
         # NOTE(comstud): Since we're allocating networks asynchronously,
         # this task state has little meaning, as we won't be in this
         # state for very long.
-        instance = self._instance_update(context, instance['uuid'],
-                                         vm_state=vm_states.BUILDING,
-                                         task_state=task_states.NETWORKING,
-                                         expected_task_state=[None])
-        is_vpn = pipelib.is_vpn_image(instance['image_ref'])
+        instance.vm_state = vm_states.BUILDING
+        instance.task_state = task_states.NETWORKING
+        instance.save(expected_task_state=[None])
+        self._update_resource_tracker(context, instance)
+
+        is_vpn = pipelib.is_vpn_image(instance.image_ref)
         return network_model.NetworkInfoAsyncWrapper(
                 self._allocate_network_async, context, instance,
                 requested_networks, macs, security_groups, is_vpn,
@@ -2267,6 +2277,7 @@ class ComputeManager(manager.Manager):
                                 system_meta)
 
     @wrap_exception()
+    @reverts_task_state
     @wrap_instance_event
     @wrap_instance_fault
     def terminate_instance(self, context, instance, bdms, reservations):
@@ -2713,6 +2724,13 @@ class ComputeManager(manager.Manager):
 
         self._notify_about_instance_usage(context, instance, "reboot.end")
 
+    @delete_image_on_error
+    def _do_snapshot_instance(self, context, image_id, instance, rotation):
+        if rotation < 0:
+            raise exception.RotationRequiredForBackup()
+        self._snapshot_instance(context, image_id, instance,
+                                task_states.IMAGE_BACKUP)
+
     @wrap_exception()
     @reverts_task_state
     @wrap_instance_fault
@@ -2723,10 +2741,7 @@ class ComputeManager(manager.Manager):
         :param backup_type: daily | weekly
         :param rotation: int representing how many backups to keep around
         """
-        if rotation < 0:
-            raise exception.RotationRequiredForBackup()
-        self._snapshot_instance(context, image_id, instance,
-                                task_states.IMAGE_BACKUP)
+        self._do_snapshot_instance(context, image_id, instance, rotation)
         self._rotate_backups(context, instance, backup_type, rotation)
 
     @wrap_exception()
@@ -2879,6 +2894,10 @@ class ComputeManager(manager.Manager):
 
         This is generally only called by API password resets after an
         image has been built.
+
+        @param context: Nova auth context.
+        @param instance: Nova instance object.
+        @param new_pass: The admin password for the instance.
         """
 
         context = context.elevated()
@@ -2893,40 +2912,39 @@ class ComputeManager(manager.Manager):
             instance.task_state = None
             instance.save(expected_task_state=task_states.UPDATING_PASSWORD)
             _msg = _('Failed to set admin password. Instance %s is not'
-                     ' running') % instance["uuid"]
+                     ' running') % instance.uuid
             raise exception.InstancePasswordSetFailed(
-                instance=instance['uuid'], reason=_msg)
-        else:
-            try:
-                self.driver.set_admin_password(instance, new_pass)
-                LOG.audit(_("Root password set"), instance=instance)
-                instance.task_state = None
-                instance.save(
-                    expected_task_state=task_states.UPDATING_PASSWORD)
-            except NotImplementedError:
-                _msg = _('set_admin_password is not implemented '
-                         'by this driver or guest instance.')
-                LOG.warn(_msg, instance=instance)
-                instance.task_state = None
-                instance.save(
-                    expected_task_state=task_states.UPDATING_PASSWORD)
-                raise NotImplementedError(_msg)
-            except exception.UnexpectedTaskStateError:
-                # interrupted by another (most likely delete) task
-                # do not retry
-                raise
-            except Exception as e:
-                # Catch all here because this could be anything.
-                LOG.exception(_('set_admin_password failed: %s') % e,
-                              instance=instance)
-                self._set_instance_error_state(context,
-                                               instance['uuid'])
-                # We create a new exception here so that we won't
-                # potentially reveal password information to the
-                # API caller.  The real exception is logged above
-                _msg = _('error setting admin password')
-                raise exception.InstancePasswordSetFailed(
-                    instance=instance['uuid'], reason=_msg)
+                instance=instance.uuid, reason=_msg)
+
+        try:
+            self.driver.set_admin_password(instance, new_pass)
+            LOG.audit(_("Root password set"), instance=instance)
+            instance.task_state = None
+            instance.save(
+                expected_task_state=task_states.UPDATING_PASSWORD)
+        except NotImplementedError:
+            _msg = _('set_admin_password is not implemented '
+                     'by this driver or guest instance.')
+            LOG.warn(_msg, instance=instance)
+            instance.task_state = None
+            instance.save(
+                expected_task_state=task_states.UPDATING_PASSWORD)
+            raise NotImplementedError(_msg)
+        except exception.UnexpectedTaskStateError:
+            # interrupted by another (most likely delete) task
+            # do not retry
+            raise
+        except Exception as e:
+            # Catch all here because this could be anything.
+            LOG.exception(_('set_admin_password failed: %s') % e,
+                          instance=instance)
+            self._set_instance_error_state(context, instance.uuid)
+            # We create a new exception here so that we won't
+            # potentially reveal password information to the
+            # API caller.  The real exception is logged above
+            _msg = _('error setting admin password')
+            raise exception.InstancePasswordSetFailed(
+                instance=instance.uuid, reason=_msg)
 
     @wrap_exception()
     @reverts_task_state
@@ -3977,14 +3995,13 @@ class ComputeManager(manager.Manager):
         network_info = self._get_instance_nw_info(context, instance)
         self._inject_network_info(context, instance, network_info)
 
+    @object_compat
     @messaging.expected_exceptions(NotImplementedError,
                                    exception.InstanceNotFound)
     @wrap_exception()
     @wrap_instance_fault
     def get_console_output(self, context, instance, tail_length):
         """Send the console output for the given instance."""
-        instance = objects.Instance._from_db_object(
-            context, objects.Instance(), instance)
         context = context.elevated()
         LOG.audit(_("Get console output"), context=context,
                   instance=instance)

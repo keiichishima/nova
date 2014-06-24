@@ -90,7 +90,7 @@ class VolumeOps(object):
         return (sr_ref, sr_uuid)
 
     def _connect_hypervisor_to_volume(self, sr_ref, connection_data):
-        LOG.debug(_("Connect volume to hypervisor: %s"), connection_data)
+        LOG.debug("Connect volume to hypervisor: %s", connection_data)
         if 'vdi_uuid' in connection_data:
             vdi_ref = volume_utils.introduce_vdi(
                     self._session, sr_ref,
@@ -120,7 +120,7 @@ class VolumeOps(object):
             # NOTE(johngarbutt) can only call VBD.plug on a running vm
             running = not vm_utils.is_vm_shutdown(self._session, vm_ref)
             if running:
-                LOG.debug(_("Plugging VBD: %s") % vbd_ref)
+                LOG.debug("Plugging VBD: %s", vbd_ref)
                 self._session.VBD.plug(vbd_ref, vm_ref)
 
         LOG.info(_('Dev %(dev_number)s attached to'
@@ -129,11 +129,15 @@ class VolumeOps(object):
 
     def detach_volume(self, connection_info, instance_name, mountpoint):
         """Detach volume storage to VM instance."""
-        LOG.debug(_("Detach_volume: %(instance_name)s, %(mountpoint)s"),
+        LOG.debug("Detach_volume: %(instance_name)s, %(mountpoint)s",
                   {'instance_name': instance_name, 'mountpoint': mountpoint})
 
         vm_ref = vm_utils.vm_ref_or_raise(self._session, instance_name)
-        vbd_ref = self._find_vbd(vm_ref, mountpoint)
+
+        device_number = volume_utils.get_device_number(mountpoint)
+        vbd_ref = volume_utils.find_vbd_by_number(self._session, vm_ref,
+                                                  device_number)
+
         if vbd_ref is None:
             # NOTE(sirp): If we don't find the VBD then it must have been
             # detached previously.
@@ -145,14 +149,6 @@ class VolumeOps(object):
                        ' %(instance_name)s'),
                      {'instance_name': instance_name,
                       'mountpoint': mountpoint})
-
-    def _find_vbd(self, vm_ref, mountpoint):
-        device_number = volume_utils.get_device_number(mountpoint)
-        try:
-            return vm_utils.find_vbd_by_number(
-                    self._session, vm_ref, device_number)
-        except exception.StorageError:
-            return
 
     def _detach_vbds_and_srs(self, vm_ref, vbd_refs):
         is_vm_shutdown = vm_utils.is_vm_shutdown(self._session, vm_ref)

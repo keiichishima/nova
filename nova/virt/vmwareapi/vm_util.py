@@ -467,16 +467,6 @@ def get_vmdk_create_spec(client_factory, size_in_kb, adapter_type="lsiLogic",
     return create_vmdk_spec
 
 
-def get_rdm_create_spec(client_factory, device, adapter_type="lsiLogic",
-                        disk_type="rdmp"):
-    """Builds the RDM virtual disk create spec."""
-    create_vmdk_spec = client_factory.create('ns0:DeviceBackedVirtualDiskSpec')
-    create_vmdk_spec.adapterType = get_vmdk_adapter_type(adapter_type)
-    create_vmdk_spec.diskType = disk_type
-    create_vmdk_spec.device = device
-    return create_vmdk_spec
-
-
 def create_virtual_cdrom_spec(client_factory,
                               datastore,
                               controller_key,
@@ -608,38 +598,6 @@ def relocate_vm_spec(client_factory, datastore=None, host=None,
     if host:
         rel_spec.host = host
     return rel_spec
-
-
-def get_dummy_vm_create_spec(client_factory, name, data_store_name):
-    """Builds the dummy VM create spec."""
-    config_spec = client_factory.create('ns0:VirtualMachineConfigSpec')
-
-    config_spec.name = name
-    config_spec.guestId = "otherGuest"
-
-    vm_file_info = client_factory.create('ns0:VirtualMachineFileInfo')
-    vm_file_info.vmPathName = "[" + data_store_name + "]"
-    config_spec.files = vm_file_info
-
-    tools_info = client_factory.create('ns0:ToolsConfigInfo')
-    tools_info.afterPowerOn = True
-    tools_info.afterResume = True
-    tools_info.beforeGuestStandby = True
-    tools_info.beforeGuestShutdown = True
-    tools_info.beforeGuestReboot = True
-
-    config_spec.tools = tools_info
-    config_spec.numCPUs = 1
-    config_spec.memoryMB = 4
-
-    controller_key = -101
-    controller_spec = create_controller_spec(client_factory, controller_key)
-    disk_spec = create_virtual_disk_spec(client_factory, 1024, controller_key)
-
-    device_config_spec = [controller_spec, disk_spec]
-
-    config_spec.deviceChange = device_config_spec
-    return config_spec
 
 
 def get_machine_id_change_spec(client_factory, machine_id_str):
@@ -1016,14 +974,6 @@ def get_stats_from_cluster(session, cluster):
     return stats
 
 
-def get_cluster_ref_from_name(session, cluster_name):
-    """Get reference to the cluster with the name specified."""
-    cls = session._call_method(vim_util, "get_objects",
-                               "ClusterComputeResource", ["name"])
-    return _get_object_from_results(session, cls, cluster_name,
-                                    _get_object_for_value)
-
-
 def get_host_ref(session, cluster=None):
     """Get reference to a host within the cluster specified."""
     if cluster is None:
@@ -1382,13 +1332,13 @@ def get_vmdk_adapter_type(adapter_type):
 
 def create_vm(session, instance, vm_folder, config_spec, res_pool_ref):
     """Create VM on ESX host."""
-    LOG.debug(_("Creating VM on the ESX host"), instance=instance)
+    LOG.debug("Creating VM on the ESX host", instance=instance)
     vm_create_task = session._call_method(
         session._get_vim(),
         "CreateVM_Task", vm_folder,
         config=config_spec, pool=res_pool_ref)
     task_info = session._wait_for_task(vm_create_task)
-    LOG.debug(_("Created VM on the ESX host"), instance=instance)
+    LOG.debug("Created VM on the ESX host", instance=instance)
     return task_info.result
 
 
@@ -1473,15 +1423,15 @@ def clone_vmref_for_instance(session, instance, vm_ref, host_ref, ds_ref,
     clone_spec = clone_vm_spec(client_factory, rel_spec, config=config_spec)
 
     # Clone VM on ESX host
-    LOG.debug(_("Cloning VM for instance %s"), instance['uuid'],
-               instance=instance)
+    LOG.debug("Cloning VM for instance %s", instance['uuid'],
+              instance=instance)
     vm_clone_task = session._call_method(session._get_vim(), "CloneVM_Task",
                                          vm_ref, folder=vmfolder_ref,
                                          name=instance['uuid'],
                                          spec=clone_spec)
     session._wait_for_task(vm_clone_task)
-    LOG.debug(_("Cloned VM for instance %s"), instance['uuid'],
-               instance=instance)
+    LOG.debug("Cloned VM for instance %s", instance['uuid'],
+              instance=instance)
     # Invalidate the cache, so that it is refetched the next time
     vm_ref_cache_delete(instance['uuid'])
 
@@ -1503,13 +1453,13 @@ def disassociate_vmref_from_instance(session, instance, vm_ref=None,
     reconfig_spec = get_vm_extra_config_spec(client_factory, extra_opts)
     reconfig_spec.name = instance['uuid'] + suffix
     reconfig_spec.instanceUuid = ''
-    LOG.debug(_("Disassociating VM from instance %s"), instance['uuid'],
-               instance=instance)
+    LOG.debug("Disassociating VM from instance %s", instance['uuid'],
+              instance=instance)
     reconfig_task = session._call_method(session._get_vim(), "ReconfigVM_Task",
                                          vm_ref, spec=reconfig_spec)
     session._wait_for_task(reconfig_task)
-    LOG.debug(_("Disassociated VM from instance %s"), instance['uuid'],
-               instance=instance)
+    LOG.debug("Disassociated VM from instance %s", instance['uuid'],
+              instance=instance)
     # Invalidate the cache, so that it is refetched the next time
     vm_ref_cache_delete(instance['uuid'])
 
@@ -1535,13 +1485,13 @@ def associate_vmref_for_instance(session, instance, vm_ref=None,
     reconfig_spec = get_vm_extra_config_spec(client_factory, extra_opts)
     reconfig_spec.name = instance['uuid']
     reconfig_spec.instanceUuid = instance['uuid']
-    LOG.debug(_("Associating VM to instance %s"), instance['uuid'],
-               instance=instance)
+    LOG.debug("Associating VM to instance %s", instance['uuid'],
+              instance=instance)
     reconfig_task = session._call_method(session._get_vim(), "ReconfigVM_Task",
                                          vm_ref, spec=reconfig_spec)
     session._wait_for_task(reconfig_task)
-    LOG.debug(_("Associated VM to instance %s"), instance['uuid'],
-               instance=instance)
+    LOG.debug("Associated VM to instance %s", instance['uuid'],
+              instance=instance)
     # Invalidate the cache, so that it is refetched the next time
     vm_ref_cache_delete(instance['uuid'])
 

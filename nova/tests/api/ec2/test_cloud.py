@@ -47,7 +47,8 @@ from nova.network import api as network_api
 from nova.network import base_api as base_network_api
 from nova.network import model
 from nova.network import neutronv2
-from nova.objects import instance as instance_obj
+from nova import objects
+from nova.objects import base as obj_base
 from nova.objects import instance_info_cache as instance_info_cache_obj
 from nova.objects import security_group as security_group_obj
 from nova.openstack.common import log as logging
@@ -124,7 +125,7 @@ def get_instances_with_cached_ips(orig_func, get_floating,
     else:
         info_cache = {'network_info': get_fake_cache(get_floating)}
 
-    if isinstance(instances, (list, instance_obj.InstanceList)):
+    if isinstance(instances, (list, obj_base.ObjectListBase)):
         for instance in instances:
             instance['info_cache'] = info_cache
     else:
@@ -1379,7 +1380,7 @@ class CloudTestCase(test.TestCase):
     def test_describe_instances_booting_from_a_volume(self):
         sys_meta = flavors.save_flavor_info(
             {}, flavors.get_flavor(1))
-        inst = instance_obj.Instance()
+        inst = objects.Instance(self.context)
         inst.reservation_id = 'a'
         inst.image_ref = ''
         inst.root_device_name = '/dev/sdh'
@@ -1387,7 +1388,7 @@ class CloudTestCase(test.TestCase):
         inst.vm_state = vm_states.ACTIVE
         inst.host = 'host1'
         inst.system_metadata = sys_meta
-        inst.create(self.context)
+        inst.create()
         result = self.cloud.describe_instances(self.context)
         result = result['reservationSet'][0]
         instance = result['instancesSet'][0]
@@ -2665,7 +2666,7 @@ class CloudTestCase(test.TestCase):
                 security_group_obj.SecurityGroup(name='fake0'))
             secgroups.objects.append(
                 security_group_obj.SecurityGroup(name='fake1'))
-            instance = instance_obj.Instance()
+            instance = objects.Instance(ctxt)
             instance.id = 0
             instance.uuid = 'e5fe5518-0288-4fa3-b0c4-c79764101b85'
             instance.root_device_name = '/dev/sdh'
@@ -2680,12 +2681,20 @@ class CloudTestCase(test.TestCase):
             return instance
         self.stubs.Set(self.cloud.compute_api, 'get', fake_get)
 
-        def fake_get_instance_uuid_by_ec2_id(ctxt, int_id):
+        def fake_ec2_instance_get_by_id(ctxt, int_id):
             if int_id == 305419896:
-                return 'e5fe5518-0288-4fa3-b0c4-c79764101b85'
+                fake_map = {
+                    'created_at': None,
+                    'updated_at': None,
+                    'deleted_at': None,
+                    'deleted': 0,
+                    'id': 305419896,
+                    'uuid': 'e5fe5518-0288-4fa3-b0c4-c79764101b85',
+                }
+                return fake_map
             raise exception.InstanceNotFound(instance_id=int_id)
-        self.stubs.Set(db, 'get_instance_uuid_by_ec2_id',
-                        fake_get_instance_uuid_by_ec2_id)
+        self.stubs.Set(db, 'ec2_instance_get_by_id',
+                        fake_ec2_instance_get_by_id)
 
         get_attribute = functools.partial(
             self.cloud.describe_instance_attribute,
