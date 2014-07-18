@@ -16,6 +16,7 @@
 # under the License.
 
 import contextlib
+
 import fixtures
 import mock
 import mox
@@ -32,10 +33,7 @@ from nova.network import floating_ips
 from nova.network import linux_net
 from nova.network import manager as network_manager
 from nova.network import model as net_model
-from nova.objects import fixed_ip as fixed_ip_obj
-from nova.objects import floating_ip as floating_ip_obj
-from nova.objects import instance as instance_obj
-from nova.objects import network as network_obj
+from nova import objects
 from nova.objects import quotas as quotas_obj
 from nova.objects import virtual_interface as vif_obj
 from nova.openstack.common.db import exception as db_exc
@@ -643,7 +641,7 @@ class FlatNetworkTestCase(test.TestCase):
     @mock.patch('nova.objects.quotas.ids_from_instance')
     def test_allocate_calculates_quota_auth(self, util_method, reserve,
                                             get_by_uuid):
-        inst = instance_obj.Instance()
+        inst = objects.Instance()
         inst['uuid'] = 'nosuch'
         get_by_uuid.return_value = inst
         reserve.side_effect = exception.OverQuota(overs='testing')
@@ -658,9 +656,9 @@ class FlatNetworkTestCase(test.TestCase):
     @mock.patch('nova.objects.quotas.ids_from_instance')
     def test_deallocate_calculates_quota_auth(self, util_method, reserve,
                                               get_by_address):
-        inst = instance_obj.Instance(uuid='fake-uuid')
-        fip = fixed_ip_obj.FixedIP(instance_uuid='fake-uuid',
-                                   virtual_interface_id=1)
+        inst = objects.Instance(uuid='fake-uuid')
+        fip = objects.FixedIP(instance_uuid='fake-uuid',
+                              virtual_interface_id=1)
         get_by_address.return_value = fip
         util_method.return_value = ('foo', 'bar')
         # This will fail right after the reserve call when it tries
@@ -675,7 +673,7 @@ class FlatNetworkTestCase(test.TestCase):
     def test_allocate_fixed_ip_passes_string_address(self, mock_associate,
                                                      mock_get):
         mock_associate.side_effect = test.TestingException
-        instance = instance_obj.Instance(context=self.context)
+        instance = objects.Instance(context=self.context)
         instance.create()
         mock_get.return_value = instance
         self.assertRaises(test.TestingException,
@@ -702,12 +700,12 @@ class FlatNetworkTestCase(test.TestCase):
                                        mock_instance_get):
         address = netaddr.IPAddress('1.2.3.4')
 
-        fip = fixed_ip_obj.FixedIP(instance_uuid='fake-uuid',
-                                   address=address,
-                                   virtual_interface_id=1)
+        fip = objects.FixedIP(instance_uuid='fake-uuid',
+                              address=address,
+                              virtual_interface_id=1)
         mock_fixedip_associate.return_value = fip
 
-        instance = instance_obj.Instance(context=self.context)
+        instance = objects.Instance(context=self.context)
         instance.create()
         mock_instance_get.return_value = instance
 
@@ -754,13 +752,13 @@ class FlatDHCPNetworkTestCase(test.TestCase):
                                             floating_get_by_host,
                                             fixed_get_by_id):
         def get_by_id(context, fixed_ip_id, **kwargs):
-            net = network_obj.Network(bridge='testbridge',
+            net = objects.Network(bridge='testbridge',
                                       cidr='192.168.1.0/24')
             if fixed_ip_id == 1:
-                return fixed_ip_obj.FixedIP(address='192.168.1.4',
+                return objects.FixedIP(address='192.168.1.4',
                                             network=net)
             elif fixed_ip_id == 2:
-                return fixed_ip_obj.FixedIP(address='192.168.1.5',
+                return objects.FixedIP(address='192.168.1.5',
                                             network=net)
 
         def fake_apply():
@@ -768,8 +766,8 @@ class FlatDHCPNetworkTestCase(test.TestCase):
 
         fake_apply.count = 0
         ctxt = context.RequestContext('testuser', 'testproject', is_admin=True)
-        float1 = floating_ip_obj.FloatingIP(address='1.2.3.4', fixed_ip_id=1)
-        float2 = floating_ip_obj.FloatingIP(address='1.2.3.5', fixed_ip_id=2)
+        float1 = objects.FloatingIP(address='1.2.3.4', fixed_ip_id=1)
+        float2 = objects.FloatingIP(address='1.2.3.5', fixed_ip_id=2)
         float1._context = ctxt
         float2._context = ctxt
 
@@ -794,7 +792,7 @@ class VlanNetworkTestCase(test.TestCase):
                                                 is_admin=True)
 
     def test_quota_driver_type(self):
-        self.assertEqual(quotas_obj.QuotasNoOp,
+        self.assertEqual(objects.QuotasNoOp,
                          self.network.quotas_cls)
 
     def test_vpn_allocate_fixed_ip(self):
@@ -824,8 +822,8 @@ class VlanNetworkTestCase(test.TestCase):
                                                       uuid=FAKEUUID))
         self.mox.ReplayAll()
 
-        network = network_obj.Network._from_db_object(
-            self.context, network_obj.Network(),
+        network = objects.Network._from_db_object(
+            self.context, objects.Network(),
             dict(test_network.fake_network, **networks[0]))
         network.vpn_private_address = '192.168.0.2'
         self.network.allocate_fixed_ip(self.context, FAKEUUID, network,
@@ -872,8 +870,8 @@ class VlanNetworkTestCase(test.TestCase):
                                                       uuid=FAKEUUID))
         self.mox.ReplayAll()
 
-        network = network_obj.Network._from_db_object(
-            self.context, network_obj.Network(),
+        network = objects.Network._from_db_object(
+            self.context, objects.Network(),
             dict(test_network.fake_network, **networks[0]))
         network.vpn_private_address = '192.168.0.2'
         self.network.allocate_fixed_ip(self.context, FAKEUUID, network)
@@ -883,7 +881,7 @@ class VlanNetworkTestCase(test.TestCase):
     def test_allocate_fixed_ip_passes_string_address(self, mock_associate,
                                                      mock_get):
         mock_associate.side_effect = test.TestingException
-        instance = instance_obj.Instance(context=self.context)
+        instance = objects.Instance(context=self.context)
         instance.create()
         mock_get.return_value = instance
         self.assertRaises(test.TestingException,
@@ -901,7 +899,7 @@ class VlanNetworkTestCase(test.TestCase):
     def test_allocate_fixed_ip_passes_string_address_vpn(self, mock_associate,
                                                          mock_get):
         mock_associate.side_effect = test.TestingException
-        instance = instance_obj.Instance(context=self.context)
+        instance = objects.Instance(context=self.context)
         instance.create()
         mock_get.return_value = instance
         self.assertRaises(test.TestingException,
@@ -1058,37 +1056,37 @@ class VlanNetworkTestCase(test.TestCase):
                                       is_admin=False)
 
         # raises because floating_ip project_id is None
-        floating_ip = floating_ip_obj.FloatingIP(address='10.0.0.1',
-                                                 project_id=None)
+        floating_ip = objects.FloatingIP(address='10.0.0.1',
+                                         project_id=None)
         self.assertRaises(exception.Forbidden,
                           self.network._floating_ip_owned_by_project,
                           ctxt,
                           floating_ip)
 
         # raises because floating_ip project_id is not equal to ctxt project_id
-        floating_ip = floating_ip_obj.FloatingIP(
-            address='10.0.0.1', project_id=ctxt.project_id + '1')
+        floating_ip = objects.FloatingIP(address='10.0.0.1',
+                                         project_id=ctxt.project_id + '1')
         self.assertRaises(exception.Forbidden,
                           self.network._floating_ip_owned_by_project,
                           ctxt,
                           floating_ip)
 
         # does not raise (floating ip is owned by ctxt project)
-        floating_ip = floating_ip_obj.FloatingIP(address='10.0.0.1',
-                                                 project_id=ctxt.project_id)
+        floating_ip = objects.FloatingIP(address='10.0.0.1',
+                                         project_id=ctxt.project_id)
         self.network._floating_ip_owned_by_project(ctxt, floating_ip)
 
         ctxt = context.RequestContext(None, None,
                                       is_admin=True)
 
         # does not raise (ctxt is admin)
-        floating_ip = floating_ip_obj.FloatingIP(address='10.0.0.1',
-                                                 project_id=None)
+        floating_ip = objects.FloatingIP(address='10.0.0.1',
+                                         project_id=None)
         self.network._floating_ip_owned_by_project(ctxt, floating_ip)
 
         # does not raise (ctxt is admin)
-        floating_ip = floating_ip_obj.FloatingIP(address='10.0.0.1',
-                                                 project_id='testproject')
+        floating_ip = objects.FloatingIP(address='10.0.0.1',
+                                         project_id='testproject')
         self.network._floating_ip_owned_by_project(ctxt, floating_ip)
 
     def test_allocate_floating_ip(self):
@@ -1323,7 +1321,7 @@ class VlanNetworkTestCase(test.TestCase):
         self.network.l3driver.add_floating_ip(netaddr.IPAddress('1.2.3.5'),
                                               netaddr.IPAddress('1.2.3.4'),
                                               expected_arg,
-                                              mox.IsA(network_obj.Network))
+                                              mox.IsA(objects.Network))
         self.mox.ReplayAll()
         self.network.init_host_floating_ips()
         self.mox.UnsetStubs()
@@ -1659,8 +1657,8 @@ class VlanNetworkTestCase(test.TestCase):
                 {'project_id': 'project1'})
 
         elevated = context1.elevated()
-        fix_addr = fixed_ip_obj.FixedIP.associate_pool(elevated, 1,
-                                                       instance['uuid'])
+        fix_addr = objects.FixedIP.associate_pool(elevated, 1,
+                                                  instance['uuid'])
 
         def fake_refresh(instance_uuid):
             raise test.TestingException()
@@ -1703,13 +1701,13 @@ class VlanNetworkTestCase(test.TestCase):
                                             floating_get_by_host,
                                             fixed_get_by_id):
         def get_by_id(context, fixed_ip_id, **kwargs):
-            net = network_obj.Network(bridge='testbridge',
+            net = objects.Network(bridge='testbridge',
                                       cidr='192.168.1.0/24')
             if fixed_ip_id == 1:
-                return fixed_ip_obj.FixedIP(address='192.168.1.4',
+                return objects.FixedIP(address='192.168.1.4',
                                             network=net)
             elif fixed_ip_id == 2:
-                return fixed_ip_obj.FixedIP(address='192.168.1.5',
+                return objects.FixedIP(address='192.168.1.5',
                                             network=net)
 
         def fake_apply():
@@ -1717,8 +1715,8 @@ class VlanNetworkTestCase(test.TestCase):
 
         fake_apply.count = 0
         ctxt = context.RequestContext('testuser', 'testproject', is_admin=True)
-        float1 = floating_ip_obj.FloatingIP(address='1.2.3.4', fixed_ip_id=1)
-        float2 = floating_ip_obj.FloatingIP(address='1.2.3.5', fixed_ip_id=2)
+        float1 = objects.FloatingIP(address='1.2.3.4', fixed_ip_id=1)
+        float2 = objects.FloatingIP(address='1.2.3.5', fixed_ip_id=2)
         float1._context = ctxt
         float2._context = ctxt
 
@@ -1807,8 +1805,8 @@ class CommonNetworkTestCase(test.TestCase):
                                        network_id=123)]
 
         manager.deallocate_for_instance(
-            ctx, instance=instance_obj.Instance._from_db_object(self.context,
-                instance_obj.Instance(), instance_get.return_value))
+            ctx, instance=objects.Instance._from_db_object(self.context,
+                objects.Instance(), instance_get.return_value))
 
         self.assertEqual([
             (ctx, '1.2.3.4', 'fake-host')
@@ -2292,8 +2290,8 @@ class CommonNetworkTestCase(test.TestCase):
                        'vpn_public_address': '192.168.2.2',
                        'vpn_public_port': '22',
                        'vpn_private_address': '10.0.0.2'}
-        new_network_obj = network_obj.Network._from_db_object(
-            self.context, network_obj.Network(),
+        new_network_obj = objects.Network._from_db_object(
+            self.context, objects.Network(),
             dict(test_network.fake_network, **new_network))
 
         ctxt = context.get_admin_context()
@@ -2411,7 +2409,7 @@ class AllocateTestCase(test.TestCase):
         db.floating_ip_create(self.context,
                               {'address': address,
                                'pool': 'nova'})
-        inst = instance_obj.Instance()
+        inst = objects.Instance()
         inst.host = self.compute.host
         inst.display_name = HOST
         inst.instance_type_id = 1
@@ -2614,7 +2612,7 @@ class FloatingIPTestCase(test.TestCase):
     def test_deallocation_deleted_instance(self):
         self.stubs.Set(self.network, '_teardown_network_on_host',
                        lambda *args, **kwargs: None)
-        instance = instance_obj.Instance()
+        instance = objects.Instance()
         instance.project_id = self.project_id
         instance.deleted = True
         instance.create(self.context)
@@ -2634,7 +2632,7 @@ class FloatingIPTestCase(test.TestCase):
     def test_deallocation_duplicate_floating_ip(self):
         self.stubs.Set(self.network, '_teardown_network_on_host',
                        lambda *args, **kwargs: None)
-        instance = instance_obj.Instance()
+        instance = objects.Instance()
         instance.project_id = self.project_id
         instance.create(self.context)
         network = db.network_create_safe(self.context.elevated(), {
@@ -2688,7 +2686,7 @@ class FloatingIPTestCase(test.TestCase):
                                  fake_is_stale_floating_ip_address)
         self.stubs.Set(self.network.l3driver, 'remove_floating_ip',
                        fake_remove_floating_ip)
-        self.stubs.Set(self.network.l3driver, 'clean_conntrack',
+        self.stubs.Set(self.network.driver, 'clean_conntrack',
                        fake_clean_conntrack)
         self.mox.ReplayAll()
         addresses = ['172.24.4.23', '172.24.4.24', '172.24.4.25']

@@ -17,7 +17,6 @@ import datetime
 import functools
 import hashlib
 import importlib
-import multiprocessing
 import os
 import os.path
 import StringIO
@@ -308,20 +307,6 @@ class GenericUtilsTestCase(test.NoDBTestCase):
         value = hashlib.md5(base_str).hexdigest()
         self.assertEqual(
             value, utils.get_hash_str(base_str))
-
-    def test_cpu_count(self):
-        def fake_cpu_count():
-            return 8
-        self.stubs.Set(multiprocessing, 'cpu_count', fake_cpu_count)
-
-        self.assertEqual(8, utils.cpu_count())
-
-    def test_cpu_count_not_implemented_returns_1(self):
-        def fake_cpu_count():
-            raise NotImplementedError()
-        self.stubs.Set(multiprocessing, 'cpu_count', fake_cpu_count)
-
-        self.assertEqual(1, utils.cpu_count())
 
 
 class MonkeyPatchTestCase(test.NoDBTestCase):
@@ -977,3 +962,10 @@ class VersionTestCase(test.NoDBTestCase):
 
     def test_convert_version_to_tuple(self):
         self.assertEqual(utils.convert_version_to_tuple('6.7.0'), (6, 7, 0))
+
+
+class ConstantTimeCompareTestCase(test.NoDBTestCase):
+    def test_constant_time_compare(self):
+        self.assertTrue(utils.constant_time_compare("abcd1234", "abcd1234"))
+        self.assertFalse(utils.constant_time_compare("abcd1234", "a"))
+        self.assertFalse(utils.constant_time_compare("abcd1234", "ABCD234"))

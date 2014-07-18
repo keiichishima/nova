@@ -18,7 +18,6 @@
 The VMware API VM utility module to build SOAP object specs.
 """
 
-import collections
 import copy
 import functools
 
@@ -30,6 +29,8 @@ from nova.openstack.common.gettextutils import _
 from nova.openstack.common import log as logging
 from nova.openstack.common import units
 from nova import utils
+from nova.virt.vmwareapi import constants
+from nova.virt.vmwareapi import ds_util
 from nova.virt.vmwareapi import error_util
 from nova.virt.vmwareapi import vim_util
 
@@ -39,8 +40,6 @@ LOG = logging.getLogger(__name__)
 ALL_SUPPORTED_NETWORK_DEVICES = ['VirtualE1000', 'VirtualE1000e',
                                  'VirtualPCNet32', 'VirtualSriovEthernetCard',
                                  'VirtualVmxnet']
-DSRecord = collections.namedtuple(
-    'DSRecord', ['datastore', 'name', 'capacity', 'freespace'])
 
 # A cache for VM references. The key will be the VM name
 # and the value is the VM reference. The VM name is unique. This
@@ -95,7 +94,7 @@ VNC_CONFIG_KEY = 'config.extraConfig["RemoteDisplay.vnc.port"]'
 
 
 def get_vm_create_spec(client_factory, instance, name, data_store_name,
-                       vif_infos, os_type="otherGuest"):
+                       vif_infos, os_type=constants.DEFAULT_OS_TYPE):
     """Builds the VM Create spec."""
     config_spec = client_factory.create('ns0:VirtualMachineConfigSpec')
     config_spec.name = name
@@ -162,7 +161,8 @@ def get_vm_resize_spec(client_factory, instance):
     return resize_spec
 
 
-def create_controller_spec(client_factory, key, adapter_type="lsiLogic"):
+def create_controller_spec(client_factory, key,
+                           adapter_type=constants.DEFAULT_ADAPTER_TYPE):
     """Builds a Config Spec for the LSI or Bus Logic Controller's addition
     which acts as the controller for the virtual hard disk to be attached
     to the VM.
@@ -261,7 +261,7 @@ def create_network_spec(client_factory, vif_info):
 
 
 def get_vmdk_attach_config_spec(client_factory,
-                                disk_type="preallocated",
+                                disk_type=constants.DEFAULT_DISK_TYPE,
                                 file_path=None,
                                 disk_size=None,
                                 linked_clone=False,
@@ -359,9 +359,9 @@ def get_vmdk_path_and_adapter_type(hardware_devices, uuid=None):
                     if getattr(device.backing, 'eagerlyScrub', False):
                         disk_type = "eagerZeroedThick"
                     else:
-                        disk_type = "preallocated"
+                        disk_type = constants.DEFAULT_DISK_TYPE
         elif device.__class__.__name__ == "VirtualLsiLogicController":
-            adapter_type_dict[device.key] = "lsiLogic"
+            adapter_type_dict[device.key] = constants.DEFAULT_ADAPTER_TYPE
         elif device.__class__.__name__ == "VirtualBusLogicController":
             adapter_type_dict[device.key] = "busLogic"
         elif device.__class__.__name__ == "VirtualIDEController":
@@ -377,7 +377,7 @@ def get_vmdk_path_and_adapter_type(hardware_devices, uuid=None):
 def _find_controller_slot(controller_keys, taken, max_unit_number):
     for controller_key in controller_keys:
         for unit_number in range(max_unit_number):
-            if not unit_number in taken.get(controller_key, []):
+            if unit_number not in taken.get(controller_key, []):
                 return controller_key, unit_number
 
 
@@ -422,7 +422,8 @@ def allocate_controller_key_and_unit_number(client_factory, devices,
     if adapter_type == 'ide':
         ide_keys = [dev.key for dev in devices if _is_ide_controller(dev)]
         ret = _find_controller_slot(ide_keys, taken, 2)
-    elif adapter_type in ['lsiLogic', 'lsiLogicsas', 'busLogic']:
+    elif adapter_type in [constants.DEFAULT_ADAPTER_TYPE, 'lsiLogicsas',
+                          'busLogic']:
         scsi_keys = [dev.key for dev in devices if _is_scsi_controller(dev)]
         ret = _find_controller_slot(scsi_keys, taken, 16)
     if ret:
@@ -448,8 +449,9 @@ def get_rdm_disk(hardware_devices, uuid):
             return device
 
 
-def get_copy_virtual_disk_spec(client_factory, adapter_type="lsiLogic",
-                               disk_type="preallocated"):
+def get_copy_virtual_disk_spec(client_factory,
+                               adapter_type=constants.DEFAULT_ADAPTER_TYPE,
+                               disk_type=constants.DEFAULT_DISK_TYPE):
     """Builds the Virtual Disk copy spec."""
     dest_spec = client_factory.create('ns0:VirtualDiskSpec')
     dest_spec.adapterType = get_vmdk_adapter_type(adapter_type)
@@ -457,8 +459,9 @@ def get_copy_virtual_disk_spec(client_factory, adapter_type="lsiLogic",
     return dest_spec
 
 
-def get_vmdk_create_spec(client_factory, size_in_kb, adapter_type="lsiLogic",
-                         disk_type="preallocated"):
+def get_vmdk_create_spec(client_factory, size_in_kb,
+                         adapter_type=constants.DEFAULT_ADAPTER_TYPE,
+                         disk_type=constants.DEFAULT_DISK_TYPE):
     """Builds the virtual disk create spec."""
     create_vmdk_spec = client_factory.create('ns0:FileBackedVirtualDiskSpec')
     create_vmdk_spec.adapterType = get_vmdk_adapter_type(adapter_type)
@@ -501,7 +504,7 @@ def create_virtual_cdrom_spec(client_factory,
 
 
 def create_virtual_disk_spec(client_factory, controller_key,
-                             disk_type="preallocated",
+                             disk_type=constants.DEFAULT_DISK_TYPE,
                              file_path=None,
                              disk_size=None,
                              linked_clone=False,
@@ -684,13 +687,6 @@ def _get_allocated_vnc_ports(session):
         else:
             break
     return vnc_ports
-
-
-def search_datastore_spec(client_factory, file_name):
-    """Builds the datastore search spec."""
-    search_spec = client_factory.create('ns0:HostDatastoreBrowserSearchSpec')
-    search_spec.matchPattern = [file_name]
-    return search_spec
 
 
 def _get_token(results):
@@ -1038,20 +1034,20 @@ def _select_datastore(data_stores, best_match, datastore_regex=None):
         if ((ds_type == 'VMFS' or ds_type == 'NFS') and
                 propdict.get('summary.accessible')):
             if datastore_regex is None or datastore_regex.match(ds_name):
-                new_ds = DSRecord(
-                    datastore=obj_content.obj,
+                new_ds = ds_util.Datastore(
+                    ref=obj_content.obj,
                     name=ds_name,
                     capacity=propdict['summary.capacity'],
                     freespace=propdict['summary.freeSpace'])
                 # favor datastores with more free space
-                if new_ds.freespace > best_match.freespace:
+                if (best_match is None or
+                    new_ds.freespace > best_match.freespace):
                     best_match = new_ds
 
     return best_match
 
 
-def get_datastore_ref_and_name(session, cluster=None, host=None,
-                               datastore_regex=None):
+def get_datastore(session, cluster=None, host=None, datastore_regex=None):
     """Get the datastore list and choose the most preferable one."""
     if cluster is None and host is None:
         data_stores = session._call_method(vim_util, "get_objects",
@@ -1079,8 +1075,7 @@ def get_datastore_ref_and_name(session, cluster=None, host=None,
                                 ["summary.type", "summary.name",
                                  "summary.capacity", "summary.freeSpace",
                                  "summary.accessible"])
-    best_match = DSRecord(datastore=None, name=None,
-                          capacity=None, freespace=0)
+    best_match = None
     while data_stores:
         best_match = _select_datastore(data_stores, best_match,
                                        datastore_regex)
@@ -1090,7 +1085,7 @@ def get_datastore_ref_and_name(session, cluster=None, host=None,
         data_stores = session._call_method(vim_util,
                                            "continue_to_get_objects",
                                            token)
-    if best_match.datastore:
+    if best_match:
         return best_match
     if datastore_regex:
         raise exception.DatastoreNotFound(
@@ -1324,7 +1319,7 @@ def get_vmdk_adapter_type(adapter_type):
     types.
     """
     if adapter_type == "lsiLogicsas":
-        vmdk_adapter_type = "lsiLogic"
+        vmdk_adapter_type = constants.DEFAULT_ADAPTER_TYPE
     else:
         vmdk_adapter_type = adapter_type
     return vmdk_adapter_type
@@ -1403,6 +1398,14 @@ def copy_virtual_disk(session, dc_ref, source, dest, copy_spec=None):
               {'source': source, 'dest': dest})
 
 
+def reconfigure_vm(session, vm_ref, config_spec):
+    """Reconfigure a VM according to the config spec."""
+    reconfig_task = session._call_method(session._get_vim(),
+                                         "ReconfigVM_Task", vm_ref,
+                                         spec=config_spec)
+    session._wait_for_task(reconfig_task)
+
+
 def clone_vmref_for_instance(session, instance, vm_ref, host_ref, ds_ref,
                                 vmfolder_ref):
     """Clone VM and link the cloned VM to the instance.
@@ -1455,9 +1458,7 @@ def disassociate_vmref_from_instance(session, instance, vm_ref=None,
     reconfig_spec.instanceUuid = ''
     LOG.debug("Disassociating VM from instance %s", instance['uuid'],
               instance=instance)
-    reconfig_task = session._call_method(session._get_vim(), "ReconfigVM_Task",
-                                         vm_ref, spec=reconfig_spec)
-    session._wait_for_task(reconfig_task)
+    reconfigure_vm(session, vm_ref, reconfig_spec)
     LOG.debug("Disassociated VM from instance %s", instance['uuid'],
               instance=instance)
     # Invalidate the cache, so that it is refetched the next time
@@ -1487,9 +1488,7 @@ def associate_vmref_for_instance(session, instance, vm_ref=None,
     reconfig_spec.instanceUuid = instance['uuid']
     LOG.debug("Associating VM to instance %s", instance['uuid'],
               instance=instance)
-    reconfig_task = session._call_method(session._get_vim(), "ReconfigVM_Task",
-                                         vm_ref, spec=reconfig_spec)
-    session._wait_for_task(reconfig_task)
+    reconfigure_vm(session, vm_ref, reconfig_spec)
     LOG.debug("Associated VM to instance %s", instance['uuid'],
               instance=instance)
     # Invalidate the cache, so that it is refetched the next time

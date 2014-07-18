@@ -684,7 +684,12 @@ def compute_node_statistics(context):
                          func.sum(models.ComputeNode.running_vms),
                          func.sum(models.ComputeNode.disk_available_least),
                          base_model=models.ComputeNode,
-                         read_deleted="no").first()
+                         read_deleted="no").\
+                         filter(models.Service.disabled == False).\
+                         filter(
+                            models.Service.id ==
+                            models.ComputeNode.service_id).\
+                         first()
 
     # Build a dict of the info--making no assumptions about result
     fields = ('count', 'vcpus', 'memory_mb', 'local_gb', 'vcpus_used',
@@ -1667,6 +1672,7 @@ def _instance_data_get_for_user(context, project_id, user_id, session=None):
 
 
 @require_context
+@_retry_on_deadlock
 def instance_destroy(context, instance_uuid, constraint=None):
     session = get_session()
     with session.begin():
@@ -2606,12 +2612,10 @@ def network_get_all_by_uuids(context, network_uuids, project_only):
     #check if the result contains all the networks
     #we are looking for
     for network_uuid in network_uuids:
-        found = False
         for network in result:
             if network['uuid'] == network_uuid:
-                found = True
                 break
-        if not found:
+        else:
             if project_only:
                 raise exception.NetworkNotFoundForProject(
                       network_uuid=network_uuid, project_id=context.project_id)
@@ -4537,7 +4541,8 @@ def flavor_extra_specs_update_or_create(context, flavor_id, specs,
             # a concurrent transaction has been committed,
             # try again unless this was the last attempt
             if attempt == max_retries - 1:
-                raise
+                raise exception.FlavorExtraSpecUpdateCreateFailed(
+                                    id=flavor_id, retries=max_retries)
 
 
 ####################

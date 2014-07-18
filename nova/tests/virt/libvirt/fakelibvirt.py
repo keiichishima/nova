@@ -144,6 +144,10 @@ VIR_DOMAIN_SNAPSHOT_CREATE_REUSE_EXT = 32
 VIR_DOMAIN_SNAPSHOT_CREATE_QUIESCE = 64
 
 
+VIR_CONNECT_LIST_DOMAINS_ACTIVE = 1
+VIR_CONNECT_LIST_DOMAINS_INACTIVE = 2
+
+
 def _parse_disk_info(element):
     disk_info = {}
     disk_info['type'] = element.get('type', 'file')
@@ -435,6 +439,13 @@ class Domain(object):
                 error_code=VIR_ERR_INTERNAL_ERROR,
                 error_domain=VIR_FROM_QEMU)
 
+    def migrateToURI2(self, dconnuri, miguri, dxml, flags, dname, bandwidth):
+        raise make_libvirtError(
+                libvirtError,
+                "Migration always fails for fake libvirt!",
+                error_code=VIR_ERR_INTERNAL_ERROR,
+                error_domain=VIR_FROM_QEMU)
+
     def attachDevice(self, xml):
         disk_info = _parse_disk_info(etree.fromstring(xml))
         disk_info['_attached'] = True
@@ -678,6 +689,17 @@ class Connection(object):
                 'Domain not found: no domain with matching name "%s"' % name,
                 error_code=VIR_ERR_NO_DOMAIN,
                 error_domain=VIR_FROM_QEMU)
+
+    def listAllDomains(self, flags):
+        vms = []
+        for vm in self._vms:
+            if flags & VIR_CONNECT_LIST_DOMAINS_ACTIVE:
+                if vm.state != VIR_DOMAIN_SHUTOFF:
+                    vms.append(vm)
+            if flags & VIR_CONNECT_LIST_DOMAINS_INACTIVE:
+                if vm.state == VIR_DOMAIN_SHUTOFF:
+                    vms.append(vm)
+        return vms
 
     def _emit_lifecycle(self, dom, event, detail):
         if VIR_DOMAIN_EVENT_ID_LIFECYCLE not in self._event_callbacks:

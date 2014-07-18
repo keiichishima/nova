@@ -20,12 +20,12 @@ import base64
 import copy
 import datetime
 import functools
-import iso8601
 import os
 import string
 import tempfile
 
 import fixtures
+import iso8601
 import mock
 from oslo.config import cfg
 
@@ -49,8 +49,6 @@ from nova.network import model
 from nova.network import neutronv2
 from nova import objects
 from nova.objects import base as obj_base
-from nova.objects import instance_info_cache as instance_info_cache_obj
-from nova.objects import security_group as security_group_obj
 from nova.openstack.common import log as logging
 from nova.openstack.common import policy as common_policy
 from nova.openstack.common import timeutils
@@ -119,7 +117,7 @@ def get_instances_with_cached_ips(orig_func, get_floating,
     instances = orig_func(*args, **kwargs)
 
     if kwargs.get('want_objects', False):
-        info_cache = instance_info_cache_obj.InstanceInfoCache()
+        info_cache = objects.InstanceInfoCache()
         info_cache.network_info = get_fake_cache(get_floating)
         info_cache.obj_reset_changes()
     else:
@@ -1970,7 +1968,6 @@ class CloudTestCase(test.TestCase):
             return {'id': 'cedef40a-ed67-4d10-800e-17455edce175',
                     'name': 'fake_name',
                     'container_format': 'ami',
-                    'status': 'active',
                     'properties': {
                     'kernel_id': 'cedef40a-ed67-4d10-800e-17455edce175',
                     'ramdisk_id': 'cedef40a-ed67-4d10-800e-17455edce175',
@@ -1991,7 +1988,6 @@ class CloudTestCase(test.TestCase):
             return {'id': 'cedef40a-ed67-4d10-800e-17455edce175',
                     'name': 'fake_name',
                     'container_format': 'ami',
-                    'status': 'active',
                     'properties': {
                     'kernel_id': 'cedef40a-ed67-4d10-800e-17455edce175',
                     'ramdisk_id': 'cedef40a-ed67-4d10-800e-17455edce175',
@@ -2013,7 +2009,6 @@ class CloudTestCase(test.TestCase):
             return {'id': 'cedef40a-ed67-4d10-800e-17455edce175',
                     'name': 'fake_name',
                     'container_format': 'ami',
-                    'status': 'active',
                     'properties': {
                     'kernel_id': 'cedef40a-ed67-4d10-800e-17455edce175',
                     'ramdisk_id': 'cedef40a-ed67-4d10-800e-17455edce175',
@@ -2187,7 +2182,6 @@ class CloudTestCase(test.TestCase):
             return {'id': 'cedef40a-ed67-4d10-800e-17455edce175',
                     'name': 'fake_name',
                     'container_format': 'ami',
-                    'status': 'active',
                     'properties': {
                         'kernel_id': 'cedef40a-ed67-4d10-800e-17455edce175',
                         'ramdisk_id': 'cedef40a-ed67-4d10-800e-17455edce175',
@@ -2661,11 +2655,11 @@ class CloudTestCase(test.TestCase):
             inst_type = flavors.get_default_flavor()
             inst_type['name'] = 'fake_type'
             sys_meta = flavors.save_flavor_info({}, inst_type)
-            secgroups = security_group_obj.SecurityGroupList()
+            secgroups = objects.SecurityGroupList()
             secgroups.objects.append(
-                security_group_obj.SecurityGroup(name='fake0'))
+                objects.SecurityGroup(name='fake0'))
             secgroups.objects.append(
-                security_group_obj.SecurityGroup(name='fake1'))
+                objects.SecurityGroup(name='fake1'))
             instance = objects.Instance(ctxt)
             instance.id = 0
             instance.uuid = 'e5fe5518-0288-4fa3-b0c4-c79764101b85'

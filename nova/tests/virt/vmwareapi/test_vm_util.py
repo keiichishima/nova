@@ -15,9 +15,9 @@
 #    under the License.
 
 import collections
+import contextlib
 import re
 
-import contextlib
 import mock
 
 from nova import exception
@@ -26,27 +26,9 @@ from nova.openstack.common.gettextutils import _
 from nova.openstack.common import units
 from nova.openstack.common import uuidutils
 from nova import test
+from nova.tests.virt.vmwareapi import fake
 from nova.virt.vmwareapi import error_util
-from nova.virt.vmwareapi import fake
 from nova.virt.vmwareapi import vm_util
-
-
-class fake_session(object):
-    def __init__(self, *ret):
-        self.ret = ret
-        self.ind = 0
-        self.vim = fake.FakeVim()
-
-    def _call_method(self, *args):
-        # return fake objects in circular manner
-        self.ind = (self.ind + 1) % len(self.ret)
-        return self.ret[self.ind - 1]
-
-    def _wait_for_task(self):
-        pass
-
-    def _get_vim(self):
-        return self.vim
 
 
 class partialObject(object):
@@ -65,26 +47,27 @@ class VMwareVMUtilTestCase(test.NoDBTestCase):
         super(VMwareVMUtilTestCase, self).tearDown()
         fake.reset()
 
-    def test_get_datastore_ref_and_name(self):
+    def test_get_datastore(self):
         fake_objects = fake.FakeRetrieveResult()
         fake_objects.add_object(fake.Datastore())
-        result = vm_util.get_datastore_ref_and_name(
-            fake_session(fake_objects))
+        result = vm_util.get_datastore(
+            fake.FakeObjectRetrievalSession(fake_objects))
 
-        self.assertEqual(result[1], "fake-ds")
-        self.assertEqual(result[2], units.Ti)
-        self.assertEqual(result[3], 500 * units.Gi)
+        self.assertEqual("fake-ds", result.name)
+        self.assertEqual(units.Ti, result.capacity)
+        self.assertEqual(500 * units.Gi, result.freespace)
 
-    def test_get_datastore_ref_and_name_with_regex(self):
+    def test_get_datastore_with_regex(self):
         # Test with a regex that matches with a datastore
         datastore_valid_regex = re.compile("^openstack.*\d$")
         fake_objects = fake.FakeRetrieveResult()
         fake_objects.add_object(fake.Datastore("openstack-ds0"))
         fake_objects.add_object(fake.Datastore("fake-ds0"))
         fake_objects.add_object(fake.Datastore("fake-ds1"))
-        result = vm_util.get_datastore_ref_and_name(
-            fake_session(fake_objects), None, None, datastore_valid_regex)
-        self.assertEqual("openstack-ds0", result[1])
+        result = vm_util.get_datastore(
+            fake.FakeObjectRetrievalSession(fake_objects),
+            None, None, datastore_valid_regex)
+        self.assertEqual("openstack-ds0", result.name)
 
     def _test_get_stats_from_cluster(self, connection_state="connected",
                                      maintenance_mode=False):
@@ -126,7 +109,6 @@ class VMwareVMUtilTestCase(test.NoDBTestCase):
         respool_resource_usage = fake.DataObject()
         respool_resource_usage.maxUsage = 5368709120
         respool_resource_usage.overallUsage = 2147483648
-        session = fake_session()
 
         def fake_call_method(*args):
             if "get_dynamic_properties" in args:
@@ -135,8 +117,9 @@ class VMwareVMUtilTestCase(test.NoDBTestCase):
                 return fake_objects
             else:
                 return respool_resource_usage
-        with mock.patch.object(fake_session, '_call_method',
-                               fake_call_method):
+
+        session = fake.FakeSession()
+        with mock.patch.object(session, '_call_method', fake_call_method):
             result = vm_util.get_stats_from_cluster(session, "cluster1")
             cpu_info = {}
             mem_info = {}
@@ -165,7 +148,7 @@ class VMwareVMUtilTestCase(test.NoDBTestCase):
     def test_get_stats_from_cluster_hosts_connected_and_maintenance(self):
         self._test_get_stats_from_cluster(maintenance_mode=True)
 
-    def test_get_datastore_ref_and_name_with_token(self):
+    def test_get_datastore_with_token(self):
         regex = re.compile("^ds.*\d$")
         fake0 = fake.FakeRetrieveResult()
         fake0.add_object(fake.Datastore("ds0", 10 * units.Gi, 5 * units.Gi))
@@ -174,22 +157,23 @@ class VMwareVMUtilTestCase(test.NoDBTestCase):
         fake1 = fake.FakeRetrieveResult()
         fake1.add_object(fake.Datastore("ds2", 10 * units.Gi, 8 * units.Gi))
         fake1.add_object(fake.Datastore("ds3", 10 * units.Gi, 1 * units.Gi))
-        result = vm_util.get_datastore_ref_and_name(
-            fake_session(fake0, fake1), None, None, regex)
-        self.assertEqual("ds2", result[1])
+        result = vm_util.get_datastore(
+            fake.FakeObjectRetrievalSession(fake0, fake1), None, None, regex)
+        self.assertEqual("ds2", result.name)
 
-    def test_get_datastore_ref_and_name_with_list(self):
+    def test_get_datastore_with_list(self):
         # Test with a regex containing whitelist of datastores
         datastore_valid_regex = re.compile("(openstack-ds0|openstack-ds2)")
         fake_objects = fake.FakeRetrieveResult()
         fake_objects.add_object(fake.Datastore("openstack-ds0"))
         fake_objects.add_object(fake.Datastore("openstack-ds1"))
         fake_objects.add_object(fake.Datastore("openstack-ds2"))
-        result = vm_util.get_datastore_ref_and_name(
-            fake_session(fake_objects), None, None, datastore_valid_regex)
-        self.assertNotEqual("openstack-ds1", result[1])
+        result = vm_util.get_datastore(
+            fake.FakeObjectRetrievalSession(fake_objects),
+            None, None, datastore_valid_regex)
+        self.assertNotEqual("openstack-ds1", result.name)
 
-    def test_get_datastore_ref_and_name_with_regex_error(self):
+    def test_get_datastore_with_regex_error(self):
         # Test with a regex that has no match
         # Checks if code raises DatastoreNotFound with a specific message
         datastore_invalid_regex = re.compile("unknown-ds")
@@ -201,8 +185,8 @@ class VMwareVMUtilTestCase(test.NoDBTestCase):
         # assertRaisesRegExp would have been a good choice instead of
         # try/catch block, but it's available only from Py 2.7.
         try:
-            vm_util.get_datastore_ref_and_name(
-                fake_session(fake_objects), None, None,
+            vm_util.get_datastore(
+                fake.FakeObjectRetrievalSession(fake_objects), None, None,
                 datastore_invalid_regex)
         except exception.DatastoreNotFound as e:
             self.assertEqual(exp_message, e.args[0])
@@ -210,15 +194,15 @@ class VMwareVMUtilTestCase(test.NoDBTestCase):
             self.fail("DatastoreNotFound Exception was not raised with "
                       "message: %s" % exp_message)
 
-    def test_get_datastore_ref_and_name_without_datastore(self):
+    def test_get_datastore_without_datastore(self):
 
         self.assertRaises(exception.DatastoreNotFound,
-                vm_util.get_datastore_ref_and_name,
-                fake_session(None), host="fake-host")
+                vm_util.get_datastore,
+                fake.FakeObjectRetrievalSession(None), host="fake-host")
 
         self.assertRaises(exception.DatastoreNotFound,
-                vm_util.get_datastore_ref_and_name,
-                fake_session(None), cluster="fake-cluster")
+                vm_util.get_datastore,
+                fake.FakeObjectRetrievalSession(None), cluster="fake-cluster")
 
     def test_get_host_ref_from_id(self):
         fake_host_name = "ha-host"
@@ -227,7 +211,8 @@ class VMwareVMUtilTestCase(test.NoDBTestCase):
         fake_objects = fake.FakeRetrieveResult()
         fake_objects.add_object(fake_host_sys)
         ref = vm_util.get_host_ref_from_id(
-            fake_session(fake_objects), fake_host_id, ['name'])
+            fake.FakeObjectRetrievalSession(fake_objects),
+            fake_host_id, ['name'])
 
         self.assertIsInstance(ref, fake.HostSystem)
         self.assertEqual(fake_host_id, ref.obj.value)
@@ -239,12 +224,12 @@ class VMwareVMUtilTestCase(test.NoDBTestCase):
     def test_get_host_ref_no_hosts_in_cluster(self):
         self.assertRaises(exception.NoValidHost,
                           vm_util.get_host_ref,
-                          fake_session(""), 'fake_cluster')
+                          fake.FakeObjectRetrievalSession(""), 'fake_cluster')
 
-    def test_get_datastore_ref_and_name_no_host_in_cluster(self):
+    def test_get_datastore_no_host_in_cluster(self):
         self.assertRaises(exception.DatastoreNotFound,
-                          vm_util.get_datastore_ref_and_name,
-                          fake_session(""), 'fake_cluster')
+                          vm_util.get_datastore,
+                          fake.FakeObjectRetrievalSession(""), 'fake_cluster')
 
     @mock.patch.object(vm_util, '_get_vm_ref_from_vm_uuid',
                        return_value=None)
@@ -257,12 +242,12 @@ class VMwareVMUtilTestCase(test.NoDBTestCase):
         fake_objects.add_object(fake_vm)
 
         vm_ref = vm_util.get_vm_ref_from_name(
-                fake_session(fake_objects), 'vm-123')
+                fake.FakeObjectRetrievalSession(fake_objects), 'vm-123')
 
         self.assertIsNotNone(vm_ref)
 
         host_id = vm_util.get_host_id_from_vm_ref(
-            fake_session(fake_objects), vm_ref)
+            fake.FakeObjectRetrievalSession(fake_objects), vm_ref)
 
         self.assertEqual(fake_host_id, host_id)
 
@@ -320,7 +305,7 @@ class VMwareVMUtilTestCase(test.NoDBTestCase):
         self.assertIsNotNone(prop4)
         self.assertEqual('bar1', prop4.val)
 
-    def test_get_datastore_ref_and_name_inaccessible_ds(self):
+    def test_get_datastore_inaccessible_ds(self):
         data_store = fake.Datastore()
         data_store.set("summary.accessible", False)
 
@@ -328,8 +313,8 @@ class VMwareVMUtilTestCase(test.NoDBTestCase):
         fake_objects.add_object(data_store)
 
         self.assertRaises(exception.DatastoreNotFound,
-                vm_util.get_datastore_ref_and_name,
-                fake_session(fake_objects))
+                vm_util.get_datastore,
+                fake.FakeObjectRetrievalSession(fake_objects))
 
     def test_get_resize_spec(self):
         fake_instance = {'id': 7, 'name': 'fake!',
@@ -548,7 +533,8 @@ class VMwareVMUtilTestCase(test.NoDBTestCase):
         fake_vms = self._create_fake_vms()
         self.flags(vnc_port=5900, group='vmware')
         self.flags(vnc_port_total=10000, group='vmware')
-        actual = vm_util.get_vnc_port(fake_session(fake_vms))
+        actual = vm_util.get_vnc_port(
+            fake.FakeObjectRetrievalSession(fake_vms))
         self.assertEqual(actual, 5910)
 
     def test_get_vnc_port_exhausted(self):
@@ -557,26 +543,26 @@ class VMwareVMUtilTestCase(test.NoDBTestCase):
         self.flags(vnc_port_total=10, group='vmware')
         self.assertRaises(exception.ConsolePortRangeExhausted,
                           vm_util.get_vnc_port,
-                          fake_session(fake_vms))
+                          fake.FakeObjectRetrievalSession(fake_vms))
 
     def test_get_all_cluster_refs_by_name_none(self):
         fake_objects = fake.FakeRetrieveResult()
-        refs = vm_util.get_all_cluster_refs_by_name(fake_session(fake_objects),
-                                                    ['fake_cluster'])
+        refs = vm_util.get_all_cluster_refs_by_name(
+            fake.FakeObjectRetrievalSession(fake_objects), ['fake_cluster'])
         self.assertTrue(not refs)
 
     def test_get_all_cluster_refs_by_name_exists(self):
         fake_objects = fake.FakeRetrieveResult()
         fake_objects.add_object(fake.ClusterComputeResource(name='cluster'))
-        refs = vm_util.get_all_cluster_refs_by_name(fake_session(fake_objects),
-                                                    ['cluster'])
-        self.assertTrue(len(refs) == 1)
+        refs = vm_util.get_all_cluster_refs_by_name(
+            fake.FakeObjectRetrievalSession(fake_objects), ['cluster'])
+        self.assertEqual(1, len(refs))
 
     def test_get_all_cluster_refs_by_name_missing(self):
         fake_objects = fake.FakeRetrieveResult()
         fake_objects.add_object(partialObject(path='cluster'))
-        refs = vm_util.get_all_cluster_refs_by_name(fake_session(fake_objects),
-                                                    ['cluster'])
+        refs = vm_util.get_all_cluster_refs_by_name(
+            fake.FakeObjectRetrievalSession(fake_objects), ['cluster'])
         self.assertTrue(not refs)
 
     def test_propset_dict_simple(self):
@@ -674,7 +660,7 @@ class VMwareVMUtilTestCase(test.NoDBTestCase):
             task_info = mock.Mock(state="success", result="fake_vm_ref")
             return task_info
 
-        session = fake_session()
+        session = fake.FakeSession()
         fake_instance = mock.MagicMock()
         fake_call_mock = mock.Mock(side_effect=fake_call_method)
         fake_wait_mock = mock.Mock(side_effect=fake_wait_for_task)
@@ -714,7 +700,7 @@ class VMwareVMUtilTestCase(test.NoDBTestCase):
                           "InvalidVifModel")
 
     def test_power_on_instance_with_vm_ref(self):
-        session = fake_session()
+        session = fake.FakeSession()
         fake_instance = mock.MagicMock()
         with contextlib.nested(
             mock.patch.object(session, "_call_method",
@@ -729,7 +715,7 @@ class VMwareVMUtilTestCase(test.NoDBTestCase):
             fake_wait_for_task.assert_called_once_with('fake-task')
 
     def test_power_on_instance_without_vm_ref(self):
-        session = fake_session()
+        session = fake.FakeSession()
         fake_instance = mock.MagicMock()
         with contextlib.nested(
             mock.patch.object(vm_util, "get_vm_ref",
@@ -746,7 +732,7 @@ class VMwareVMUtilTestCase(test.NoDBTestCase):
             fake_wait_for_task.assert_called_once_with('fake-task')
 
     def test_power_on_instance_with_exception(self):
-        session = fake_session()
+        session = fake.FakeSession()
         fake_instance = mock.MagicMock()
         with contextlib.nested(
             mock.patch.object(session, "_call_method",
@@ -764,7 +750,7 @@ class VMwareVMUtilTestCase(test.NoDBTestCase):
             fake_wait_for_task.assert_called_once_with('fake-task')
 
     def test_power_on_instance_with_power_state_exception(self):
-        session = fake_session()
+        session = fake.FakeSession()
         fake_instance = mock.MagicMock()
         with contextlib.nested(
             mock.patch.object(session, "_call_method",
@@ -781,7 +767,7 @@ class VMwareVMUtilTestCase(test.NoDBTestCase):
             fake_wait_for_task.assert_called_once_with('fake-task')
 
     def test_create_virtual_disk(self):
-        session = fake_session()
+        session = fake.FakeSession()
         dm = session._get_vim().get_service_content().virtualDiskManager
         with contextlib.nested(
             mock.patch.object(vm_util, "get_vmdk_create_spec",
@@ -807,7 +793,7 @@ class VMwareVMUtilTestCase(test.NoDBTestCase):
             fake_wait_for_task.assert_called_once_with('fake-task')
 
     def test_copy_virtual_disk(self):
-        session = fake_session()
+        session = fake.FakeSession()
         dm = session._get_vim().get_service_content().virtualDiskManager
         with contextlib.nested(
             mock.patch.object(session, "_call_method",
@@ -837,8 +823,22 @@ class VMwareVMUtilTestCase(test.NoDBTestCase):
                           'summary.guest.toolsStatus',
                           'summary.guest.toolsRunningStatus']
         query = vm_util.get_values_from_object_properties(
-                fake_session(objects), objects, lst_properties)
+            fake.FakeObjectRetrievalSession(objects),
+            objects, lst_properties)
         self.assertEqual('poweredOn', query['runtime.powerState'])
         self.assertEqual('guestToolsRunning',
                          query['summary.guest.toolsRunningStatus'])
         self.assertEqual('toolsOk', query['summary.guest.toolsStatus'])
+
+    def test_reconfigure_vm(self):
+        session = fake.FakeSession()
+        with contextlib.nested(
+            mock.patch.object(session, '_call_method',
+                              return_value='fake_reconfigure_task'),
+            mock.patch.object(session, '_wait_for_task')
+        ) as (_call_method, _wait_for_task):
+            vm_util.reconfigure_vm(session, 'fake-ref', 'fake-spec')
+            _call_method.assert_called_once_with(mock.ANY,
+                'ReconfigVM_Task', 'fake-ref', spec='fake-spec')
+            _wait_for_task.assert_called_once_with(
+                'fake_reconfigure_task')

@@ -17,14 +17,14 @@ import abc
 import contextlib
 import os
 
-import six
-
 from oslo.config import cfg
+import six
 
 from nova import exception
 from nova.openstack.common import excutils
 from nova.openstack.common import fileutils
 from nova.openstack.common.gettextutils import _
+from nova.openstack.common.gettextutils import _LE
 from nova.openstack.common import jsonutils
 from nova.openstack.common import log as logging
 from nova.openstack.common import units
@@ -198,9 +198,9 @@ class Image(object):
             can_fallocate = not err
             self.__class__.can_fallocate = can_fallocate
             if not can_fallocate:
-                LOG.error(_('Unable to preallocate_images=%(imgs)s at path: '
-                            '%(path)s'), {'imgs': CONF.preallocate_images,
-                                           'path': self.path})
+                LOG.error(_LE('Unable to preallocate_images=%(imgs)s at path: '
+                              '%(path)s'), {'imgs': CONF.preallocate_images,
+                                            'path': self.path})
         return can_fallocate
 
     @staticmethod
@@ -226,8 +226,8 @@ class Image(object):
             base_size = disk.get_disk_size(base)
 
         if size < base_size:
-            msg = _('%(base)s virtual size %(base_size)s '
-                    'larger than flavor root disk size %(size)s')
+            msg = _LE('%(base)s virtual size %(base_size)s '
+                      'larger than flavor root disk size %(size)s')
             LOG.error(msg % {'base': base,
                               'base_size': base_size,
                               'size': size})
@@ -295,6 +295,11 @@ class Image(object):
         except OSError as e:
             raise exception.DiskInfoReadWriteFail(reason=unicode(e))
         return driver_format
+
+    @staticmethod
+    def is_shared_block_storage():
+        """True if the backend puts images on a shared block storage."""
+        return False
 
 
 class Raw(Image):
@@ -497,7 +502,7 @@ class RBDVolumeProxy(object):
         try:
             self.volume = driver.rbd.Image(ioctx, str(name), snapshot=None)
         except driver.rbd.Error:
-            LOG.exception(_("error opening rbd image %s"), name)
+            LOG.exception(_LE("error opening rbd image %s"), name)
             driver._disconnect_from_rados(client, ioctx)
             raise
         self.driver = driver
@@ -647,10 +652,8 @@ class Rbd(Image):
         return False
 
     def _resize(self, volume_name, size):
-        size = int(size) * units.Ki
-
         with RBDVolumeProxy(self, volume_name) as vol:
-            vol.resize(size)
+            vol.resize(int(size))
 
     def create_image(self, prepare_template, base, size, *args, **kwargs):
         if self.rbd is None:
@@ -676,6 +679,10 @@ class Rbd(Image):
 
     def snapshot_extract(self, target, out_format):
         images.convert_image(self.path, target, out_format)
+
+    @staticmethod
+    def is_shared_block_storage():
+        return True
 
 
 class Backend(object):

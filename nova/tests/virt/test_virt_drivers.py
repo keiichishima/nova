@@ -13,10 +13,10 @@
 #    under the License.
 
 import base64
-import fixtures
 import sys
 import traceback
 
+import fixtures
 import mock
 import netaddr
 import six
@@ -119,7 +119,7 @@ class _FakeDriverBackendTestCase(object):
             pass
 
         self.stubs.Set(nova.virt.libvirt.driver.LibvirtDriver,
-                       'get_instance_disk_info',
+                       '_get_instance_disk_info',
                        fake_get_instance_disk_info)
 
         self.stubs.Set(nova.virt.libvirt.driver.disk,
@@ -419,21 +419,25 @@ class _VirtDriverTestCase(_FakeDriverBackendTestCase):
             "driver_volume_type": "fake",
             "serial": "fake_serial",
         }
-        self.connection.attach_volume(None, connection_info, instance_ref,
-                                      '/dev/sda')
-        self.connection.detach_volume(connection_info, instance_ref,
-                                      '/dev/sda')
+        self.assertIsNone(
+            self.connection.attach_volume(None, connection_info, instance_ref,
+                                          '/dev/sda'))
+        self.assertIsNone(
+            self.connection.detach_volume(connection_info, instance_ref,
+                                      '/dev/sda'))
 
     @catch_notimplementederror
     def test_swap_volume(self):
         instance_ref, network_info = self._get_running_instance()
-        self.connection.attach_volume(None, {'driver_volume_type': 'fake'},
-                                      instance_ref,
-                                      '/dev/sda')
-        self.connection.swap_volume({'driver_volume_type': 'fake'},
-                                    {'driver_volume_type': 'fake'},
-                                    instance_ref,
-                                    '/dev/sda')
+        self.assertIsNone(
+            self.connection.attach_volume(None, {'driver_volume_type': 'fake'},
+                                          instance_ref,
+                                          '/dev/sda'))
+        self.assertIsNone(
+            self.connection.swap_volume({'driver_volume_type': 'fake'},
+                                        {'driver_volume_type': 'fake'},
+                                        instance_ref,
+                                        '/dev/sda'))
 
     @catch_notimplementederror
     def test_attach_detach_different_power_states(self):
@@ -489,6 +493,11 @@ class _VirtDriverTestCase(_FakeDriverBackendTestCase):
     def test_get_diagnostics(self):
         instance_ref, network_info = self._get_running_instance(obj=True)
         self.connection.get_diagnostics(instance_ref)
+
+    @catch_notimplementederror
+    def test_get_instance_diagnostics(self):
+        instance_ref, network_info = self._get_running_instance(obj=True)
+        self.connection.get_instance_diagnostics(instance_ref)
 
     @catch_notimplementederror
     def test_block_stats(self):

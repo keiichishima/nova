@@ -325,6 +325,25 @@ class FloatingIpTest(test.TestCase):
         self.assertIn('No more floating ips in pool non_existent_pool',
                       ex.explanation)
 
+    @mock.patch('nova.network.api.API.allocate_floating_ip',
+                side_effect=exception.FloatingIpLimitExceeded())
+    def test_floating_ip_allocate_over_quota(self, allocate_mock):
+        req = fakes.HTTPRequest.blank('/v2/fake/os-floating-ips')
+        ex = self.assertRaises(webob.exc.HTTPForbidden,
+                               self.controller.create, req)
+
+        self.assertIn('IP allocation over quota', ex.explanation)
+
+    @mock.patch('nova.network.api.API.allocate_floating_ip',
+                side_effect=exception.FloatingIpLimitExceeded())
+    def test_floating_ip_allocate_quota_exceed_in_pool(self, allocate_mock):
+        req = fakes.HTTPRequest.blank('/v2/fake/os-floating-ips')
+        ex = self.assertRaises(webob.exc.HTTPForbidden,
+            self.controller.create, req, {'pool': 'non_existent_pool'})
+
+        self.assertIn('IP allocation over quota in pool non_existent_pool.',
+                      ex.explanation)
+
     def test_floating_ip_allocate(self):
         def fake1(*args, **kwargs):
             pass
@@ -366,7 +385,7 @@ class FloatingIpTest(test.TestCase):
 
         req = fakes.HTTPRequest.blank('/v2/fake/servers/test_inst/action')
         rsp = self.manager._add_floating_ip(req, 'test_inst', body)
-        self.assertTrue(rsp.status_int == 202)
+        self.assertEqual(202, rsp.status_int)
 
     def test_floating_ip_associate_invalid_instance(self):
 
@@ -400,7 +419,7 @@ class FloatingIpTest(test.TestCase):
 
         req = fakes.HTTPRequest.blank('/v2/fake/servers/test_inst/action')
         rsp = self.manager._add_floating_ip(req, 'test_inst', body)
-        self.assertTrue(rsp.status_int == 202)
+        self.assertEqual(202, rsp.status_int)
 
     def test_associate_not_allocated_floating_ip_to_instance(self):
         def fake_associate_floating_ip(self, context, instance,
@@ -443,7 +462,7 @@ class FloatingIpTest(test.TestCase):
 
         req = fakes.HTTPRequest.blank('/v2/fake/servers/test_inst/action')
         rsp = self.manager._remove_floating_ip(req, 'test_inst', body)
-        self.assertTrue(rsp.status_int == 202)
+        self.assertEqual(202, rsp.status_int)
 
     def test_floating_ip_disassociate_missing(self):
         body = dict(removeFloatingIp=dict(address='10.10.10.10'))
@@ -672,7 +691,7 @@ class ExtendedFloatingIpTest(test.TestCase):
 
         req = fakes.HTTPRequest.blank('/v2/fake/servers/test_inst/action')
         rsp = self.manager._add_floating_ip(req, 'test_inst', body)
-        self.assertTrue(rsp.status_int == 202)
+        self.assertEqual(202, rsp.status_int)
 
     def test_extended_floating_ip_associate_fixed_not_allocated(self):
         def fake_associate_floating_ip(*args, **kwargs):

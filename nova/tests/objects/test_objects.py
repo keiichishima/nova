@@ -305,6 +305,12 @@ class _BaseTestCase(test.TestCase):
         #equivalent
         self.assertEqual(expected, jsonutils.dumps(obj_val))
 
+    def str_comparator(self, expected, obj_val):
+        """Compare an object field to a string in the db by performing
+        a simple coercion on the object field value.
+        """
+        self.assertEqual(expected, str(obj_val))
+
     def assertNotIsInstance(self, obj, cls, msg=None):
         """Python < v2.7 compatibility.  Assert 'not isinstance(obj, cls)."""
         try:
@@ -702,6 +708,12 @@ class _TestObject(object):
         self.assertRaises(exception.ReadOnlyFieldError, setattr,
                           obj, 'readonly', 2)
 
+    def test_obj_repr(self):
+        obj = MyObj(foo=123)
+        self.assertEqual('MyObj(bar=<?>,created_at=<?>,deleted=<?>,'
+                         'deleted_at=<?>,foo=123,missing=<?>,readonly=<?>,'
+                         'updated_at=<?>)', repr(obj))
+
 
 class TestObject(_LocalTest, _TestObject):
     pass
@@ -823,6 +835,16 @@ class TestObjectListBase(test.TestCase):
         self.assertEqual([], obj.objects)
         self.assertEqual(set(), obj.obj_what_changed())
 
+    def test_obj_repr(self):
+        class Foo(base.ObjectListBase, base.NovaObject):
+            fields = {'objects': fields.ListOfObjectsField('Bar')}
+
+        class Bar(base.NovaObject):
+            fields = {'uuid': fields.StringField()}
+
+        obj = Foo(objects=[Bar(uuid='fake-uuid')])
+        self.assertEqual('Foo(objects=[Bar(fake-uuid)])', repr(obj))
+
 
 class TestObjectSerializer(_BaseTestCase):
     def test_serialize_entity_primitive(self):
@@ -876,12 +898,14 @@ class TestObjectSerializer(_BaseTestCase):
 # they come with a corresponding version bump in the affected
 # objects
 object_data = {
+    'Agent': '1.0-c4ff8a833aee8ae44ab8aed1a171273d',
+    'AgentList': '1.0-f8b860e1f2ce80e676ba1a37ddf86e4f',
     'Aggregate': '1.1-f5d477be06150529a9b2d27cc49030b5',
     'AggregateList': '1.1-3e67b6a4840b19c797504cc6056b27ff',
     'BlockDeviceMapping': '1.1-9968ffe513e7672484b0f528b034cd0f',
     'BlockDeviceMappingList': '1.2-d6d7df540ca149dda78b22b4b10bdef3',
-    'ComputeNode': '1.3-b3b8935a99ca48621dc9ba271d5ed668',
-    'ComputeNodeList': '1.2-ff59187056eaa96f6fd3fb70693d818c',
+    'ComputeNode': '1.4-ed20e7a7c1a4612fe7d2836d5887c726',
+    'ComputeNodeList': '1.3-ff59187056eaa96f6fd3fb70693d818c',
     'DNSDomain': '1.0-5bdc288d7c3b723ce86ede998fd5c9ba',
     'DNSDomainList': '1.0-6e3cc498d89dd7e90f9beb021644221c',
     'EC2InstanceMapping': '1.0-627baaf4b12c9067200979bdc4558a99',

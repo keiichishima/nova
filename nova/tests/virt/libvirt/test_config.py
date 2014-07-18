@@ -981,7 +981,7 @@ class LibvirtConfigGuestTest(LibvirtConfigBaseTest):
         obj.virt_type = "lxc"
         obj.memory = 100 * units.Mi
         obj.vcpus = 2
-        obj.cpuset = "0-3,^2,4-5"
+        obj.cpuset = set([0, 1, 3, 4, 5])
         obj.name = "demo"
         obj.uuid = "b38a3f43-4be2-4046-897f-b67c2f5e0147"
         obj.os_type = "exe"
@@ -999,7 +999,7 @@ class LibvirtConfigGuestTest(LibvirtConfigBaseTest):
               <uuid>b38a3f43-4be2-4046-897f-b67c2f5e0147</uuid>
               <name>demo</name>
               <memory>104857600</memory>
-              <vcpu cpuset="0-3,^2,4-5">2</vcpu>
+              <vcpu cpuset="0-1,3-5">2</vcpu>
               <os>
                 <type>exe</type>
                 <init>/sbin/init</init>
@@ -1017,7 +1017,7 @@ class LibvirtConfigGuestTest(LibvirtConfigBaseTest):
         obj.virt_type = "xen"
         obj.memory = 100 * units.Mi
         obj.vcpus = 2
-        obj.cpuset = "0-3,^2,4-5"
+        obj.cpuset = set([0, 1, 3, 4, 5])
         obj.name = "demo"
         obj.uuid = "b38a3f43-4be2-4046-897f-b67c2f5e0147"
         obj.os_type = "linux"
@@ -1039,7 +1039,7 @@ class LibvirtConfigGuestTest(LibvirtConfigBaseTest):
               <uuid>b38a3f43-4be2-4046-897f-b67c2f5e0147</uuid>
               <name>demo</name>
               <memory>104857600</memory>
-              <vcpu cpuset="0-3,^2,4-5">2</vcpu>
+              <vcpu cpuset="0-1,3-5">2</vcpu>
               <os>
                 <type>linux</type>
                 <kernel>/tmp/vmlinuz</kernel>
@@ -1059,7 +1059,7 @@ class LibvirtConfigGuestTest(LibvirtConfigBaseTest):
         obj.virt_type = "xen"
         obj.memory = 100 * units.Mi
         obj.vcpus = 2
-        obj.cpuset = "0-3,^2,4-5"
+        obj.cpuset = set([0, 1, 3, 4, 5])
         obj.name = "demo"
         obj.uuid = "b38a3f43-4be2-4046-897f-b67c2f5e0147"
         obj.os_type = "hvm"
@@ -1083,7 +1083,7 @@ class LibvirtConfigGuestTest(LibvirtConfigBaseTest):
               <uuid>b38a3f43-4be2-4046-897f-b67c2f5e0147</uuid>
               <name>demo</name>
               <memory>104857600</memory>
-              <vcpu cpuset="0-3,^2,4-5">2</vcpu>
+              <vcpu cpuset="0-1,3-5">2</vcpu>
               <os>
                 <type>hvm</type>
                 <loader>/usr/lib/xen/boot/hvmloader</loader>
@@ -1107,10 +1107,13 @@ class LibvirtConfigGuestTest(LibvirtConfigBaseTest):
         obj.virt_type = "kvm"
         obj.memory = 100 * units.Mi
         obj.vcpus = 2
-        obj.cpuset = "0-3,^2,4-5"
-        obj.cpu_shares = 100
-        obj.cpu_quota = 50000
-        obj.cpu_period = 25000
+        obj.cpuset = set([0, 1, 3, 4, 5])
+
+        obj.cputune = config.LibvirtConfigGuestCPUTune()
+        obj.cputune.shares = 100
+        obj.cputune.quota = 50000
+        obj.cputune.period = 25000
+
         obj.name = "demo"
         obj.uuid = "b38a3f43-4be2-4046-897f-b67c2f5e0147"
         obj.os_type = "linux"
@@ -1137,7 +1140,7 @@ class LibvirtConfigGuestTest(LibvirtConfigBaseTest):
               <uuid>b38a3f43-4be2-4046-897f-b67c2f5e0147</uuid>
               <name>demo</name>
               <memory>104857600</memory>
-              <vcpu cpuset="0-3,^2,4-5">2</vcpu>
+              <vcpu cpuset="0-1,3-5">2</vcpu>
               <sysinfo type='smbios'>
                  <bios>
                    <entry name="vendor">Acme</entry>
@@ -1272,6 +1275,40 @@ class LibvirtConfigGuestSnapshotTest(LibvirtConfigBaseTest):
               <disks>
                <disk name='vda' snapshot='external' type='file'>
                 <source file='source-path'/>
+               </disk>
+               <disk name='vdb' snapshot='no'/>
+              </disks>
+            </domainsnapshot>""")
+
+    def test_config_snapshot_with_network_disks(self):
+        obj = config.LibvirtConfigGuestSnapshot()
+        obj.name = "Demo"
+
+        disk = config.LibvirtConfigGuestSnapshotDisk()
+        disk.name = 'vda'
+        disk.source_name = 'source-file'
+        disk.source_type = 'network'
+        disk.source_hosts = ['host1']
+        disk.source_ports = ['12345']
+        disk.source_protocol = 'glusterfs'
+        disk.snapshot = 'external'
+        disk.driver_name = 'qcow2'
+        obj.add_disk(disk)
+
+        disk2 = config.LibvirtConfigGuestSnapshotDisk()
+        disk2.name = 'vdb'
+        disk2.snapshot = 'no'
+        obj.add_disk(disk2)
+
+        xml = obj.to_xml()
+        self.assertXmlEqual(xml, """
+            <domainsnapshot>
+              <name>Demo</name>
+              <disks>
+               <disk name='vda' snapshot='external' type='network'>
+                <source protocol='glusterfs' name='source-file'>
+                 <host name='host1' port='12345'/>
+                </source>
                </disk>
                <disk name='vdb' snapshot='no'/>
               </disks>
@@ -1681,3 +1718,20 @@ class LibvirtConfigGuestWatchdogTest(LibvirtConfigBaseTest):
 
         xml = obj.to_xml()
         self.assertXmlEqual(xml, "<watchdog model='i6300esb' action='reset'/>")
+
+
+class LibvirtConfigGuestCPUTuneTest(LibvirtConfigBaseTest):
+
+    def test_config_cputune_timeslice(self):
+        cputune = config.LibvirtConfigGuestCPUTune()
+        cputune.shares = 100
+        cputune.quota = 50000
+        cputune.period = 25000
+
+        xml = cputune.to_xml()
+        self.assertXmlEqual(xml, """
+          <cputune>
+            <shares>100</shares>
+            <quota>50000</quota>
+            <period>25000</period>
+          </cputune>""")

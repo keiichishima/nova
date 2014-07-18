@@ -51,15 +51,8 @@ from nova.network.security_group import security_group_base
 from nova import notifications
 from nova import objects
 from nova.objects import base as obj_base
-from nova.objects import flavor as flavor_obj
-from nova.objects import instance_action
-from nova.objects import instance_group as instance_group_obj
-from nova.objects import instance_info_cache
-from nova.objects import keypair as keypair_obj
-from nova.objects import migration as migration_obj
 from nova.objects import quotas as quotas_obj
 from nova.objects import security_group as security_group_obj
-from nova.objects import service as service_obj
 from nova.openstack.common import excutils
 from nova.openstack.common.gettextutils import _
 from nova.openstack.common import log as logging
@@ -290,10 +283,8 @@ class API(base.Base):
                     method=method)
 
     def _record_action_start(self, context, instance, action):
-        instance_action.InstanceAction.action_start(context,
-                                                    instance['uuid'],
-                                                    action,
-                                                    want_result=False)
+        objects.InstanceAction.action_start(context, instance['uuid'],
+                                            action, want_result=False)
 
     def _check_injected_file_quota(self, context, injected_files):
         """Enforce quota limits on injected files.
@@ -751,9 +742,9 @@ class API(base.Base):
         config_drive = self._check_config_drive(config_drive)
 
         if key_data is None and key_name:
-            key_pair = keypair_obj.KeyPair.get_by_name(context,
-                                                       context.user_id,
-                                                       key_name)
+            key_pair = objects.KeyPair.get_by_name(context,
+                                                   context.user_id,
+                                                   key_name)
             key_data = key_pair.public_key
 
         root_device_name = block_device.properties_root_device_name(
@@ -860,7 +851,9 @@ class API(base.Base):
             return {}
 
         for bdm in block_device_mapping:
-            if legacy_bdm and bdm.get('device_name') != 'vda':
+            if (legacy_bdm and
+                    block_device.get_device_letter(
+                       bdm.get('device_name', '')) != 'a'):
                 continue
             elif not legacy_bdm and bdm.get('boot_index') != 0:
                 continue
@@ -889,23 +882,21 @@ class API(base.Base):
     @staticmethod
     def _update_instance_group_by_name(context, instance_uuids, group_name):
         try:
-            ig = instance_group_obj.InstanceGroup.get_by_name(context,
-                    group_name)
-            instance_group_obj.InstanceGroup.add_members(context, ig.uuid,
-                    instance_uuids)
+            ig = objects.InstanceGroup.get_by_name(context, group_name)
+            objects.InstanceGroup.add_members(context, ig.uuid, instance_uuids)
         except exception.InstanceGroupNotFound:
             # NOTE(russellb) If the group does not already exist, we need to
             # automatically create it to be backwards compatible with old
             # handling of the 'group' scheduler hint.  The policy type will be
             # 'legacy', indicating that this group was created to emulate
             # legacy group behavior.
-            ig = instance_group_obj.InstanceGroup()
+            ig = objects.InstanceGroup(context)
             ig.name = group_name
             ig.project_id = context.project_id
             ig.user_id = context.user_id
             ig.policies = ['legacy']
             ig.members = instance_uuids
-            ig.create(context)
+            ig.create()
 
     @staticmethod
     def _update_instance_group(context, instances, scheduler_hints):
@@ -919,8 +910,8 @@ class API(base.Base):
         instance_uuids = [instance.uuid for instance in instances]
 
         if uuidutils.is_uuid_like(group_hint):
-            instance_group_obj.InstanceGroup.add_members(context, group_hint,
-                    instance_uuids)
+            objects.InstanceGroup.add_members(context, group_hint,
+                                              instance_uuids)
         else:
             API._update_instance_group_by_name(context, instance_uuids,
                     group_hint)
@@ -1209,7 +1200,7 @@ class API(base.Base):
         instance.launch_index = index
         instance.vm_state = vm_states.BUILDING
         instance.task_state = task_states.SCHEDULING
-        info_cache = instance_info_cache.InstanceInfoCache()
+        info_cache = objects.InstanceInfoCache()
         info_cache.instance_uuid = instance.uuid
         info_cache.network_info = network_model.NetworkInfo()
         instance.info_cache = info_cache
@@ -1301,6 +1292,26 @@ class API(base.Base):
                         " instance one by one with different ports.")
                 raise exception.MultiplePortsNotApplicable(reason=msg)
 
+    def _check_multiple_instances_and_specified_ip(self, requested_networks):
+        """Check whether multiple instances are created with specified ip."""
+
+        error = False
+        if utils.is_neutron():
+            for net, ip, port in requested_networks:
+                if net and ip:
+                    error = True
+                    break
+        else:
+            # nova-network case
+            for id, ip in requested_networks:
+                if id and ip:
+                    error = True
+                    break
+        if error:
+            msg = _("max_count cannot be greater than 1 if an fixed_ip "
+                    "is specified.")
+            raise exception.InvalidFixedIpAndMaxCountRequest(reason=msg)
+
     @hooks.add_hook("create_instance")
     def create(self, context, instance_type,
                image_href, kernel_id=None, ramdisk_id=None,
@@ -1322,8 +1333,11 @@ class API(base.Base):
         self._check_create_policies(context, availability_zone,
                 requested_networks, block_device_mapping)
 
-        if requested_networks and max_count > 1 and utils.is_neutron():
-            self._check_multiple_instances_neutron_ports(requested_networks)
+        if requested_networks and max_count > 1:
+            self._check_multiple_instances_and_specified_ip(requested_networks)
+            if utils.is_neutron():
+                self._check_multiple_instances_neutron_ports(
+                    requested_networks)
 
         return self._create_instance(
                                context, instance_type,
@@ -1342,8 +1356,8 @@ class API(base.Base):
     def trigger_provider_fw_rules_refresh(self, context):
         """Called when a rule is added/removed from a provider firewall."""
 
-        services = service_obj.ServiceList.get_all_by_topic(context,
-                                                            CONF.compute_topic)
+        services = objects.ServiceList.get_all_by_topic(context,
+                                                        CONF.compute_topic)
         for service in services:
             host_name = service.host
             self.compute_rpcapi.refresh_provider_fw_rules(context, host_name)
@@ -1482,7 +1496,7 @@ class API(base.Base):
 
             is_up = False
             try:
-                service = service_obj.Service.get_by_compute_host(
+                service = objects.Service.get_by_compute_host(
                     context.elevated(), instance.host)
                 if self.servicegroup_api.service_is_up(service):
                     is_up = True
@@ -1531,11 +1545,10 @@ class API(base.Base):
     def _confirm_resize_on_deleting(self, context, instance):
         # If in the middle of a resize, use confirm_resize to
         # ensure the original instance is cleaned up too
-        mig_cls = migration_obj.Migration
         migration = None
         for status in ('finished', 'confirming'):
             try:
-                migration = mig_cls.get_by_instance_and_status(
+                migration = objects.Migration.get_by_instance_and_status(
                         context.elevated(), instance.uuid, status)
                 LOG.info(_('Found an unconfirmed migration during delete, '
                            'id: %(id)s, status: %(status)s') %
@@ -1587,9 +1600,8 @@ class API(base.Base):
         # see https://bugs.launchpad.net/nova/+bug/1099729 for more details
         if original_task_state in (task_states.RESIZE_MIGRATED,
                                    task_states.RESIZE_FINISH):
-            Migration = migration_obj.Migration
             try:
-                migration = Migration.get_by_instance_and_status(
+                migration = objects.Migration.get_by_instance_and_status(
                     context.elevated(), instance.uuid, 'post-migrating')
             except exception.MigrationNotFoundByStatus:
                 migration = None
@@ -1839,7 +1851,7 @@ class API(base.Base):
         filters = {}
 
         def _remap_flavor_filter(flavor_id):
-            flavor = flavor_obj.Flavor.get_by_flavor_id(context, flavor_id)
+            flavor = objects.Flavor.get_by_flavor_id(context, flavor_id)
             filters['instance_type_id'] = flavor.id
 
         def _remap_fixed_ip_filter(fixed_ip):
@@ -1913,6 +1925,8 @@ class API(base.Base):
             context, filters=filters, sort_key=sort_key, sort_dir=sort_dir,
             limit=limit, marker=marker, expected_attrs=fields)
 
+    # NOTE(melwitt): We don't check instance lock for backup because lock is
+    #                intended to prevent accidental change/delete of instances
     @wrap_check_policy
     @check_instance_cell
     @check_instance_state(vm_state=[vm_states.ACTIVE, vm_states.STOPPED])
@@ -1945,6 +1959,8 @@ class API(base.Base):
                                             rotation)
         return image_meta
 
+    # NOTE(melwitt): We don't check instance lock for snapshot because lock is
+    #                intended to prevent accidental change/delete of instances
     @wrap_check_policy
     @check_instance_cell
     @check_instance_state(vm_state=[vm_states.ACTIVE, vm_states.STOPPED,
@@ -2007,6 +2023,8 @@ class API(base.Base):
 
         return self.image_api.create(context, sent_meta)
 
+    # NOTE(melwitt): We don't check instance lock for snapshot because lock is
+    #                intended to prevent accidental change/delete of instances
     @check_instance_state(vm_state=[vm_states.ACTIVE, vm_states.STOPPED])
     def snapshot_volume_backed(self, context, instance, image_meta, name,
                                extra_properties=None):
@@ -2199,7 +2217,7 @@ class API(base.Base):
     def revert_resize(self, context, instance):
         """Reverts a resize, deleting the 'new' instance in the process."""
         elevated = context.elevated()
-        migration = migration_obj.Migration.get_by_instance_and_status(
+        migration = objects.Migration.get_by_instance_and_status(
             elevated, instance.uuid, 'finished')
 
         # reverse quota reservation for increased resource usage
@@ -2236,7 +2254,7 @@ class API(base.Base):
         """Confirms a migration/resize and deletes the 'old' instance."""
         elevated = context.elevated()
         if migration is None:
-            migration = migration_obj.Migration.get_by_instance_and_status(
+            migration = objects.Migration.get_by_instance_and_status(
                 elevated, instance.uuid, 'finished')
 
         # reserve quota only for any decrease in resource usage
@@ -2297,9 +2315,9 @@ class API(base.Base):
         """Calculate deltas required to reverse a prior upsizing
         quota adjustment.
         """
-        old_flavor = flavor_obj.Flavor.get_by_id(
+        old_flavor = objects.Flavor.get_by_id(
             context, migration_ref['old_instance_type_id'])
-        new_flavor = flavor_obj.Flavor.get_by_id(
+        new_flavor = objects.Flavor.get_by_id(
             context, migration_ref['new_instance_type_id'])
 
         return API._resize_quota_delta(context, new_flavor, old_flavor, -1, -1)
@@ -2323,7 +2341,7 @@ class API(base.Base):
                            quotas can use the correct project_id/user_id.
         @return: nova.objects.quotas.Quotas
         """
-        quotas = quotas_obj.Quotas()
+        quotas = objects.Quotas()
         if deltas:
             project_id, user_id = quotas_obj.ids_from_instance(context,
                                                                instance)
@@ -2344,7 +2362,7 @@ class API(base.Base):
         # information, just the old and new flavors. Status is set to
         # 'finished' since nothing else will update the status along
         # the way.
-        mig = migration_obj.Migration()
+        mig = objects.Migration()
         mig.instance_uuid = instance.uuid
         mig.old_instance_type_id = current_instance_type['id']
         mig.new_instance_type_id = new_instance_type['id']
@@ -2375,6 +2393,10 @@ class API(base.Base):
         else:
             new_instance_type = flavors.get_flavor_by_flavor_id(
                     flavor_id, read_deleted="no")
+            if (new_instance_type.get('root_gb') == 0 and
+                current_instance_type.get('root_gb') != 0):
+                reason = _('Resize to zero disk flavor is not allowed.')
+                raise exception.CannotResizeDisk(reason=reason)
 
         current_instance_type_name = current_instance_type['name']
         new_instance_type_name = new_instance_type['name']
@@ -2543,6 +2565,12 @@ class API(base.Base):
     def get_diagnostics(self, context, instance):
         """Retrieve diagnostics for the given instance."""
         return self.compute_rpcapi.get_diagnostics(context, instance=instance)
+
+    @wrap_check_policy
+    def get_instance_diagnostics(self, context, instance):
+        """Retrieve diagnostics for the given instance."""
+        return self.compute_rpcapi.get_instance_diagnostics(context,
+                                                            instance=instance)
 
     @wrap_check_policy
     @check_instance_lock
@@ -3000,6 +3028,7 @@ class API(base.Base):
             return False
         return root_bdm.is_volume
 
+    @check_instance_lock
     @check_instance_cell
     @check_instance_state(vm_state=[vm_states.ACTIVE])
     def live_migrate(self, context, instance, block_migration,
@@ -3015,7 +3044,8 @@ class API(base.Base):
                 host_name, block_migration=block_migration,
                 disk_over_commit=disk_over_commit)
 
-    @check_instance_state(vm_state=[vm_states.ACTIVE, vm_states.STOPPED])
+    @check_instance_state(vm_state=[vm_states.ACTIVE, vm_states.STOPPED,
+                                    vm_states.ERROR])
     def evacuate(self, context, instance, host, on_shared_storage,
                  admin_password=None):
         """Running evacuate to target host.
@@ -3024,26 +3054,20 @@ class API(base.Base):
         raising an exception.
         """
         LOG.debug('vm evacuation scheduled')
-        inst_host = instance['host']
-        service = service_obj.Service.get_by_compute_host(context, inst_host)
+        inst_host = instance.host
+        service = objects.Service.get_by_compute_host(context, inst_host)
         if self.servicegroup_api.service_is_up(service):
             msg = (_('Instance compute service state on %s '
                      'expected to be down, but it was up.') % inst_host)
             LOG.error(msg)
             raise exception.ComputeServiceInUse(host=inst_host)
 
-        instance = self.update(context, instance, expected_task_state=[None],
-                               task_state=task_states.REBUILDING)
-
+        instance.task_state = task_states.REBUILDING
+        instance.save(expected_task_state=[None])
         self._record_action_start(context, instance, instance_actions.EVACUATE)
 
-        # NOTE(danms): Transitional until evacuate supports objects
-        inst_obj = objects.Instance._from_db_object(
-            context, objects.Instance(), instance,
-            expected_attrs=['metadata', 'system_metadata', 'info_cache'])
-
         return self.compute_rpcapi.rebuild_instance(context,
-                                        instance=inst_obj,
+                                        instance=instance,
                                         new_pass=admin_password,
                                         injected_files=None,
                                         image_ref=None,
@@ -3056,7 +3080,7 @@ class API(base.Base):
 
     def get_migrations(self, context, filters):
         """Get all migrations for the given filters."""
-        return migration_obj.MigrationList.get_by_filters(context, filters)
+        return objects.MigrationList.get_by_filters(context, filters)
 
     @wrap_check_policy
     def volume_snapshot_create(self, context, volume_id, create_info):
@@ -3115,7 +3139,7 @@ class HostAPI(base.Base):
 
     def _assert_host_exists(self, context, host_name, must_be_up=False):
         """Raise HostNotFound if compute host doesn't exist."""
-        service = service_obj.Service.get_by_compute_host(context, host_name)
+        service = objects.Service.get_by_compute_host(context, host_name)
         if not service:
             raise exception.HostNotFound(host=host_name)
         if must_be_up and not self.servicegroup_api.service_is_up(service):
@@ -3187,8 +3211,8 @@ class HostAPI(base.Base):
         disabled = filters.pop('disabled', None)
         if 'availability_zone' in filters:
             set_zones = True
-        services = service_obj.ServiceList.get_all(context, disabled,
-                                                   set_zones=set_zones)
+        services = objects.ServiceList.get_all(context, disabled,
+                                               set_zones=set_zones)
         ret_services = []
         for service in services:
             for key, val in filters.iteritems():
@@ -3201,7 +3225,7 @@ class HostAPI(base.Base):
 
     def service_get_by_compute_host(self, context, host_name):
         """Get service entry for the given compute hostname."""
-        return service_obj.Service.get_by_compute_host(context, host_name)
+        return objects.Service.get_by_compute_host(context, host_name)
 
     def service_update(self, context, host_name, binary, params_to_update):
         """Enable / Disable a service.
@@ -3209,15 +3233,14 @@ class HostAPI(base.Base):
         For compute services, this stops new builds and migrations going to
         the host.
         """
-        service = service_obj.Service.get_by_args(context, host_name,
-                                                  binary)
+        service = objects.Service.get_by_args(context, host_name, binary)
         service.update(params_to_update)
         service.save()
         return service
 
     def service_delete(self, context, service_id):
         """Deletes the specified service."""
-        service_obj.Service.get_by_id(context, service_id).destroy()
+        objects.Service.get_by_id(context, service_id).destroy()
 
     def instance_get_all_by_host(self, context, host_name):
         """Return all instances on the given host."""
@@ -3253,15 +3276,15 @@ class InstanceActionAPI(base.Base):
     """Sub-set of the Compute Manager API for managing instance actions."""
 
     def actions_get(self, context, instance):
-        return instance_action.InstanceActionList.get_by_instance_uuid(
+        return objects.InstanceActionList.get_by_instance_uuid(
             context, instance['uuid'])
 
     def action_get_by_request_id(self, context, instance, request_id):
-        return instance_action.InstanceAction.get_by_request_id(
+        return objects.InstanceAction.get_by_request_id(
             context, instance['uuid'], request_id)
 
     def action_events_get(self, context, instance, action_id):
-        return instance_action.InstanceActionEventList.get_by_action(
+        return objects.InstanceActionEventList.get_by_action(
             context, action_id)
 
 
@@ -3427,7 +3450,7 @@ class AggregateAPI(base.Base):
                                                     "addhost.start",
                                                     aggregate_payload)
         # validates the host; ComputeHostNotFound is raised if invalid
-        service_obj.Service.get_by_compute_host(context, host_name)
+        objects.Service.get_by_compute_host(context, host_name)
 
         metadata = self.db.aggregate_metadata_get_by_metadata_key(
             context, aggregate_id, 'availability_zone')
@@ -3455,7 +3478,7 @@ class AggregateAPI(base.Base):
                                                     "removehost.start",
                                                     aggregate_payload)
         # validates the host; ComputeHostNotFound is raised if invalid
-        service_obj.Service.get_by_compute_host(context, host_name)
+        objects.Service.get_by_compute_host(context, host_name)
         aggregate = objects.Aggregate.get_by_id(context, aggregate_id)
         aggregate.delete_host(host_name)
         self._update_az_cache_for_host(context, host_name, aggregate.metadata)
@@ -3514,12 +3537,12 @@ class KeypairAPI(base.Base):
 
         fingerprint = crypto.generate_fingerprint(public_key)
 
-        keypair = keypair_obj.KeyPair()
+        keypair = objects.KeyPair(context)
         keypair.user_id = user_id
         keypair.name = key_name
         keypair.fingerprint = fingerprint
         keypair.public_key = public_key
-        keypair.create(context)
+        keypair.create()
 
         self._notify(context, 'import.end', key_name)
 
@@ -3534,12 +3557,12 @@ class KeypairAPI(base.Base):
 
         private_key, public_key, fingerprint = crypto.generate_key_pair()
 
-        keypair = keypair_obj.KeyPair()
+        keypair = objects.KeyPair(context)
         keypair.user_id = user_id
         keypair.name = key_name
         keypair.fingerprint = fingerprint
         keypair.public_key = public_key
-        keypair.create(context)
+        keypair.create()
 
         self._notify(context, 'create.end', key_name)
 
@@ -3549,16 +3572,16 @@ class KeypairAPI(base.Base):
     def delete_key_pair(self, context, user_id, key_name):
         """Delete a keypair by name."""
         self._notify(context, 'delete.start', key_name)
-        keypair_obj.KeyPair.destroy_by_name(context, user_id, key_name)
+        objects.KeyPair.destroy_by_name(context, user_id, key_name)
         self._notify(context, 'delete.end', key_name)
 
     def get_key_pairs(self, context, user_id):
         """List key pairs."""
-        return keypair_obj.KeyPairList.get_by_user(context, user_id)
+        return objects.KeyPairList.get_by_user(context, user_id)
 
     def get_key_pair(self, context, user_id, key_name):
         """Get a keypair by name."""
-        return keypair_obj.KeyPair.get_by_name(context, user_id, key_name)
+        return objects.KeyPair.get_by_name(context, user_id, key_name)
 
 
 class SecurityGroupAPI(base.Base, security_group_base.SecurityGroupBase):
@@ -3717,7 +3740,7 @@ class SecurityGroupAPI(base.Base, security_group_base.SecurityGroupBase):
             msg = _("Security group is still in use")
             self.raise_invalid_group(msg)
 
-        quotas = quotas_obj.Quotas()
+        quotas = objects.Quotas()
         quota_project, quota_user = quotas_obj.ids_from_security_group(
                                 context, security_group)
         try:
@@ -3865,13 +3888,11 @@ class SecurityGroupAPI(base.Base, security_group_base.SecurityGroupBase):
            defined in the default security group rules.
         """
         for rule in self.db.security_group_default_rule_list(context):
-            is_duplicate = True
             keys = ('cidr', 'from_port', 'to_port', 'protocol')
             for key in keys:
                 if rule.get(key) != values.get(key):
-                    is_duplicate = False
                     break
-            if is_duplicate:
+            else:
                 return rule.get('id') or True
         return False
 

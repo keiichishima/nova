@@ -26,6 +26,7 @@ helpers for populating up config object instances.
 from nova import exception
 from nova.openstack.common import log as logging
 from nova.openstack.common import units
+from nova.virt import hardware
 
 from lxml import etree
 
@@ -615,6 +616,11 @@ class LibvirtConfigGuestDisk(LibvirtConfigGuestDevice):
                 elif self.source_type == 'network':
                     self.source_protocol = c.get('protocol')
                     self.source_name = c.get('name')
+                    for sub in c.getchildren():
+                        if sub.tag == 'host':
+                            self.source_hosts.append(sub.get('name'))
+                            self.source_ports.append(sub.get('port'))
+
             elif c.tag == 'serial':
                 self.serial = c.text
 
@@ -1129,6 +1135,28 @@ class LibvirtConfigGuestWatchdog(LibvirtConfigGuestDevice):
         return dev
 
 
+class LibvirtConfigGuestCPUTune(LibvirtConfigObject):
+
+    def __init__(self, **kwargs):
+        super(LibvirtConfigGuestCPUTune, self).__init__(root_name="cputune",
+                                                        **kwargs)
+        self.shares = None
+        self.quota = None
+        self.period = None
+
+    def format_dom(self):
+        root = super(LibvirtConfigGuestCPUTune, self).format_dom()
+
+        if self.shares is not None:
+            root.append(self._text_node("shares", str(self.shares)))
+        if self.quota is not None:
+            root.append(self._text_node("quota", str(self.quota)))
+        if self.period is not None:
+            root.append(self._text_node("period", str(self.period)))
+
+        return root
+
+
 class LibvirtConfigGuest(LibvirtConfigObject):
 
     def __init__(self, **kwargs):
@@ -1142,9 +1170,7 @@ class LibvirtConfigGuest(LibvirtConfigObject):
         self.vcpus = 1
         self.cpuset = None
         self.cpu = None
-        self.cpu_shares = None
-        self.cpu_quota = None
-        self.cpu_period = None
+        self.cputune = None
         self.acpi = False
         self.apic = False
         self.clock = None
@@ -1167,7 +1193,7 @@ class LibvirtConfigGuest(LibvirtConfigObject):
         root.append(self._text_node("memory", self.memory))
         if self.cpuset is not None:
             vcpu = self._text_node("vcpu", self.vcpus)
-            vcpu.set("cpuset", self.cpuset)
+            vcpu.set("cpuset", hardware.format_cpu_spec(self.cpuset))
             root.append(vcpu)
         else:
             root.append(self._text_node("vcpu", self.vcpus))
@@ -1207,17 +1233,6 @@ class LibvirtConfigGuest(LibvirtConfigObject):
                 features.append(etree.Element("apic"))
             root.append(features)
 
-    def _format_cputune(self, root):
-        cputune = etree.Element("cputune")
-        if self.cpu_shares is not None:
-            cputune.append(self._text_node("shares", self.cpu_shares))
-        if self.cpu_quota is not None:
-            cputune.append(self._text_node("quota", self.cpu_quota))
-        if self.cpu_period is not None:
-            cputune.append(self._text_node("period", self.cpu_period))
-        if len(cputune) > 0:
-            root.append(cputune)
-
     def _format_devices(self, root):
         if len(self.devices) == 0:
             return
@@ -1238,7 +1253,9 @@ class LibvirtConfigGuest(LibvirtConfigObject):
 
         self._format_os(root)
         self._format_features(root)
-        self._format_cputune(root)
+
+        if self.cputune is not None:
+            root.append(self.cputune.format_dom())
 
         if self.clock is not None:
             root.append(self.clock.format_dom())

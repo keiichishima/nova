@@ -12,16 +12,16 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
+import contextlib
 import datetime
 
-import contextlib
 import mock
 from oslo.config import cfg
 
 from nova.openstack.common import timeutils
 from nova import test
+from nova.tests.virt.vmwareapi import fake
 from nova.virt.vmwareapi import ds_util
-from nova.virt.vmwareapi import fake
 from nova.virt.vmwareapi import imagecache
 from nova.virt.vmwareapi import vim_util
 from nova.virt.vmwareapi import vmops

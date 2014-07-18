@@ -32,9 +32,8 @@ from nova.compute import task_states
 from nova.compute import vm_states
 from nova import context as nova_context
 from nova import exception
-from nova.network import model as network_model
 from nova.openstack.common import excutils
-from nova.openstack.common.gettextutils import _
+from nova.openstack.common.gettextutils import _, _LE
 from nova.openstack.common import lockutils
 from nova.openstack.common import log as logging
 from nova.openstack.common import strutils
@@ -43,6 +42,7 @@ from nova.openstack.common import uuidutils
 from nova import utils
 from nova.virt import configdrive
 from nova.virt import driver
+from nova.virt.vmwareapi import constants
 from nova.virt.vmwareapi import ds_util
 from nova.virt.vmwareapi import error_util
 from nova.virt.vmwareapi import imagecache
@@ -143,11 +143,11 @@ class VMwareVMOps(object):
         except (error_util.CannotDeleteFileException,
                 error_util.FileFaultException,
                 error_util.FileLockedException,
-                error_util.FileNotFoundException) as e:
+                error_util.FileNotFoundException):
             LOG.debug("Unable to delete %(ds)s. There may be more than "
-                      "one process or thread that tries to delete the file. "
-                      "Exception: %(ex)s",
-                      {'ds': datastore_path, 'ex': e})
+                      "one process or thread trying to delete the file",
+                      {'ds': datastore_path},
+                      exc_info=True)
 
     def _get_vmdk_path(self, ds_name, folder, name):
         path = "%s/%s.vmdk" % (folder, name)
@@ -195,11 +195,10 @@ class VMwareVMOps(object):
         (file_type, is_iso) = self._get_disk_format(image_meta)
 
         client_factory = self._session._get_vim().client.factory
-        ds = vm_util.get_datastore_ref_and_name(self._session, self._cluster,
-                 datastore_regex=self._datastore_regex)
-        data_store_ref = ds[0]
-        data_store_name = ds[1]
-        dc_info = self.get_datacenter_ref_and_name(data_store_ref)
+        datastore = vm_util.get_datastore(
+                self._session, self._cluster,
+                datastore_regex=self._datastore_regex)
+        dc_info = self.get_datacenter_ref_and_name(datastore.ref)
 
         #TODO(hartsocks): this pattern is confusing, reimplement as methods
         # The use of nested functions in this file makes for a confusing and
@@ -219,14 +218,15 @@ class VMwareVMOps(object):
 
             image_size, image_properties = _image_info
             vmdk_file_size_in_kb = int(image_size) / 1024
-            os_type = image_properties.get("vmware_ostype", "otherGuest")
+            os_type = image_properties.get("vmware_ostype",
+                                           constants.DEFAULT_OS_TYPE)
             adapter_type = image_properties.get("vmware_adaptertype",
-                                                "lsiLogic")
+                                                constants.DEFAULT_ADAPTER_TYPE)
             disk_type = image_properties.get("vmware_disktype",
-                                             "preallocated")
+                                             constants.DEFAULT_DISK_TYPE)
             # Get the network card type from the image properties.
             vif_model = image_properties.get("hw_vif_model",
-                                             network_model.VIF_MODEL_E1000)
+                                             constants.DEFAULT_VIF_MODEL)
 
             # Fetch the image_linked_clone data here. It is retrieved
             # with the above network based API call. To retrieve it
@@ -264,10 +264,14 @@ class VMwareVMOps(object):
         # Create the VM
         config_spec = vm_util.get_vm_create_spec(
                             client_factory, instance, instance_name,
-                            data_store_name, vif_infos, os_type)
+                            datastore.name, vif_infos, os_type)
 
         vm_ref = vm_util.create_vm(self._session, instance, dc_info.vmFolder,
                                    config_spec, res_pool_ref)
+
+        # Cache the vm_ref. This saves a remote call to the VC. This uses the
+        # instance_name. This covers all use cases including rescue and resize.
+        vm_util.vm_ref_cache_update(instance_name, vm_ref)
 
         # Set the machine.id parameter of the instance to inject
         # the NIC configuration inside the VM
@@ -291,23 +295,20 @@ class VMwareVMOps(object):
             upload_folder = '%s/%s' % (self._base_folder, upload_name)
 
             # The vmdk meta-data file
-            uploaded_file_name = "%s/%s.%s" % (upload_folder, upload_name,
-                                               file_type)
-            uploaded_file_path = ds_util.build_datastore_path(data_store_name,
-                                                uploaded_file_name)
+            uploaded_file_path = str(datastore.build_path(
+                    upload_folder, "%s.%s" % (upload_name, file_type)))
 
             session_vim = self._session._get_vim()
             cookies = session_vim.client.options.transport.cookiejar
 
-            ds_browser = self._get_ds_browser(data_store_ref)
+            ds_browser = self._get_ds_browser(datastore.ref)
             upload_file_name = upload_name + ".%s" % file_type
 
             # Check if the timestamp file exists - if so then delete it. This
             # will ensure that the aging will not delete a cache image if it
             # is going to be used now.
             if CONF.remove_unused_base_images:
-                ds_path = ds_util.build_datastore_path(data_store_name,
-                                                       self._base_folder)
+                ds_path = str(datastore.build_path(self._base_folder))
                 path = self._imagecache.timestamp_folder_get(ds_path,
                                                              upload_name)
                 # Lock to ensure that the spawn will not try and access a image
@@ -320,8 +321,10 @@ class VMwareVMOps(object):
             # Check if the image exists in the datastore cache. If not the
             # image will be uploaded and cached.
             if not (self._check_if_folder_file_exists(ds_browser,
-                                        data_store_ref, data_store_name,
-                                        upload_folder, upload_file_name)):
+                                                      datastore.ref,
+                                                      datastore.name,
+                                                      upload_folder,
+                                                      upload_file_name)):
                 # Upload will be done to the self._tmp_folder and then moved
                 # to the self._base_folder
                 tmp_upload_folder = '%s/%s' % (self._tmp_folder,
@@ -330,55 +333,50 @@ class VMwareVMOps(object):
 
                 # Naming the VM files in correspondence with the VM instance
                 # The flat vmdk file name
-                flat_uploaded_vmdk_name = "%s/%s-flat.vmdk" % (
-                                            upload_folder, upload_name)
+                flat_uploaded_vmdk_name = "%s-flat.vmdk" % (upload_name)
                 # The sparse vmdk file name for sparse disk image
-                sparse_uploaded_vmdk_name = "%s/%s-sparse.vmdk" % (
-                                            upload_folder, upload_name)
+                sparse_uploaded_vmdk_name = "%s-sparse.vmdk" % (upload_name)
 
-                flat_uploaded_vmdk_path = ds_util.build_datastore_path(
-                                                    data_store_name,
-                                                    flat_uploaded_vmdk_name)
-                sparse_uploaded_vmdk_path = ds_util.build_datastore_path(
-                                                    data_store_name,
-                                                    sparse_uploaded_vmdk_name)
+                flat_ds_loc = datastore.build_path(
+                        upload_folder, flat_uploaded_vmdk_name)
+                sparse_ds_loc = datastore.build_path(
+                        upload_folder, sparse_uploaded_vmdk_name)
 
-                upload_file_name = "%s/%s.%s" % (upload_folder, upload_name,
-                                                 file_type)
-                upload_path = ds_util.build_datastore_path(data_store_name,
-                                                           upload_file_name)
+                upload_path_loc = datastore.build_path(
+                        upload_folder, upload_file_name)
+                upload_rel_path = upload_path_loc.rel_path
                 if not is_iso:
                     if disk_type != "sparse":
                         # Create a flat virtual disk and retain the metadata
                         # file. This will be done in the unique temporary
                         # directory.
-                        ds_util.mkdir(self._session,
-                                      ds_util.build_datastore_path(
-                                          data_store_name, upload_folder),
-                                      dc_info.ref)
+                        ds_util.mkdir(
+                                self._session,
+                                str(datastore.build_path(upload_folder)),
+                                dc_info.ref)
                         LOG.debug("Create virtual disk on %s",
-                                  data_store_name, instance=instance)
+                                  datastore.name, instance=instance)
                         vm_util.create_virtual_disk(self._session,
                                                     dc_info.ref,
                                                     adapter_type,
                                                     disk_type,
-                                                    upload_path,
+                                                    str(upload_path_loc),
                                                     vmdk_file_size_in_kb)
                         LOG.debug("Virtual disk created on %s.",
-                                  data_store_name, instance=instance)
+                                  datastore.name, instance=instance)
                         self._delete_datastore_file(instance,
-                                                    flat_uploaded_vmdk_path,
+                                                    str(flat_ds_loc),
                                                     dc_info.ref)
-                        upload_file_name = flat_uploaded_vmdk_name
+                        upload_rel_path = flat_ds_loc.rel_path
                     else:
-                        upload_file_name = sparse_uploaded_vmdk_name
+                        upload_rel_path = sparse_ds_loc.rel_path
 
                 vmware_images.fetch_image(context,
                                           instance,
                                           self._session._host_ip,
                                           dc_info.name,
-                                          data_store_name,
-                                          upload_file_name,
+                                          datastore.name,
+                                          upload_rel_path,
                                           cookies=cookies)
 
                 if not is_iso and disk_type == "sparse":
@@ -388,16 +386,15 @@ class VMwareVMOps(object):
                                                                 adapter_type,
                                                                 disk_type)
                     vm_util.copy_virtual_disk(self._session, dc_info.ref,
-                                              sparse_uploaded_vmdk_path,
-                                              upload_path, copy_spec)
+                                              str(sparse_ds_loc),
+                                              str(upload_path_loc),
+                                              copy_spec)
                     self._delete_datastore_file(instance,
-                                                sparse_uploaded_vmdk_path,
+                                                str(sparse_ds_loc),
                                                 dc_info.ref)
                 base_folder = '%s/%s' % (self._base_folder, upload_name)
-                dest_folder = ds_util.build_datastore_path(data_store_name,
-                                                           base_folder)
-                src_folder = ds_util.build_datastore_path(data_store_name,
-                                                          upload_folder)
+                dest_folder = str(datastore.build_path(base_folder))
+                src_folder = str(datastore.build_path(upload_folder))
                 try:
                     ds_util.file_move(self._session, dc_info.ref,
                                       src_folder, dest_folder)
@@ -410,9 +407,9 @@ class VMwareVMOps(object):
 
                 # Delete the temp upload folder
                 self._delete_datastore_file(instance,
-                        ds_util.build_datastore_path(data_store_name,
-                                                     tmp_upload_folder),
-                        dc_info.ref)
+                                            str(datastore.build_path(
+                                                    tmp_upload_folder)),
+                                            dc_info.ref)
             else:
                 # linked clone base disk exists
                 if disk_type == "sparse":
@@ -420,11 +417,11 @@ class VMwareVMOps(object):
 
             if is_iso:
                 if root_gb_in_kb:
-                    dest_vmdk_path = self._get_vmdk_path(data_store_name,
+                    dest_vmdk_path = self._get_vmdk_path(datastore.name,
                             instance['uuid'], instance_name)
                     # Create the blank virtual disk for the VM
                     LOG.debug("Create blank virtual disk on %s",
-                              data_store_name, instance=instance)
+                              datastore.name, instance=instance)
                     vm_util.create_virtual_disk(self._session,
                                                 dc_info.ref,
                                                 adapter_type,
@@ -432,7 +429,7 @@ class VMwareVMOps(object):
                                                 dest_vmdk_path,
                                                 root_gb_in_kb)
                     LOG.debug("Blank virtual disk created on %s.",
-                              data_store_name, instance=instance)
+                              datastore.name, instance=instance)
                     root_vmdk_path = dest_vmdk_path
                 else:
                     root_vmdk_path = None
@@ -442,7 +439,7 @@ class VMwareVMOps(object):
                     # If we are not using linked_clone, copy the image from
                     # the cache into the instance directory.  If we are using
                     # linked clone it is references from the cache directory
-                    dest_vmdk_path = self._get_vmdk_path(data_store_name,
+                    dest_vmdk_path = self._get_vmdk_path(datastore.name,
                             instance_name, instance_name)
                     copy_spec = self.get_copy_virtual_disk_spec(client_factory,
                                                                  adapter_type,
@@ -458,31 +455,69 @@ class VMwareVMOps(object):
                                                   root_vmdk_path, dc_info.ref)
                 else:
                     upload_folder = '%s/%s' % (self._base_folder, upload_name)
-                    root_vmdk_name = "%s/%s.%s.vmdk" % (upload_folder,
-                                                        upload_name,
-                                                        root_gb)
-                    root_vmdk_path = ds_util.build_datastore_path(
-                            data_store_name, root_vmdk_name)
-                    if not self._check_if_folder_file_exists(ds_browser,
-                                        data_store_ref, data_store_name,
-                                        upload_folder,
-                                        upload_name + ".%s.vmdk" % root_gb):
-                        LOG.debug("Copying root disk of size %sGb", root_gb)
-                        try:
+                    root_vmdk_name = "%s.%s.vmdk" % (upload_name, root_gb)
+                    root_vmdk_path = str(datastore.build_path(
+                            upload_folder, root_vmdk_name))
+
+                    # Ensure only a single thread extends the image at once.
+                    # We do this by taking a lock on the name of the extended
+                    # image. This allows multiple threads to create resized
+                    # copies simultaneously, as long as they are different
+                    # sizes. Threads attempting to create the same resized copy
+                    # will be serialized, with only the first actually creating
+                    # the copy.
+                    #
+                    # Note that the object is in a per-nova cache directory,
+                    # so inter-nova locking is not a concern. Consequently we
+                    # can safely use simple thread locks.
+
+                    with lockutils.lock(root_vmdk_path,
+                                        lock_file_prefix='nova-vmware-image'):
+                        if not self._check_if_folder_file_exists(
+                                ds_browser,
+                                datastore.ref, datastore.name,
+                                upload_folder,
+                                root_vmdk_name):
+                            LOG.debug("Copying root disk of size %sGb",
+                                      root_gb)
+
                             copy_spec = self.get_copy_virtual_disk_spec(
                                 client_factory, adapter_type, disk_type)
-                            vm_util.copy_virtual_disk(self._session,
-                                                      dc_info.ref,
-                                                      uploaded_file_path,
-                                                      root_vmdk_path,
-                                                      copy_spec)
-                        except Exception as e:
-                            LOG.warning(_("Root disk file creation "
-                                          "failed - %s"), e)
-                        if root_gb_in_kb > vmdk_file_size_in_kb:
-                            self._extend_virtual_disk(instance, root_gb_in_kb,
-                                                      root_vmdk_path,
-                                                      dc_info.ref)
+
+                            # Create a copy of the base image, ensuring we
+                            # clean up on failure
+                            try:
+                                vm_util.copy_virtual_disk(self._session,
+                                                          dc_info.ref,
+                                                          uploaded_file_path,
+                                                          root_vmdk_path,
+                                                          copy_spec)
+                            except Exception as e:
+                                with excutils.save_and_reraise_exception():
+                                    LOG.error(_LE('Failed to copy cached '
+                                                  'image %(source)s to '
+                                                  '%(dest)s for resize: '
+                                                  '%(error)s'),
+                                              {'source': uploaded_file_path,
+                                               'dest': root_vmdk_path,
+                                               'error': e.message})
+                                    try:
+                                        ds_util.file_delete(self._session,
+                                                            root_vmdk_path,
+                                                            dc_info.ref)
+                                    except error_util.FileNotFoundException:
+                                        # File was never created: cleanup not
+                                        # required
+                                        pass
+
+                            # Resize the copy to the appropriate size. No need
+                            # for cleanup up here, as _extend_virtual_disk
+                            # already does it
+                            if root_gb_in_kb > vmdk_file_size_in_kb:
+                                self._extend_virtual_disk(instance,
+                                                          root_gb_in_kb,
+                                                          root_vmdk_path,
+                                                          dc_info.ref)
 
             # Attach the root disk to the VM.
             if root_vmdk_path:
@@ -494,23 +529,23 @@ class VMwareVMOps(object):
             if is_iso:
                 self._attach_cdrom_to_vm(
                     vm_ref, instance,
-                    data_store_ref,
+                    datastore.ref,
                     uploaded_file_path)
 
             if configdrive.required_by(instance):
                 uploaded_iso_path = self._create_config_drive(instance,
                                                               injected_files,
                                                               admin_password,
-                                                              data_store_name,
+                                                              datastore.name,
                                                               dc_info.name,
                                                               instance['uuid'],
                                                               cookies)
                 uploaded_iso_path = ds_util.build_datastore_path(
-                    data_store_name,
+                    datastore.name,
                     uploaded_iso_path)
                 self._attach_cdrom_to_vm(
                     vm_ref, instance,
-                    data_store_ref,
+                    datastore.ref,
                     uploaded_iso_path)
 
         else:
@@ -519,7 +554,7 @@ class VMwareVMOps(object):
                 connection_info = root_disk['connection_info']
                 self._volumeops.attach_root_volume(connection_info, instance,
                                                    self._default_root_device,
-                                                   data_store_ref)
+                                                   datastore.ref)
         if power_on:
             vm_util.power_on_instance(self._session, instance, vm_ref=vm_ref)
 
@@ -580,11 +615,7 @@ class VMwareVMOps(object):
         LOG.debug("Reconfiguring VM instance %(instance_name)s to attach "
                   "cdrom %(file_path)s",
                   {'instance_name': instance_name, 'file_path': file_path})
-        reconfig_task = self._session._call_method(
-                                        self._session._get_vim(),
-                                        "ReconfigVM_Task", vm_ref,
-                                        spec=cdrom_attach_config_spec)
-        self._session._wait_for_task(reconfig_task)
+        vm_util.reconfigure_vm(self._session, vm_ref, cdrom_attach_config_spec)
         LOG.debug("Reconfigured VM instance %(instance_name)s to attach "
                   "cdrom %(file_path)s",
                   {'instance_name': instance_name, 'file_path': file_path})
@@ -698,8 +729,8 @@ class VMwareVMOps(object):
                 LOG.debug("No root disk defined. Unable to snapshot.")
                 raise error_util.NoRootDiskDefined()
 
-            datastore_name = ds_util.split_datastore_path(
-                                        vmdk_file_path_before_snapshot)[0]
+            datastore_name = ds_util.DatastorePath.parse(
+                    vmdk_file_path_before_snapshot).datastore
             os_type = self._session._call_method(vim_util,
                         "get_dynamic_property", vm_ref,
                         "VirtualMachine", "summary.config.guestId")
@@ -774,7 +805,7 @@ class VMwareVMOps(object):
                 image_id,
                 instance,
                 os_type=os_type,
-                disk_type="preallocated",
+                disk_type=constants.DEFAULT_DISK_TYPE,
                 adapter_type=adapter_type,
                 image_version=1,
                 host=self._session._host_ip,
@@ -846,6 +877,10 @@ class VMwareVMOps(object):
             instance_name = instance['uuid']
         try:
             vm_ref = vm_util.get_vm_ref_from_name(self._session, instance_name)
+            if vm_ref is None:
+                LOG.warning(_('Instance does not exist on backend'),
+                            instance=instance)
+                return
             lst_properties = ["config.files.vmPathName", "runtime.powerState",
                               "datastore"]
             props = self._session._call_method(vim_util,
@@ -855,10 +890,10 @@ class VMwareVMOps(object):
                     self._session, props, lst_properties)
             pwr_state = query['runtime.powerState']
             vm_config_pathname = query['config.files.vmPathName']
-            datastore_name = None
+            vm_ds_path = None
             if vm_config_pathname:
-                _ds_path = ds_util.split_datastore_path(vm_config_pathname)
-                datastore_name, vmx_file_path = _ds_path
+                vm_ds_path = ds_util.DatastorePath.parse(vm_config_pathname)
+
             # Power off the VM if it is in PoweredOn state.
             if pwr_state == "poweredOn":
                 LOG.debug("Powering off the VM", instance=instance)
@@ -880,14 +915,12 @@ class VMwareVMOps(object):
                          excep)
             # Delete the folder holding the VM related content on
             # the datastore.
-            if destroy_disks and datastore_name:
+            if destroy_disks and vm_ds_path:
                 try:
-                    dir_ds_compliant_path = ds_util.build_datastore_path(
-                                     datastore_name,
-                                     os.path.dirname(vmx_file_path))
+                    dir_ds_compliant_path = str(vm_ds_path.parent)
                     LOG.debug("Deleting contents of the VM from "
                               "datastore %(datastore_name)s",
-                              {'datastore_name': datastore_name},
+                              {'datastore_name': vm_ds_path.datastore},
                               instance=instance)
                     ds_ref_ret = query['datastore']
                     ds_ref = ds_ref_ret.ManagedObjectReference[0]
@@ -897,13 +930,12 @@ class VMwareVMOps(object):
                                         dc_info.ref)
                     LOG.debug("Deleted contents of the VM from "
                               "datastore %(datastore_name)s",
-                              {'datastore_name': datastore_name},
+                              {'datastore_name': vm_ds_path.datastore},
                               instance=instance)
-                except Exception as excep:
+                except Exception:
                     LOG.warn(_("In vmwareapi:vmops:_destroy_instance, "
-                                "got this exception while deleting "
-                                "the VM contents from the disk: %s"),
-                             excep)
+                               "exception while deleting the VM contents from "
+                               "the disk"), exc_info=True)
         except Exception as exc:
             LOG.exception(exc, instance=instance)
         finally:
@@ -990,7 +1022,7 @@ class VMwareVMOps(object):
 
         self.power_off(instance)
         r_instance = copy.deepcopy(instance)
-        instance_name = r_instance['uuid'] + self._rescue_suffix
+        instance_name = r_instance.uuid + self._rescue_suffix
         self.spawn(context, r_instance, image_meta,
                    None, None, network_info,
                    instance_name=instance_name,
@@ -1002,7 +1034,7 @@ class VMwareVMOps(object):
                         "VirtualMachine", "config.hardware.device")
         (vmdk_path, adapter_type,
          disk_type) = vm_util.get_vmdk_path_and_adapter_type(
-                hardware_devices, uuid=instance['uuid'])
+                hardware_devices, uuid=instance.uuid)
         rescue_vm_ref = vm_util.get_vm_ref_from_name(self._session,
                                                      instance_name)
         self._volumeops.attach_disk_to_vm(
@@ -1020,10 +1052,10 @@ class VMwareVMOps(object):
                         "VirtualMachine", "config.hardware.device")
         (vmdk_path, adapter_type,
          disk_type) = vm_util.get_vmdk_path_and_adapter_type(
-                hardware_devices, uuid=instance['uuid'])
+                hardware_devices, uuid=instance.uuid)
 
         r_instance = copy.deepcopy(instance)
-        instance_name = r_instance['uuid'] + self._rescue_suffix
+        instance_name = r_instance.uuid + self._rescue_suffix
         # detach the original instance disk from the rescue disk
         vm_rescue_ref = vm_util.get_vm_ref_from_name(self._session,
                                                      instance_name)
@@ -1124,9 +1156,9 @@ class VMwareVMOps(object):
                                        step=2,
                                        total_steps=RESIZE_TOTAL_STEPS)
 
-        ds_ref = vm_util.get_datastore_ref_and_name(
+        ds_ref = vm_util.get_datastore(
                             self._session, self._cluster, host_ref,
-                            datastore_regex=self._datastore_regex)[0]
+                            datastore_regex=self._datastore_regex).ref
         dc_info = self.get_datacenter_ref_and_name(ds_ref)
         # 3. Clone the VM for instance
         vm_util.clone_vmref_for_instance(self._session, instance, vm_ref,
@@ -1176,11 +1208,7 @@ class VMwareVMOps(object):
             client_factory = self._session._get_vim().client.factory
             vm_resize_spec = vm_util.get_vm_resize_spec(client_factory,
                                                         instance)
-            reconfig_task = self._session._call_method(
-                                            self._session._get_vim(),
-                                            "ReconfigVM_Task", vm_ref,
-                                            spec=vm_resize_spec)
-            self._session._wait_for_task(reconfig_task)
+            vm_util.reconfigure_vm(self._session, vm_ref, vm_resize_spec)
 
         # 4. Start VM
         if power_on:
@@ -1328,10 +1356,7 @@ class VMwareVMOps(object):
 
         LOG.debug("Reconfiguring VM instance to set the machine id",
                   instance=instance)
-        reconfig_task = self._session._call_method(self._session._get_vim(),
-                           "ReconfigVM_Task", vm_ref,
-                           spec=machine_id_change_spec)
-        self._session._wait_for_task(reconfig_task)
+        vm_util.reconfigure_vm(self._session, vm_ref, machine_id_change_spec)
         LOG.debug("Reconfigured VM instance to set the machine id",
                   instance=instance)
 
@@ -1345,10 +1370,7 @@ class VMwareVMOps(object):
         LOG.debug("Reconfiguring VM instance to enable vnc on "
                   "port - %(port)s", {'port': port},
                   instance=instance)
-        reconfig_task = self._session._call_method(self._session._get_vim(),
-                           "ReconfigVM_Task", vm_ref,
-                           spec=vnc_config_spec)
-        self._session._wait_for_task(reconfig_task)
+        vm_util.reconfigure_vm(self._session, vm_ref, vnc_config_spec)
         LOG.debug("Reconfigured VM instance to enable vnc on "
                   "port - %(port)s", {'port': port},
                   instance=instance)
@@ -1481,6 +1503,13 @@ class VMwareVMOps(object):
             else:
                 break
         return lst_vm_names
+
+    def instance_exists(self, instance):
+        try:
+            vm_util.get_vm_ref(self._session, instance)
+            return True
+        except exception.InstanceNotFound:
+            return False
 
 
 class VMwareVCVMOps(VMwareVMOps):

@@ -35,7 +35,7 @@ driver_opts = [
                help='Driver to use for controlling virtualization. Options '
                    'include: libvirt.LibvirtDriver, xenapi.XenAPIDriver, '
                    'fake.FakeDriver, baremetal.BareMetalDriver, '
-                   'vmwareapi.VMwareESXDriver, vmwareapi.VMwareVCDriver'),
+                   'vmwareapi.VMwareVCDriver'),
     cfg.StrOpt('default_ephemeral_format',
                help='The default format an ephemeral_volume will be '
                     'formatted with on creation.'),
@@ -300,7 +300,7 @@ class ComputeDriver(object):
         raise NotImplementedError()
 
     def destroy(self, context, instance, network_info, block_device_info=None,
-                destroy_disks=True):
+                destroy_disks=True, migrate_data=None):
         """Destroy the specified instance from the Hypervisor.
 
         If the instance is not found (for example if networking failed), this
@@ -314,11 +314,12 @@ class ComputeDriver(object):
         :param block_device_info: Information about block devices that should
                                   be detached from the instance.
         :param destroy_disks: Indicates if disks should be destroyed
+        :param migrate_data: implementation specific params
         """
         raise NotImplementedError()
 
     def cleanup(self, context, instance, network_info, block_device_info=None,
-                destroy_disks=True):
+                destroy_disks=True, migrate_data=None):
         """Cleanup the instance resources .
 
         Instance should have been destroyed from the Hypervisor before calling
@@ -331,7 +332,7 @@ class ComputeDriver(object):
         :param block_device_info: Information about block devices that should
                                   be detached from the instance.
         :param destroy_disks: Indicates if disks should be destroyed
-
+        :param migrate_data: implementation specific params
         """
         raise NotImplementedError()
 
@@ -397,6 +398,13 @@ class ComputeDriver(object):
         :param instance: nova.objects.instance.Instance
         """
         # TODO(Vek): Need to pass context in for access to auth_token
+        raise NotImplementedError()
+
+    def get_instance_diagnostics(self, instance):
+        """Return data about VM diagnostics.
+
+        :param instance: nova.objects.instance.Instance
+        """
         raise NotImplementedError()
 
     def get_all_bw_counters(self, instances):
@@ -623,11 +631,11 @@ class ComputeDriver(object):
         """
         raise NotImplementedError()
 
-    def pre_live_migration(self, ctxt, instance, block_device_info,
+    def pre_live_migration(self, context, instance, block_device_info,
                            network_info, disk_info, migrate_data=None):
         """Prepare an instance for live migration
 
-        :param ctxt: security context
+        :param context: security context
         :param instance: nova.objects.instance.Instance object
         :param block_device_info: instance block device information
         :param network_info: instance network information
@@ -636,13 +644,13 @@ class ComputeDriver(object):
         """
         raise NotImplementedError()
 
-    def live_migration(self, ctxt, instance_ref, dest,
+    def live_migration(self, context, instance, dest,
                        post_method, recover_method, block_migration=False,
                        migrate_data=None):
         """Live migration of an instance to another host.
 
-        :param ctxt: security context
-        :param instance_ref:
+        :param context: security context
+        :param instance:
             nova.db.sqlalchemy.models.Instance object
             instance object that is migrated.
         :param dest: destination host
@@ -658,55 +666,60 @@ class ComputeDriver(object):
         """
         raise NotImplementedError()
 
-    def rollback_live_migration_at_destination(self, ctxt, instance_ref,
+    def rollback_live_migration_at_destination(self, context, instance,
                                                network_info,
-                                               block_device_info):
+                                               block_device_info,
+                                               destroy_disks=True,
+                                               migrate_data=None):
         """Clean up destination node after a failed live migration.
 
-        :param ctxt: security context
-        :param instance_ref: instance object that was being migrated
+        :param context: security context
+        :param instance: instance object that was being migrated
         :param network_info: instance network information
         :param block_device_info: instance block device information
+        :param destroy_disks:
+            if true, destroy disks at destination during cleanup
+        :param migrate_data: implementation specific params
 
         """
         raise NotImplementedError()
 
-    def post_live_migration(self, ctxt, instance_ref, block_device_info,
+    def post_live_migration(self, context, instance, block_device_info,
                             migrate_data=None):
         """Post operation of live migration at source host.
 
-        :param ctxt: security context
-        :instance_ref: instance object that was migrated
+        :param context: security context
+        :instance: instance object that was migrated
         :block_device_info: instance block device information
         :param migrate_data: if not None, it is a dict which has data
         """
         pass
 
-    def post_live_migration_at_destination(self, ctxt, instance_ref,
+    def post_live_migration_at_destination(self, context, instance,
                                            network_info,
                                            block_migration=False,
                                            block_device_info=None):
         """Post operation of live migration at destination host.
 
-        :param ctxt: security context
-        :param instance_ref: instance object that is migrated
+        :param context: security context
+        :param instance: instance object that is migrated
         :param network_info: instance network information
         :param block_migration: if true, post operation of block_migration.
         """
         raise NotImplementedError()
 
-    def check_instance_shared_storage_local(self, ctxt, instance):
+    def check_instance_shared_storage_local(self, context, instance):
         """Check if instance files located on shared storage.
 
         This runs check on the destination host, and then calls
         back to the source host to check the results.
 
-        :param ctxt: security context
+        :param context: security context
         :param instance: nova.db.sqlalchemy.models.Instance
         """
         raise NotImplementedError()
 
-    def check_instance_shared_storage_remote(self, ctxt, data):
+    def check_instance_shared_storage_remote(self, context, data):
         """Check if instance files located on shared storage.
 
         :param context: security context
@@ -714,15 +727,15 @@ class ComputeDriver(object):
         """
         raise NotImplementedError()
 
-    def check_instance_shared_storage_cleanup(self, ctxt, data):
+    def check_instance_shared_storage_cleanup(self, context, data):
         """Do cleanup on host after check_instance_shared_storage calls
 
-        :param ctxt: security context
+        :param context: security context
         :param data: result of check_instance_shared_storage_local
         """
         pass
 
-    def check_can_live_migrate_destination(self, ctxt, instance_ref,
+    def check_can_live_migrate_destination(self, context, instance,
                                            src_compute_info, dst_compute_info,
                                            block_migration=False,
                                            disk_over_commit=False):
@@ -731,8 +744,8 @@ class ComputeDriver(object):
         This runs checks on the destination host, and then calls
         back to the source host to check the results.
 
-        :param ctxt: security context
-        :param instance_ref: nova.db.sqlalchemy.models.Instance
+        :param context: security context
+        :param instance: nova.db.sqlalchemy.models.Instance
         :param src_compute_info: Info about the sending machine
         :param dst_compute_info: Info about the receiving machine
         :param block_migration: if true, prepare for block migration
@@ -741,16 +754,16 @@ class ComputeDriver(object):
         """
         raise NotImplementedError()
 
-    def check_can_live_migrate_destination_cleanup(self, ctxt,
+    def check_can_live_migrate_destination_cleanup(self, context,
                                                    dest_check_data):
         """Do required cleanup on dest host after check_can_live_migrate calls
 
-        :param ctxt: security context
+        :param context: security context
         :param dest_check_data: result of check_can_live_migrate_destination
         """
         raise NotImplementedError()
 
-    def check_can_live_migrate_source(self, ctxt, instance_ref,
+    def check_can_live_migrate_source(self, context, instance,
                                       dest_check_data):
         """Check if it is possible to execute live migration.
 
@@ -758,9 +771,31 @@ class ComputeDriver(object):
         results from check_can_live_migrate_destination.
 
         :param context: security context
-        :param instance_ref: nova.db.sqlalchemy.models.Instance
+        :param instance: nova.db.sqlalchemy.models.Instance
         :param dest_check_data: result of check_can_live_migrate_destination
         :returns: a dict containing migration info (hypervisor-dependent)
+        """
+        raise NotImplementedError()
+
+    def get_instance_disk_info(self, instance_name,
+                               block_device_info=None):
+        """Retrieve information about actual disk sizes of an instance.
+
+        :param instance_name:
+            name of a nova instance as returned by list_instances()
+        :param block_device_info:
+            Optional; Can be used to filter out devices which are
+            actually volumes.
+        :return:
+            json strings with below format::
+
+                "[{'path':'disk',
+                   'type':'raw',
+                   'virt_disk_size':'10737418240',
+                   'backing_file':'backing_file',
+                   'disk_size':'83886080'
+                   'over_committed_disk_size':'10737418240'},
+                   ...]"
         """
         raise NotImplementedError()
 
@@ -884,7 +919,7 @@ class ComputeDriver(object):
         # TODO(Vek): Need to pass context in for access to auth_token
         raise NotImplementedError()
 
-    def set_admin_password(self, context, instance, new_pass=None):
+    def set_admin_password(self, instance, new_pass):
         """Set the root password on the specified instance.
 
         :param instance: nova.objects.instance.Instance

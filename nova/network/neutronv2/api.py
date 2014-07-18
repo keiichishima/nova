@@ -387,8 +387,8 @@ class API(base_api.NetworkAPI):
         # and in later runs will only be what was created that time. Thus,
         # this only affects the attach case, not the original use for this
         # method.
-        return network_model.NetworkInfo([port for port in nw_info
-                                          if port['id'] in created_port_ids +
+        return network_model.NetworkInfo([vif for vif in nw_info
+                                          if vif['id'] in created_port_ids +
                                                            touched_port_ids])
 
     def _refresh_neutron_extensions_cache(self, context):
@@ -714,7 +714,7 @@ class API(base_api.NetworkAPI):
         if ports_needed_per_instance:
             ports = neutron.list_ports(tenant_id=context.project_id)['ports']
             quotas = neutron.show_quota(tenant_id=context.project_id)['quota']
-            if quotas.get('port') == -1:
+            if quotas.get('port', -1) == -1:
                 # Unlimited Port Quota
                 return num_instances
             else:
@@ -975,15 +975,15 @@ class API(base_api.NetworkAPI):
         pool = pool or CONF.default_floating_pool
         pool_id = self._get_floating_ip_pool_id_by_name_or_id(client, pool)
 
-        # TODO(amotoki): handle exception during create_floatingip()
-        # At this timing it is ensured that a network for pool exists.
-        # quota error may be returned.
         param = {'floatingip': {'floating_network_id': pool_id}}
         try:
             fip = client.create_floatingip(param)
         except (neutron_client_exc.IpAddressGenerationFailureClient,
                 neutron_client_exc.ExternalIpAddressExhaustedClient) as e:
             raise exception.NoMoreFloatingIps(unicode(e))
+        except neutron_client_exc.OverQuotaClient as e:
+            raise exception.FloatingIpLimitExceeded(unicode(e))
+
         return fip['floatingip']['floating_ip_address']
 
     def _get_floating_ip_by_address(self, client, address):
@@ -1246,7 +1246,13 @@ class API(base_api.NetworkAPI):
                 subnet_object.add_dns(
                     network_model.IP(address=dns, type='dns'))
 
-            # TODO(gongysh) get the routes for this subnet
+            for route in subnet.get('host_routes', []):
+                subnet_object.add_route(
+                    network_model.Route(cidr=route['destination'],
+                                        gateway=network_model.IP(
+                                            address=route['nexthop'],
+                                            type='gateway')))
+
             subnets.append(subnet_object)
         return subnets
 

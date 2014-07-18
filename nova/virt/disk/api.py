@@ -37,7 +37,6 @@ from nova.openstack.common.gettextutils import _
 from nova.openstack.common import jsonutils
 from nova.openstack.common import log as logging
 from nova.openstack.common import processutils
-from nova import paths
 from nova import utils
 from nova.virt.disk.mount import api as mount
 from nova.virt.disk.vfs import api as vfs
@@ -47,10 +46,6 @@ from nova.virt import images
 LOG = logging.getLogger(__name__)
 
 disk_opts = [
-    cfg.StrOpt('injected_network_template',
-               default=paths.basedir_def('nova/virt/interfaces.template'),
-               help='Template file for injected network'),
-
     # NOTE(yamahata): ListOpt won't work because the command may include a
     #                 comma. For example:
     #
@@ -628,13 +623,11 @@ def _set_passwd(username, admin_passwd, passwd_data, shadow_data):
     s_file = shadow_data.split("\n")
 
     # username MUST exist in passwd file or it's an error
-    found = False
     for entry in p_file:
         split_entry = entry.split(':')
         if split_entry[0] == username:
-            found = True
             break
-    if not found:
+    else:
         msg = _('User %(username)s not found in password file.')
         raise exception.NovaException(msg % username)
 

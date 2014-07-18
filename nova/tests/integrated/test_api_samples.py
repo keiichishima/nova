@@ -1368,10 +1368,10 @@ class AgentsJsonTest(ApiSampleTestBaseV2):
                              'os': 'os',
                              'version': '8.0',
                              'md5hash': 'add6bb58e139be103324d04d82d8f545',
-                             'id': '1'}]
+                             'id': 1}]
 
         def fake_agent_build_create(context, values):
-            values['id'] = '1'
+            values['id'] = 1
             agent_build_ref = models.AgentBuild()
             agent_build_ref.update(values)
             return agent_build_ref
@@ -1970,7 +1970,8 @@ class AdminActionsSamplesJsonTest(ServersSampleBase):
                                  'admin-actions-resume', {})
         self.assertEqual(response.status, 202)
 
-    def test_post_migrate(self):
+    @mock.patch('nova.conductor.manager.ComputeTaskManager._cold_migrate')
+    def test_post_migrate(self, mock_cold_migrate):
         # Get api samples to migrate server request.
         response = self._do_post('servers/%s/action' % self.uuid,
                                  'admin-actions-migrate', {})

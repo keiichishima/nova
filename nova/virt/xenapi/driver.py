@@ -217,7 +217,7 @@ class XenAPIDriver(driver.ComputeDriver):
                                             power_on)
 
     def finish_migration(self, context, migration, instance, disk_info,
-                         network_info, image_meta, resize_instance=False,
+                         network_info, image_meta, resize_instance,
                          block_device_info=None, power_on=True):
         """Completes a resize, turning on the migrated instance."""
         self._vmops.finish_migration(context, migration, instance, disk_info,
@@ -249,13 +249,13 @@ class XenAPIDriver(driver.ComputeDriver):
         self._vmops.change_instance_metadata(instance, diff)
 
     def destroy(self, context, instance, network_info, block_device_info=None,
-                destroy_disks=True):
+                destroy_disks=True, migrate_data=None):
         """Destroy VM instance."""
         self._vmops.destroy(instance, network_info, block_device_info,
                             destroy_disks)
 
     def cleanup(self, context, instance, network_info, block_device_info=None,
-                destroy_disks=True):
+                destroy_disks=True, migrate_data=None):
         """Cleanup after instance being destroyed by Hypervisor."""
         pass
 
@@ -324,17 +324,17 @@ class XenAPIDriver(driver.ComputeDriver):
         """reset networking for specified instance."""
         self._vmops.reset_network(instance)
 
-    def inject_network_info(self, instance, network_info):
+    def inject_network_info(self, instance, nw_info):
         """inject network info for specified instance."""
-        self._vmops.inject_network_info(instance, network_info)
+        self._vmops.inject_network_info(instance, nw_info)
 
-    def plug_vifs(self, instance_ref, network_info):
+    def plug_vifs(self, instance, network_info):
         """Plug VIFs into networks."""
-        self._vmops.plug_vifs(instance_ref, network_info)
+        self._vmops.plug_vifs(instance, network_info)
 
-    def unplug_vifs(self, instance_ref, network_info):
+    def unplug_vifs(self, instance, network_info):
         """Unplug VIFs from networks."""
-        self._vmops.unplug_vifs(instance_ref, network_info)
+        self._vmops.unplug_vifs(instance, network_info)
 
     def get_info(self, instance):
         """Return data about VM instance."""
@@ -400,16 +400,16 @@ class XenAPIDriver(driver.ComputeDriver):
     def attach_volume(self, context, connection_info, instance, mountpoint,
                       disk_bus=None, device_type=None, encryption=None):
         """Attach volume storage to VM instance."""
-        return self._volumeops.attach_volume(connection_info,
-                                             instance['name'],
-                                             mountpoint)
+        self._volumeops.attach_volume(connection_info,
+                                      instance['name'],
+                                      mountpoint)
 
     def detach_volume(self, connection_info, instance, mountpoint,
                       encryption=None):
         """Detach volume storage from VM instance."""
-        return self._volumeops.detach_volume(connection_info,
-                                             instance['name'],
-                                             mountpoint)
+        self._volumeops.detach_volume(connection_info,
+                                      instance['name'],
+                                      mountpoint)
 
     def get_console_pool_info(self, console_type):
         xs_url = urlparse.urlparse(CONF.xenserver.connection_url)
@@ -458,38 +458,38 @@ class XenAPIDriver(driver.ComputeDriver):
 
         return dic
 
-    def ensure_filtering_rules_for_instance(self, instance_ref, network_info):
+    def ensure_filtering_rules_for_instance(self, instance, network_info):
         # NOTE(salvatore-orlando): it enforces security groups on
         # host initialization and live migration.
         # In XenAPI we do not assume instances running upon host initialization
         return
 
-    def check_can_live_migrate_destination(self, ctxt, instance_ref,
+    def check_can_live_migrate_destination(self, context, instance,
                 src_compute_info, dst_compute_info,
                 block_migration=False, disk_over_commit=False):
         """Check if it is possible to execute live migration.
 
         :param context: security context
-        :param instance_ref: nova.db.sqlalchemy.models.Instance object
+        :param instance: nova.db.sqlalchemy.models.Instance object
         :param block_migration: if true, prepare for block migration
         :param disk_over_commit: if true, allow disk over commit
 
         """
-        return self._vmops.check_can_live_migrate_destination(ctxt,
-                                                              instance_ref,
+        return self._vmops.check_can_live_migrate_destination(context,
+                                                              instance,
                                                               block_migration,
                                                               disk_over_commit)
 
-    def check_can_live_migrate_destination_cleanup(self, ctxt,
+    def check_can_live_migrate_destination_cleanup(self, context,
                                                    dest_check_data):
         """Do required cleanup on dest host after check_can_live_migrate calls
 
-        :param ctxt: security context
+        :param context: security context
         :param disk_over_commit: if true, allow disk over commit
         """
         pass
 
-    def check_can_live_migrate_source(self, ctxt, instance_ref,
+    def check_can_live_migrate_source(self, context, instance,
                                       dest_check_data):
         """Check if it is possible to execute live migration.
 
@@ -497,26 +497,27 @@ class XenAPIDriver(driver.ComputeDriver):
         results from check_can_live_migrate_destination.
 
         :param context: security context
-        :param instance_ref: nova.db.sqlalchemy.models.Instance
+        :param instance: nova.db.sqlalchemy.models.Instance
         :param dest_check_data: result of check_can_live_migrate_destination
                                 includes the block_migration flag
         """
-        return self._vmops.check_can_live_migrate_source(ctxt, instance_ref,
+        return self._vmops.check_can_live_migrate_source(context, instance,
                                                          dest_check_data)
 
-    def get_instance_disk_info(self, instance_name):
+    def get_instance_disk_info(self, instance_name,
+                               block_device_info=None):
         """Used by libvirt for live migration. We rely on xenapi
         checks to do this for us.
         """
         pass
 
-    def live_migration(self, ctxt, instance_ref, dest,
+    def live_migration(self, context, instance, dest,
                        post_method, recover_method, block_migration=False,
                        migrate_data=None):
         """Performs the live migration of the specified instance.
 
-        :param ctxt: security context
-        :param instance_ref:
+        :param context: security context
+        :param instance:
             nova.db.sqlalchemy.models.Instance object
             instance object that is migrated.
         :param dest: destination host
@@ -529,20 +530,22 @@ class XenAPIDriver(driver.ComputeDriver):
         :param block_migration: if true, migrate VM disk.
         :param migrate_data: implementation specific params
         """
-        self._vmops.live_migrate(ctxt, instance_ref, dest, post_method,
+        self._vmops.live_migrate(context, instance, dest, post_method,
                                  recover_method, block_migration, migrate_data)
 
     def rollback_live_migration_at_destination(self, context, instance,
                                                network_info,
-                                               block_device_info):
+                                               block_device_info,
+                                               destroy_disks=True,
+                                               migrate_data=None):
         # NOTE(johngarbutt) Destroying the VM is not appropriate here
         # and in the cases where it might make sense,
         # XenServer has already done it.
         # TODO(johngarbutt) investigate if any cleanup is required here
         pass
 
-    def pre_live_migration(self, context, instance_ref, block_device_info,
-                           network_info, data, migrate_data=None):
+    def pre_live_migration(self, context, instance, block_device_info,
+                           network_info, disk_info, migrate_data=None):
         """Preparation live migration.
 
         :param block_device_info:
@@ -555,35 +558,36 @@ class XenAPIDriver(driver.ComputeDriver):
                  self._vmops.connect_block_device_volumes(block_device_info)
         return pre_live_migration_result
 
-    def post_live_migration(self, ctxt, instance_ref, block_device_info,
+    def post_live_migration(self, context, instance, block_device_info,
                             migrate_data=None):
         """Post operation of live migration at source host.
 
-        :param ctxt: security context
-        :instance_ref: instance object that was migrated
+        :param context: security context
+        :instance: instance object that was migrated
         :block_device_info: instance block device information
         :param migrate_data: if not None, it is a dict which has data
         """
-        self._vmops.post_live_migration(ctxt, instance_ref, migrate_data)
+        self._vmops.post_live_migration(context, instance, migrate_data)
 
-    def post_live_migration_at_destination(self, ctxt, instance_ref,
-                                           network_info, block_migration,
+    def post_live_migration_at_destination(self, context, instance,
+                                           network_info,
+                                           block_migration=False,
                                            block_device_info=None):
         """Post operation of live migration at destination host.
 
-        :param ctxt: security context
-        :param instance_ref:
+        :param context: security context
+        :param instance:
             nova.db.sqlalchemy.models.Instance object
             instance object that is migrated.
         :param network_info: instance network information
         :param : block_migration: if true, post operation of block_migration.
         """
-        self._vmops.post_live_migration_at_destination(ctxt, instance_ref,
+        self._vmops.post_live_migration_at_destination(context, instance,
                 network_info, block_device_info, block_device_info)
 
-    def unfilter_instance(self, instance_ref, network_info):
+    def unfilter_instance(self, instance, network_info):
         """Removes security groups configured for an instance."""
-        return self._vmops.unfilter_instance(instance_ref, network_info)
+        return self._vmops.unfilter_instance(instance, network_info)
 
     def refresh_security_group_rules(self, security_group_id):
         """Updates security group rules for all instances associated with a
@@ -633,8 +637,8 @@ class XenAPIDriver(driver.ComputeDriver):
             raise NotImplementedError(msg)
 
     def set_host_enabled(self, host, enabled):
-        """Sets the specified host's ability to accept new instances."""
-        return self._host.set_host_enabled(host, enabled)
+        """Sets the compute host's ability to accept new instances."""
+        return self._host.set_host_enabled(enabled)
 
     def get_host_uptime(self, host):
         """Returns the result of calling "uptime" on the target host."""

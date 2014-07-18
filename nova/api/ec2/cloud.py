@@ -43,10 +43,6 @@ from nova import network
 from nova.network.security_group import neutron_driver
 from nova import objects
 from nova.objects import base as obj_base
-from nova.objects import ec2 as ec2_obj
-from nova.objects import flavor as flavor_obj
-from nova.objects import security_group as sec_group_obj
-from nova.objects import service as service_obj
 from nova.openstack.common.gettextutils import _
 from nova.openstack.common import log as logging
 from nova.openstack.common import timeutils
@@ -280,7 +276,7 @@ class CloudController(object):
             availability_zones.get_availability_zones(ctxt)
 
         # Available services
-        enabled_services = service_obj.ServiceList.get_all(context,
+        enabled_services = objects.ServiceList.get_all(context,
                 disabled=False, set_zones=True)
         zone_hosts = {}
         host_services = {}
@@ -583,7 +579,7 @@ class CloudController(object):
             source_project_id = self._get_source_project_id(context,
                 source_security_group_owner_id)
 
-            source_security_group = sec_group_obj.SecurityGroup.get_by_name(
+            source_security_group = objects.SecurityGroup.get_by_name(
                     context.elevated(),
                     source_project_id,
                     source_security_group_name)
@@ -852,7 +848,7 @@ class CloudController(object):
                                         kwargs.get('description'),
                                         **create_kwargs)
 
-        vmap = ec2_obj.EC2VolumeMapping(context)
+        vmap = objects.EC2VolumeMapping(context)
         vmap.uuid = volume['id']
         vmap.create()
 
@@ -1332,9 +1328,8 @@ class CloudController(object):
             msg = _('Image must be available')
             raise exception.ImageNotActive(message=msg)
 
-        flavor = flavor_obj.Flavor.get_by_name(context,
-                                               kwargs.get('instance_type',
-                                                          None))
+        flavor = objects.Flavor.get_by_name(context,
+                                            kwargs.get('instance_type', None))
 
         (instances, resv_id) = self.compute_api.create(context,
             instance_type=obj_base.obj_to_primitive(flavor),
@@ -1670,6 +1665,10 @@ class CloudController(object):
     # manipulating instances/volumes/snapshots.
     # As other code doesn't take it into consideration, here we don't
     # care of it for now. Ostrich algorithm
+    # TODO(mriedem): Consider auto-locking the instance when stopping it and
+    # doing the snapshot, then unlock it when that is done. Locking the
+    # instance in the database would prevent other APIs from changing the state
+    # of the instance during this operation for non-admin users.
     def create_image(self, context, instance_id, **kwargs):
         # NOTE(yamahata): name/description are ignored by register_image(),
         #                 do so here
@@ -1685,14 +1684,14 @@ class CloudController(object):
         if not self.compute_api.is_volume_backed_instance(context, instance):
             msg = _("Invalid value '%(ec2_instance_id)s' for instanceId. "
                     "Instance does not have a volume attached at root "
-                    "(%(root)s)") % {'root': instance['root_device_name'],
+                    "(%(root)s)") % {'root': instance.root_device_name,
                                      'ec2_instance_id': ec2_instance_id}
             raise exception.InvalidParameterValue(err=msg)
 
         # stop the instance if necessary
         restart_instance = False
         if not no_reboot:
-            vm_state = instance['vm_state']
+            vm_state = instance.vm_state
 
             # if the instance is in subtle state, refuse to proceed.
             if vm_state not in (vm_states.ACTIVE, vm_states.STOPPED):
@@ -1700,24 +1699,31 @@ class CloudController(object):
 
             if vm_state == vm_states.ACTIVE:
                 restart_instance = True
-                self.compute_api.stop(context, instance)
+                # NOTE(mriedem): We do a call here so that we're sure the
+                # stop request is complete before we begin polling the state.
+                self.compute_api.stop(context, instance, do_cast=False)
 
-            # wait instance for really stopped
+            # wait instance for really stopped (and not transitioning tasks)
             start_time = time.time()
-            while vm_state != vm_states.STOPPED:
+            while (vm_state != vm_states.STOPPED and
+                   instance.task_state is not None):
                 time.sleep(1)
-                instance = self.compute_api.get(context, instance_uuid,
-                                                want_objects=True)
-                vm_state = instance['vm_state']
+                instance.refresh()
+                vm_state = instance.vm_state
                 # NOTE(yamahata): timeout and error. 1 hour for now for safety.
                 #                 Is it too short/long?
                 #                 Or is there any better way?
                 timeout = 1 * 60 * 60
                 if time.time() > start_time + timeout:
-                    err = _("Couldn't stop instance within %d sec") % timeout
+                    err = (_("Couldn't stop instance %(instance)s within "
+                             "1 hour. Current vm_state: %(vm_state)s, "
+                             "current task_state: %(task_state)s") %
+                             {'instance': instance_uuid,
+                              'vm_state': vm_state,
+                              'task_state': instance.task_state})
                     raise exception.InternalError(message=err)
 
-        glance_uuid = instance['image_ref']
+        glance_uuid = instance.image_ref
         ec2_image_id = ec2utils.glance_id_to_ec2_id(context, glance_uuid)
         src_image = self._get_image(context, ec2_image_id)
         image_meta = dict(src_image)
@@ -1732,7 +1738,7 @@ class CloudController(object):
         _unmap_id_property(image_meta['properties'], 'ramdisk_id')
 
         # meaningful image name
-        name_map = dict(instance=instance['uuid'], now=timeutils.isotime())
+        name_map = dict(instance=instance_uuid, now=timeutils.isotime())
         name = name or _('image of %(instance)s at %(now)s') % name_map
 
         new_image = self.compute_api.snapshot_volume_backed(context,

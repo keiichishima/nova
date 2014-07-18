@@ -104,7 +104,7 @@ class LibvirtBaseVolumeDriver(object):
 
         conf = vconfig.LibvirtConfigGuestDisk()
         conf.driver_name = virtutils.pick_disk_driver_name(
-            self.connection.get_hypervisor_version(),
+            self.connection._get_hypervisor_version(),
             self.is_block_dev
         )
         conf.source_device = disk_info['type']
@@ -348,7 +348,7 @@ class LibvirtISCSIVolumeDriver(LibvirtBaseVolumeDriver):
         device_prefix = ("/dev/disk/by-path/ip-%s-iscsi-%s-lun-" %
                          (iscsi_properties['target_portal'],
                           iscsi_properties['target_iqn']))
-        devices = self.connection.get_all_block_devices()
+        devices = self.connection._get_all_block_devices()
         devices = [dev for dev in devices if dev.startswith(device_prefix)]
         if not devices:
             self._disconnect_from_iscsi_portal(iscsi_properties)
@@ -384,7 +384,7 @@ class LibvirtISCSIVolumeDriver(LibvirtBaseVolumeDriver):
                                            multipath_device):
         self._rescan_iscsi()
         self._rescan_multipath()
-        block_devices = self.connection.get_all_block_devices()
+        block_devices = self.connection._get_all_block_devices()
         devices = []
         for dev in block_devices:
             if "/mapper/" in dev:
@@ -669,7 +669,7 @@ class LibvirtNFSVolumeDriver(LibvirtBaseVolumeDriver):
             if 'target is busy' in exc.message:
                 LOG.debug("The NFS share %s is still in use.", export)
             else:
-                LOG.exception(_("Couldn't unmount the NFS share %s"), export)
+                LOG.exception(_LE("Couldn't unmount the NFS share %s"), export)
 
     def _ensure_mounted(self, nfs_export, options=None):
         """@type nfs_export: string
@@ -887,7 +887,7 @@ class LibvirtGlusterfsVolumeDriver(LibvirtBaseVolumeDriver):
             if 'target is busy' in exc.message:
                 LOG.debug("The GlusterFS share %s is still in use.", export)
             else:
-                LOG.exception(_("Couldn't unmount the GlusterFS share %s"),
+                LOG.exception(_LE("Couldn't unmount the GlusterFS share %s"),
                               export)
 
     def _ensure_mounted(self, glusterfs_export, options=None):

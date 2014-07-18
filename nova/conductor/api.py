@@ -103,10 +103,6 @@ class LocalAPI(object):
     def provider_fw_rule_get_all(self, context):
         return self._manager.provider_fw_rule_get_all(context)
 
-    def agent_build_get_by_triple(self, context, hypervisor, os, architecture):
-        return self._manager.agent_build_get_by_triple(context, hypervisor,
-                                                       os, architecture)
-
     def block_device_mapping_create(self, context, values):
         return self._manager.block_device_mapping_update_or_create(context,
                                                                    values,
@@ -282,6 +278,10 @@ class API(LocalAPI):
         '''
         attempt = 0
         timeout = early_timeout
+        # if we show the timeout message, make sure we show a similar
+        # message saying that everything is now working to avoid
+        # confusion
+        has_timedout = False
         while True:
             # NOTE(danms): Try ten times with a short timeout, and then punt
             # to the configured RPC timeout after that
@@ -296,11 +296,17 @@ class API(LocalAPI):
             try:
                 self.base_rpcapi.ping(context, '1.21 GigaWatts',
                                       timeout=timeout)
+                if has_timedout:
+                    LOG.info(_('nova-conductor connection '
+                               'established successfully'))
                 break
             except messaging.MessagingTimeout:
-                LOG.warning(_('Timed out waiting for nova-conductor. '
-                                'Is it running? Or did this service start '
-                                'before nova-conductor?'))
+                has_timedout = True
+                LOG.warning(_('Timed out waiting for nova-conductor.  '
+                              'Is it running? Or did this service start '
+                              'before nova-conductor?  '
+                              'Reattempting establishment of '
+                              'nova-conductor connection...'))
 
     def instance_update(self, context, instance_uuid, **updates):
         """Perform an instance update in the database."""

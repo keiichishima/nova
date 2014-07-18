@@ -48,7 +48,6 @@ from nova.network import manager
 from nova.network.neutronv2 import api as neutron_api
 from nova import objects
 from nova.objects import instance as instance_obj
-from nova.objects import service as service_obj
 from nova.openstack.common.gettextutils import _
 from nova.openstack.common import jsonutils
 from nova.openstack.common import policy as common_policy
@@ -197,6 +196,8 @@ class ServersControllerTest(ControllerTest):
 
     def setUp(self):
         super(ServersControllerTest, self).setUp()
+        self.compute_api = self.controller.compute_api
+        self.context = context.RequestContext('fake', 'fake')
 
     def test_can_check_loaded_extensions(self):
         self.ext_mgr.extensions = {'os-fake': None}
@@ -259,6 +260,25 @@ class ServersControllerTest(ControllerTest):
         req = fakes.HTTPRequest.blank('/fake/servers/%s' % FAKE_UUID)
         res_dict = self.controller.show(req, FAKE_UUID)
         self.assertEqual(res_dict['server']['id'], FAKE_UUID)
+
+    def test_get_server_no_image(self):
+
+        def return_instance(self, *args, **kwargs):
+            return fakes.stub_instance(id=1, uuid=FAKE_UUID,
+                                       project_id=str(uuid.uuid4()),
+                                       image_ref='')
+
+        def fake_add_image_ref(context, instance):
+            instance['image_ref'] = 'fake_image'
+            return instance
+
+        self.stubs.Set(db, 'instance_get_by_uuid', return_instance)
+        self.stubs.Set(instance_obj, 'add_image_ref', fake_add_image_ref)
+
+        req = fakes.HTTPRequest.blank('/fake/servers/%s' % FAKE_UUID)
+        server = self.controller.show(req, FAKE_UUID)
+
+        self.assertEqual('fake_image', server['server']['image']['id'])
 
     def test_unique_host_id(self):
         """Create two servers with the same host and different
@@ -517,6 +537,29 @@ class ServersControllerTest(ControllerTest):
             ]
 
             self.assertEqual(s['links'], expected_links)
+
+    def test_get_servers_no_image(self):
+
+        def fake_get_all(compute_self, context, search_opts=None,
+                         sort_key=None, sort_dir='desc',
+                         limit=None, marker=None, want_objects=False):
+            db_list = [fakes.stub_instance(100,
+                                           uuid=FAKE_UUID,
+                                           image_ref='')]
+            return instance_obj._make_instance_list(
+                context, objects.InstanceList(), db_list, FIELDS)
+
+        def fake_add_image_ref(context, instance):
+            instance['image_ref'] = 'fake_image'
+            return instance
+
+        self.stubs.Set(instance_obj, 'add_image_ref', fake_add_image_ref)
+        self.stubs.Set(compute_api.API, 'get_all', fake_get_all)
+
+        req = fakes.HTTPRequest.blank('/fake/servers/detail')
+        res_dict = self.controller.detail(req)
+        for s in res_dict['servers']:
+            self.assertEqual('fake_image', s['image']['id'])
 
     def test_get_servers_with_limit(self):
         req = fakes.HTTPRequest.blank('/fake/servers?limit=3')
@@ -1433,7 +1476,7 @@ class ServersControllerDeleteTest(ControllerTest):
         @classmethod
         def fake_get_by_compute_host(cls, context, host):
             return {'updated_at': timeutils.utcnow()}
-        self.stubs.Set(service_obj.Service, 'get_by_compute_host',
+        self.stubs.Set(objects.Service, 'get_by_compute_host',
                        fake_get_by_compute_host)
 
         self.controller.delete(req, FAKE_UUID)
@@ -1454,7 +1497,7 @@ class ServersControllerDeleteTest(ControllerTest):
         @classmethod
         def fake_get_by_compute_host(cls, context, host):
             return {'updated_at': datetime.datetime.min}
-        self.stubs.Set(service_obj.Service, 'get_by_compute_host',
+        self.stubs.Set(objects.Service, 'get_by_compute_host',
                        fake_get_by_compute_host)
 
         self.controller.delete(req, FAKE_UUID)
@@ -2157,6 +2200,15 @@ class ServersControllerCreateTest(test.TestCase):
         self.stubs.Set(compute_api.API, 'create', fake_create)
         self.assertRaises(webob.exc.HTTPBadRequest,
                           self._test_create_extra, params)
+
+    @mock.patch.object(compute_api.API, 'create')
+    def test_create_instance_raise_user_data_too_large(self, mock_create):
+        mock_create.side_effect = exception.InstanceUserDataTooLarge(
+            maxsize=1, length=2)
+
+        self.assertRaises(webob.exc.HTTPBadRequest,
+                          self.controller.create,
+                          self.req, self.body)
 
     def test_create_instance_with_network_with_no_subnet(self):
         self.flags(network_api_class='nova.network.neutronv2.api.API')
@@ -3109,6 +3161,21 @@ class ServersControllerCreateTest(test.TestCase):
         self.stubs.Set(compute_api.API, 'create', fake_create)
         self.assertRaises(webob.exc.HTTPBadRequest,
                                         self._test_create_extra, params)
+
+    @mock.patch.object(compute_api.API, 'create')
+    def test_create_multiple_instance_with_specified_ip_neutronv2(self,
+                                                                  _api_mock):
+        _api_mock.side_effect = exception.InvalidFixedIpAndMaxCountRequest(
+            reason="")
+        network = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa'
+        port = 'eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee'
+        address = '10.0.0.1'
+        self.body['server']['max_count'] = 2
+        requested_networks = [{'uuid': network, 'fixed_ip': address,
+                               'port': port}]
+        params = {'networks': requested_networks}
+        self.assertRaises(webob.exc.HTTPBadRequest,
+                          self._test_create_extra, params)
 
     def test_create_multiple_instance_with_neutronv2_port(self):
         self.flags(network_api_class='nova.network.neutronv2.api.API')

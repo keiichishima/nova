@@ -75,10 +75,11 @@ class BlockDeviceDict(dict):
 
     _required_fields = set(['source_type'])
 
-    def __init__(self, bdm_dict=None, do_not_default=None):
+    def __init__(self, bdm_dict=None, do_not_default=None, **kwargs):
         super(BlockDeviceDict, self).__init__()
 
         bdm_dict = bdm_dict or {}
+        bdm_dict.update(kwargs)
         do_not_default = do_not_default or set()
 
         self._validate(bdm_dict)
@@ -451,6 +452,16 @@ def strip_prefix(device_name):
     """remove both leading /dev/ and xvd or sd or vd."""
     device_name = strip_dev(device_name)
     return _pref.sub('', device_name)
+
+
+_nums = re.compile('\d+')
+
+
+def get_device_letter(device_name):
+    letter = strip_prefix(device_name)
+    # NOTE(vish): delete numbers in case we have something like
+    #             /dev/sda1
+    return _nums.sub('', letter)
 
 
 def instance_block_mapping(instance, bdms):

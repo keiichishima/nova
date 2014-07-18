@@ -236,7 +236,7 @@ class AttachVolumeTestCase(VolumeOpsTestBase):
                                             False)
 
     @mock.patch.object(volumeops.VolumeOps, "_attach_volume")
-    def test_attach_volume_default_hotplug(self, mock_attach):
+    def test_attach_volume_default_hotplug_connect_volume(self, mock_attach):
         self.ops.connect_volume({})
         mock_attach.assert_called_once_with({})
 
@@ -311,7 +311,7 @@ class AttachVolumeTestCase(VolumeOpsTestBase):
         conn_info = {"driver_volume_type": "xensm"}
         self.ops._check_is_supported_driver_type(conn_info)
 
-    def test_check_is_supported_driver_type_pass_iscsi(self):
+    def test_check_is_supported_driver_type_pass_bad(self):
         conn_info = {"driver_volume_type": "bad"}
         self.assertRaises(exception.VolumeDriverNotFound,
                           self.ops._check_is_supported_driver_type, conn_info)

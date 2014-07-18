@@ -38,7 +38,6 @@ from nova.network.security_group import openstack_driver
 from nova import notifications
 from nova import objects
 from nova.objects import base as nova_object
-from nova.objects import instance as instance_obj
 from nova.objects import quotas as quotas_obj
 from nova.openstack.common import excutils
 from nova.openstack.common.gettextutils import _
@@ -189,6 +188,7 @@ class ConductorManager(manager.Manager):
         rules = self.db.provider_fw_rule_get_all(context)
         return jsonutils.to_primitive(rules)
 
+    # NOTE(danms): This can be removed in version 3.0 of the RPC API
     def agent_build_get_by_triple(self, context, hypervisor, os, architecture):
         info = self.db.agent_build_get_by_triple(context, hypervisor, os,
                                                  architecture)
@@ -204,9 +204,9 @@ class ConductorManager(manager.Manager):
             bdm = self.db.block_device_mapping_update(context,
                                                       values['id'],
                                                       values)
-        # NOTE:comstud): 'bdm' is always in the new format, so we
-        # account for this in cells/messaging.py
-        self.cells_rpcapi.bdm_update_or_create_at_top(context, bdm,
+        bdm_obj = objects.BlockDeviceMapping._from_db_object(
+                context, objects.BlockDeviceMapping(), bdm)
+        self.cells_rpcapi.bdm_update_or_create_at_top(context, bdm_obj,
                                                       create=create)
 
     def block_device_mapping_get_all_by_instance(self, context, instance,
@@ -473,13 +473,13 @@ class ComputeTaskManager(base.Base):
                                    exception.MigrationPreCheckError)
     def migrate_server(self, context, instance, scheduler_hint, live, rebuild,
             flavor, block_migration, disk_over_commit, reservations=None):
-        if instance and not isinstance(instance, instance_obj.Instance):
+        if instance and not isinstance(instance, nova_object.NovaObject):
             # NOTE(danms): Until v2 of the RPC API, we need to tolerate
             # old-world instance objects here
             attrs = ['metadata', 'system_metadata', 'info_cache',
                      'security_groups']
-            instance = instance_obj.Instance._from_db_object(
-                context, instance_obj.Instance(), instance,
+            instance = objects.Instance._from_db_object(
+                context, objects.Instance(), instance,
                 expected_attrs=attrs)
         if live and not rebuild and not flavor:
             self._live_migrate(context, instance, scheduler_hint,
@@ -507,6 +507,7 @@ class ComputeTaskManager(base.Base):
                                                      reservations,
                                                      instance=instance)
         try:
+            scheduler_utils.populate_retry(filter_properties, instance['uuid'])
             hosts = self.scheduler_rpcapi.select_destinations(
                     context, request_spec, filter_properties)
             host_state = hosts[0]
@@ -519,9 +520,8 @@ class ComputeTaskManager(base.Base):
                                           updates, ex, request_spec)
             quotas.rollback()
 
-            LOG.warning(_("No valid host found for cold migrate"),
-                        instance=instance)
-            return
+            msg = _("No valid host found for cold migrate")
+            raise exception.NoValidHost(reason=msg)
 
         try:
             scheduler_utils.populate_filter_properties(filter_properties,
@@ -643,7 +643,6 @@ class ComputeTaskManager(base.Base):
             *instances):
         request_spec = scheduler_utils.build_request_spec(context, image,
                 instances)
-        # dict(host='', nodename='', limits='')
         hosts = self.scheduler_rpcapi.select_destinations(context,
                 request_spec, filter_properties)
         return hosts

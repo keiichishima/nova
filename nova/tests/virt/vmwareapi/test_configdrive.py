@@ -15,8 +15,8 @@
 
 import contextlib
 import copy
-import fixtures
 
+import fixtures
 import mock
 import mox
 
@@ -25,10 +25,10 @@ from nova.image import glance
 from nova import test
 import nova.tests.image.fake
 from nova.tests import utils
+from nova.tests.virt.vmwareapi import fake as vmwareapi_fake
 from nova.tests.virt.vmwareapi import stubs
 from nova.virt import fake
 from nova.virt.vmwareapi import driver
-from nova.virt.vmwareapi import fake as vmwareapi_fake
 from nova.virt.vmwareapi import read_write_util
 from nova.virt.vmwareapi import vm_util
 from nova.virt.vmwareapi import vmops
@@ -56,8 +56,7 @@ class ConfigDriveTestCase(test.NoDBTestCase):
         self.node_name = '%s(%s)' % (self.conn.dict_mors.keys()[0],
                                      cluster_name)
         image_ref = nova.tests.image.fake.get_valid_image_id()
-        self.test_instance = {'node': 'test_url',
-                              'vm_state': 'building',
+        self.test_instance = {'vm_state': 'building',
                               'project_id': 'fake',
                               'user_id': 'fake',
                               'name': '1',
@@ -170,7 +169,8 @@ class ConfigDriveTestCase(test.NoDBTestCase):
                                                mox.IgnoreArg(),
                                                mox.IgnoreArg(),
                                                mox.IgnoreArg(),
-                                               mox.IgnoreArg())
+                                               mox.IgnoreArg()
+                                               ).AndReturn('[ds1] fake.iso')
         self.conn._vmops._attach_cdrom_to_vm(mox.IgnoreArg(),
                                                mox.IgnoreArg(),
                                                mox.IgnoreArg(),

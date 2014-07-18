@@ -1163,6 +1163,22 @@ class TestNeutronv2(TestNeutronv2Base):
         api = neutronapi.API()
         api.validate_networks(self.context, requested_networks, 1)
 
+    def test_validate_networks_without_port_quota_on_network_side(self):
+        requested_networks = [('my_netid1', None, None),
+                              ('my_netid2', None, None)]
+        ids = ['my_netid1', 'my_netid2']
+        self.moxed_client.list_networks(
+            id=mox.SameElementsAs(ids)).AndReturn(
+                {'networks': self.nets2})
+        self.moxed_client.list_ports(tenant_id='my_tenantid').AndReturn(
+                    {'ports': []})
+        self.moxed_client.show_quota(
+            tenant_id='my_tenantid').AndReturn(
+                    {'quota': {}})
+        self.mox.ReplayAll()
+        api = neutronapi.API()
+        api.validate_networks(self.context, requested_networks, 1)
+
     def test_validate_networks_ex_1(self):
         requested_networks = [('my_netid1', None, None)]
         self.moxed_client.list_networks(
@@ -2145,6 +2161,32 @@ class TestNeutronv2(TestNeutronv2Base):
         self.assertEqual(nw_infos[1]['id'], 'port1')
         self.assertEqual(nw_infos[2]['id'], 'port2')
 
+    def test_get_subnets_from_port(self):
+        api = neutronapi.API()
+
+        port_data = copy.copy(self.port_data1[0])
+        subnet_data1 = copy.copy(self.subnet_data1)
+        subnet_data1[0]['host_routes'] = [
+            {'destination': '192.168.0.0/24', 'nexthop': '1.0.0.10'}
+        ]
+
+        self.moxed_client.list_subnets(
+            id=[port_data['fixed_ips'][0]['subnet_id']]
+        ).AndReturn({'subnets': subnet_data1})
+        self.moxed_client.list_ports(
+            network_id=subnet_data1[0]['network_id'],
+            device_owner='network:dhcp').AndReturn({'ports': []})
+        self.mox.ReplayAll()
+
+        subnets = api._get_subnets_from_port(self.context, port_data)
+
+        self.assertEqual(len(subnets), 1)
+        self.assertEqual(len(subnets[0]['routes']), 1)
+        self.assertEqual(subnets[0]['routes'][0]['cidr'],
+                         subnet_data1[0]['host_routes'][0]['destination'])
+        self.assertEqual(subnets[0]['routes'][0]['gateway']['address'],
+                         subnet_data1[0]['host_routes'][0]['nexthop'])
+
     def test_get_all_empty_list_networks(self):
         api = neutronapi.API()
         self.moxed_client.list_networks().AndReturn({'networks': []})
@@ -2268,6 +2310,21 @@ class TestNeutronv2WithMock(test.TestCase):
                               self.context, requested_networks, 1)
 
             list_ports_mock.assert_called_once_with(**list_port_mock_params)
+
+    def test_allocate_floating_ip_exceed_limit(self):
+        # Verify that the correct exception is thrown when quota exceed
+        pool_name = 'dummy'
+        api = neutronapi.API()
+        with contextlib.nested(
+            mock.patch.object(client.Client, 'create_floatingip'),
+            mock.patch.object(api,
+                '_get_floating_ip_pool_id_by_name_or_id')) as (
+            create_mock, get_mock):
+            create_mock.side_effect = neutronv2.exceptions.OverQuotaClient()
+
+            self.assertRaises(exception.FloatingIpLimitExceeded,
+                          api.allocate_floating_ip,
+                          self.context, pool_name)
 
 
 class TestNeutronv2ModuleMethods(test.TestCase):

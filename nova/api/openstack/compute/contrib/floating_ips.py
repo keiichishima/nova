@@ -163,6 +163,12 @@ class FloatingIPController(object):
             else:
                 msg = _("No more floating ips available.")
             raise webob.exc.HTTPNotFound(explanation=msg)
+        except exception.FloatingIpLimitExceeded:
+            if pool:
+                msg = _("IP allocation over quota in pool %s.") % pool
+            else:
+                msg = _("IP allocation over quota.")
+            raise webob.exc.HTTPForbidden(explanation=msg)
 
         return _translate_floating_ip_view(ip)
 
@@ -193,10 +199,6 @@ class FloatingIPController(object):
         # release ip from project
         self.network_api.release_floating_ip(context, address)
         return webob.Response(status_int=202)
-
-    def _get_ip_by_id(self, context, value):
-        """Checks that value is id and then returns its address."""
-        return self.network_api.get_floating_ip(context, value)['address']
 
 
 class FloatingIPActionController(wsgi.Controller):

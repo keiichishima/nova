@@ -15,9 +15,9 @@
 
 """Tests for compute resource tracking."""
 
-import mock
 import uuid
 
+import mock
 from oslo.config import cfg
 
 from nova.compute import flavors
@@ -26,8 +26,8 @@ from nova.compute import task_states
 from nova.compute import vm_states
 from nova import context
 from nova import db
+from nova import objects
 from nova.objects import base as obj_base
-from nova.objects import migration as migration_obj
 from nova.openstack.common import jsonutils
 from nova.openstack.common import timeutils
 from nova import rpc
@@ -802,7 +802,7 @@ class ResizeClaimTestCase(BaseTrackerTestCase):
             self._migrations[mig_self.instance_uuid] = mig_self
             mig_self.obj_reset_changes()
 
-        self.stubs.Set(migration_obj.Migration, 'create',
+        self.stubs.Set(objects.Migration, 'create',
                        _fake_migration_create)
 
         self.instance = self._fake_instance()
@@ -827,7 +827,7 @@ class ResizeClaimTestCase(BaseTrackerTestCase):
         if values:
             mig_dict.update(values)
 
-        migration = migration_obj.Migration()
+        migration = objects.Migration()
         migration.update(mig_dict)
         # This hits the stub in setUp()
         migration.create('fake')
@@ -1041,6 +1041,13 @@ class NoInstanceTypesInSysMetadata(ResizeClaimTestCase):
     def setUp(self):
         super(NoInstanceTypesInSysMetadata, self).setUp()
         self.instance = self._fake_instance(stash=False)
+
+    def test_get_instance_type_stash_false(self):
+        with (mock.patch.object(objects.Flavor, 'get_by_id',
+                                return_value=self.instance_type)):
+            flavor = self.tracker._get_instance_type(self.context,
+                                                     self.instance, "new_")
+            self.assertEqual(self.instance_type, flavor)
 
 
 class OrphanTestCase(BaseTrackerTestCase):

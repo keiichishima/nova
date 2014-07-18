@@ -13,11 +13,11 @@
 #    under the License.
 
 import netaddr
-
 from oslo.config import cfg
 
 from nova import db
 from nova import exception
+from nova import objects
 from nova.objects import base as obj_base
 from nova.objects import fields
 
@@ -30,7 +30,8 @@ network_opts = [
                      'for DHCP will be added on each nova-network node which '
                      'is only visible to the vms on the same host.'),
     cfg.IntOpt('network_device_mtu',
-               help='MTU setting for network interface'),
+               help='DEPRECATED: THIS VALUE SHOULD BE SET WHEN CREATING THE '
+                    'NETWORK. MTU setting for network interface.'),
 ]
 
 CONF = cfg.CONF
@@ -218,21 +219,25 @@ class NetworkList(obj_base.ObjectListBase, obj_base.NovaObject):
     @obj_base.remotable_classmethod
     def get_all(cls, context, project_only='allow_none'):
         db_networks = db.network_get_all(context, project_only)
-        return obj_base.obj_make_list(context, cls(), Network, db_networks)
+        return obj_base.obj_make_list(context, cls(context), objects.Network,
+                                      db_networks)
 
     @obj_base.remotable_classmethod
     def get_by_uuids(cls, context, network_uuids, project_only='allow_none'):
         db_networks = db.network_get_all_by_uuids(context, network_uuids,
                                                   project_only)
-        return obj_base.obj_make_list(context, cls(), Network, db_networks)
+        return obj_base.obj_make_list(context, cls(context), objects.Network,
+                                      db_networks)
 
     @obj_base.remotable_classmethod
     def get_by_host(cls, context, host):
         db_networks = db.network_get_all_by_host(context, host)
-        return obj_base.obj_make_list(context, cls(), Network, db_networks)
+        return obj_base.obj_make_list(context, cls(context), objects.Network,
+                                      db_networks)
 
     @obj_base.remotable_classmethod
     def get_by_project(cls, context, project_id, associate=True):
         db_networks = db.project_get_networks(context, project_id,
                                               associate=associate)
-        return obj_base.obj_make_list(context, cls(), Network, db_networks)
+        return obj_base.obj_make_list(context, cls(context), objects.Network,
+                                      db_networks)
