@@ -23,7 +23,7 @@ from lxml import etree
 import six
 
 from nova import exception
-from nova.openstack.common.gettextutils import _
+from nova.i18n import _
 from nova import utils
 
 
@@ -990,7 +990,7 @@ def safe_minidom_parse_string(xml_string):
         return minidom.parseString(xml_string, parser=ProtectedExpatParser())
     except (sax.SAXParseException, ValueError,
             expat.ExpatError, LookupError) as e:
-        #NOTE(Vijaya Erukala): XML input such as
+        # NOTE(Vijaya Erukala): XML input such as
         #                      <?xml version="1.0" encoding="TF-8"?>
         #                      raises LookupError: unknown encoding: TF-8
         raise exception.MalformedRequestBody(reason=str(e))

@@ -25,7 +25,7 @@ from eventlet import greenthread
 from oslo.config import cfg
 
 from nova import exception
-from nova.openstack.common.gettextutils import _
+from nova.i18n import _
 from nova.openstack.common import log as logging
 
 xenapi_volume_utils_opts = [
@@ -298,6 +298,17 @@ def find_sr_from_vbd(session, vbd_ref):
         LOG.exception(exc)
         raise exception.StorageError(
                 reason=_('Unable to find SR from VBD %s') % vbd_ref)
+    return sr_ref
+
+
+def find_sr_from_vdi(session, vdi_ref):
+    """Find the SR reference from the VDI reference."""
+    try:
+        sr_ref = session.call_xenapi("VDI.get_SR", vdi_ref)
+    except session.XenAPI.Failure as exc:
+        LOG.exception(exc)
+        raise exception.StorageError(
+                reason=_('Unable to find SR from VDI %s') % vdi_ref)
     return sr_ref
 
 

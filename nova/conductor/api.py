@@ -20,7 +20,7 @@ from oslo import messaging
 from nova import baserpc
 from nova.conductor import manager
 from nova.conductor import rpcapi
-from nova.openstack.common.gettextutils import _
+from nova.i18n import _
 from nova.openstack.common import log as logging
 from nova import utils
 
@@ -73,9 +73,6 @@ class LocalAPI(object):
     def instance_get_all_by_host_and_node(self, context, host, node):
         return self._manager.instance_get_all_by_host(context, host, node,
                 None)
-
-    def instance_info_cache_delete(self, context, instance):
-        return self._manager.instance_info_cache_delete(context, instance)
 
     def migration_get_in_progress_by_host_and_node(self, context, host, node):
         return self._manager.migration_get_in_progress_by_host_and_node(
@@ -260,6 +257,24 @@ class LocalComputeTaskAPI(object):
         utils.spawn_n(self._manager.unshelve_instance, context,
                 instance=instance)
 
+    def rebuild_instance(self, context, instance, orig_image_ref, image_ref,
+                         injected_files, new_pass, orig_sys_metadata,
+                         bdms, recreate=False, on_shared_storage=False,
+                         preserve_ephemeral=False, host=None, kwargs=None):
+        # kwargs unused but required for cell compatibility.
+        utils.spawn_n(self._manager.rebuild_instance, context,
+                instance=instance,
+                new_pass=new_pass,
+                injected_files=injected_files,
+                image_ref=image_ref,
+                orig_image_ref=orig_image_ref,
+                orig_sys_metadata=orig_sys_metadata,
+                bdms=bdms,
+                recreate=recreate,
+                on_shared_storage=on_shared_storage,
+                host=host,
+                preserve_ephemeral=preserve_ephemeral)
+
 
 class API(LocalAPI):
     """Conductor API that does updates via RPC to the ConductorManager."""
@@ -351,3 +366,21 @@ class ComputeTaskAPI(object):
     def unshelve_instance(self, context, instance):
         self.conductor_compute_rpcapi.unshelve_instance(context,
                 instance=instance)
+
+    def rebuild_instance(self, context, instance, orig_image_ref, image_ref,
+                         injected_files, new_pass, orig_sys_metadata,
+                         bdms, recreate=False, on_shared_storage=False,
+                         preserve_ephemeral=False, host=None, kwargs=None):
+        # kwargs unused but required for cell compatibility
+        self.conductor_compute_rpcapi.rebuild_instance(context,
+                instance=instance,
+                new_pass=new_pass,
+                injected_files=injected_files,
+                image_ref=image_ref,
+                orig_image_ref=orig_image_ref,
+                orig_sys_metadata=orig_sys_metadata,
+                bdms=bdms,
+                recreate=recreate,
+                on_shared_storage=on_shared_storage,
+                preserve_ephemeral=preserve_ephemeral,
+                host=host)

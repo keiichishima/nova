@@ -22,8 +22,6 @@ import mock
 
 from nova import exception
 from nova.network import model as network_model
-from nova.openstack.common.gettextutils import _
-from nova.openstack.common import units
 from nova.openstack.common import uuidutils
 from nova import test
 from nova.tests.virt.vmwareapi import fake
@@ -46,28 +44,6 @@ class VMwareVMUtilTestCase(test.NoDBTestCase):
     def tearDown(self):
         super(VMwareVMUtilTestCase, self).tearDown()
         fake.reset()
-
-    def test_get_datastore(self):
-        fake_objects = fake.FakeRetrieveResult()
-        fake_objects.add_object(fake.Datastore())
-        result = vm_util.get_datastore(
-            fake.FakeObjectRetrievalSession(fake_objects))
-
-        self.assertEqual("fake-ds", result.name)
-        self.assertEqual(units.Ti, result.capacity)
-        self.assertEqual(500 * units.Gi, result.freespace)
-
-    def test_get_datastore_with_regex(self):
-        # Test with a regex that matches with a datastore
-        datastore_valid_regex = re.compile("^openstack.*\d$")
-        fake_objects = fake.FakeRetrieveResult()
-        fake_objects.add_object(fake.Datastore("openstack-ds0"))
-        fake_objects.add_object(fake.Datastore("fake-ds0"))
-        fake_objects.add_object(fake.Datastore("fake-ds1"))
-        result = vm_util.get_datastore(
-            fake.FakeObjectRetrievalSession(fake_objects),
-            None, None, datastore_valid_regex)
-        self.assertEqual("openstack-ds0", result.name)
 
     def _test_get_stats_from_cluster(self, connection_state="connected",
                                      maintenance_mode=False):
@@ -148,62 +124,6 @@ class VMwareVMUtilTestCase(test.NoDBTestCase):
     def test_get_stats_from_cluster_hosts_connected_and_maintenance(self):
         self._test_get_stats_from_cluster(maintenance_mode=True)
 
-    def test_get_datastore_with_token(self):
-        regex = re.compile("^ds.*\d$")
-        fake0 = fake.FakeRetrieveResult()
-        fake0.add_object(fake.Datastore("ds0", 10 * units.Gi, 5 * units.Gi))
-        fake0.add_object(fake.Datastore("foo", 10 * units.Gi, 9 * units.Gi))
-        setattr(fake0, 'token', 'token-0')
-        fake1 = fake.FakeRetrieveResult()
-        fake1.add_object(fake.Datastore("ds2", 10 * units.Gi, 8 * units.Gi))
-        fake1.add_object(fake.Datastore("ds3", 10 * units.Gi, 1 * units.Gi))
-        result = vm_util.get_datastore(
-            fake.FakeObjectRetrievalSession(fake0, fake1), None, None, regex)
-        self.assertEqual("ds2", result.name)
-
-    def test_get_datastore_with_list(self):
-        # Test with a regex containing whitelist of datastores
-        datastore_valid_regex = re.compile("(openstack-ds0|openstack-ds2)")
-        fake_objects = fake.FakeRetrieveResult()
-        fake_objects.add_object(fake.Datastore("openstack-ds0"))
-        fake_objects.add_object(fake.Datastore("openstack-ds1"))
-        fake_objects.add_object(fake.Datastore("openstack-ds2"))
-        result = vm_util.get_datastore(
-            fake.FakeObjectRetrievalSession(fake_objects),
-            None, None, datastore_valid_regex)
-        self.assertNotEqual("openstack-ds1", result.name)
-
-    def test_get_datastore_with_regex_error(self):
-        # Test with a regex that has no match
-        # Checks if code raises DatastoreNotFound with a specific message
-        datastore_invalid_regex = re.compile("unknown-ds")
-        exp_message = (_("Datastore regex %s did not match any datastores")
-                       % datastore_invalid_regex.pattern)
-        fake_objects = fake.FakeRetrieveResult()
-        fake_objects.add_object(fake.Datastore("fake-ds0"))
-        fake_objects.add_object(fake.Datastore("fake-ds1"))
-        # assertRaisesRegExp would have been a good choice instead of
-        # try/catch block, but it's available only from Py 2.7.
-        try:
-            vm_util.get_datastore(
-                fake.FakeObjectRetrievalSession(fake_objects), None, None,
-                datastore_invalid_regex)
-        except exception.DatastoreNotFound as e:
-            self.assertEqual(exp_message, e.args[0])
-        else:
-            self.fail("DatastoreNotFound Exception was not raised with "
-                      "message: %s" % exp_message)
-
-    def test_get_datastore_without_datastore(self):
-
-        self.assertRaises(exception.DatastoreNotFound,
-                vm_util.get_datastore,
-                fake.FakeObjectRetrievalSession(None), host="fake-host")
-
-        self.assertRaises(exception.DatastoreNotFound,
-                vm_util.get_datastore,
-                fake.FakeObjectRetrievalSession(None), cluster="fake-cluster")
-
     def test_get_host_ref_from_id(self):
         fake_host_name = "ha-host"
         fake_host_sys = fake.HostSystem(fake_host_name)
@@ -224,11 +144,6 @@ class VMwareVMUtilTestCase(test.NoDBTestCase):
     def test_get_host_ref_no_hosts_in_cluster(self):
         self.assertRaises(exception.NoValidHost,
                           vm_util.get_host_ref,
-                          fake.FakeObjectRetrievalSession(""), 'fake_cluster')
-
-    def test_get_datastore_no_host_in_cluster(self):
-        self.assertRaises(exception.DatastoreNotFound,
-                          vm_util.get_datastore,
                           fake.FakeObjectRetrievalSession(""), 'fake_cluster')
 
     @mock.patch.object(vm_util, '_get_vm_ref_from_vm_uuid',
@@ -304,17 +219,6 @@ class VMwareVMUtilTestCase(test.NoDBTestCase):
         prop4 = vm_util.property_from_property_set('foo', bad_objects)
         self.assertIsNotNone(prop4)
         self.assertEqual('bar1', prop4.val)
-
-    def test_get_datastore_inaccessible_ds(self):
-        data_store = fake.Datastore()
-        data_store.set("summary.accessible", False)
-
-        fake_objects = fake.FakeRetrieveResult()
-        fake_objects.add_object(data_store)
-
-        self.assertRaises(exception.DatastoreNotFound,
-                vm_util.get_datastore,
-                fake.FakeObjectRetrievalSession(fake_objects))
 
     def test_get_resize_spec(self):
         fake_instance = {'id': 7, 'name': 'fake!',
@@ -395,6 +299,18 @@ class VMwareVMUtilTestCase(test.NoDBTestCase):
         controller.key = controller_key
         devices = [disk, controller]
         return devices
+
+    def test_get_vmdk_path(self):
+        uuid = '00000000-0000-0000-0000-000000000000'
+        filename = '[test_datastore] %s/%s.vmdk' % (uuid, uuid)
+        devices = self._vmdk_path_and_adapter_type_devices(filename)
+        session = fake.FakeSession()
+
+        with mock.patch.object(session, '_call_method',
+                               return_value=devices):
+            instance = {'uuid': uuid}
+            vmdk_path = vm_util.get_vmdk_path(session, None, instance)
+            self.assertEqual(filename, vmdk_path)
 
     def test_get_vmdk_path_and_adapter_type(self):
         filename = '[test_datastore] test_file.vmdk'
@@ -685,18 +601,18 @@ class VMwareVMUtilTestCase(test.NoDBTestCase):
 
     def test_convert_vif_model(self):
         expected = "VirtualE1000"
-        result = vm_util._convert_vif_model(network_model.VIF_MODEL_E1000)
+        result = vm_util.convert_vif_model(network_model.VIF_MODEL_E1000)
         self.assertEqual(expected, result)
         expected = "VirtualE1000e"
-        result = vm_util._convert_vif_model(network_model.VIF_MODEL_E1000E)
+        result = vm_util.convert_vif_model(network_model.VIF_MODEL_E1000E)
         self.assertEqual(expected, result)
         types = ["VirtualE1000", "VirtualE1000e", "VirtualPCNet32",
                  "VirtualVmxnet"]
         for type in types:
             self.assertEqual(type,
-                             vm_util._convert_vif_model(type))
+                             vm_util.convert_vif_model(type))
         self.assertRaises(exception.Invalid,
-                          vm_util._convert_vif_model,
+                          vm_util.convert_vif_model,
                           "InvalidVifModel")
 
     def test_power_on_instance_with_vm_ref(self):
@@ -819,12 +735,8 @@ class VMwareVMUtilTestCase(test.NoDBTestCase):
 
     def test_get_values(self):
         objects = self._create_fake_vm_objects()
-        lst_properties = ['runtime.powerState',
-                          'summary.guest.toolsStatus',
-                          'summary.guest.toolsRunningStatus']
         query = vm_util.get_values_from_object_properties(
-            fake.FakeObjectRetrievalSession(objects),
-            objects, lst_properties)
+            fake.FakeObjectRetrievalSession(objects), objects)
         self.assertEqual('poweredOn', query['runtime.powerState'])
         self.assertEqual('guestToolsRunning',
                          query['summary.guest.toolsRunningStatus'])
@@ -842,3 +754,167 @@ class VMwareVMUtilTestCase(test.NoDBTestCase):
                 'ReconfigVM_Task', 'fake-ref', spec='fake-spec')
             _wait_for_task.assert_called_once_with(
                 'fake_reconfigure_task')
+
+    def test_get_network_attach_config_spec_opaque(self):
+        vif_info = {'network_name': 'br-int',
+            'mac_address': '00:00:00:ca:fe:01',
+            'network_ref': {'type': 'OpaqueNetwork',
+                            'network-id': 'fake-network-id',
+                            'network-type': 'opaque'},
+            'iface_id': 7,
+            'vif_model': 'VirtualE1000'}
+        result = vm_util.get_network_attach_config_spec(
+                fake.FakeFactory(), vif_info, 1)
+        card = 'ns0:VirtualEthernetCardOpaqueNetworkBackingInfo'
+        expected = """{
+            'extraConfig': [{'value': 7,
+                             'key': 'nvp.iface-id.1',
+                             'obj_name':'ns0:OptionValue'}],
+            'deviceChange': [
+                {'device': {
+                     'macAddress':'00:00:00:ca:fe:01',
+                     'addressType': 'manual',
+                     'connectable': {
+                         'allowGuestControl':True,
+                         'startConnected': True,
+                         'connected': True,
+                         'obj_name':'ns0:VirtualDeviceConnectInfo'},
+                     'backing': {
+                         'opaqueNetworkType': 'opaque',
+                         'opaqueNetworkId': 'fake-network-id',
+                         'obj_name': '%(card)s'},
+                     'key': -47,
+                     'obj_name': 'ns0:VirtualE1000',
+                     'wakeOnLanEnabled': True},
+                 'operation': 'add',
+                 'obj_name': 'ns0:VirtualDeviceConfigSpec'}],
+            'obj_name':'ns0:VirtualMachineConfigSpec'}""" % {'card': card}
+        expected = re.sub(r'\s+', '', expected)
+        result = re.sub(r'\s+', '', repr(result))
+        self.assertEqual(expected, result)
+
+    def test_get_network_attach_config_spec_dvs(self):
+        vif_info = {'network_name': 'br100',
+            'mac_address': '00:00:00:ca:fe:01',
+            'network_ref': {'type': 'DistributedVirtualPortgroup',
+                            'dvsw': 'fake-network-id',
+                            'dvpg': 'fake-group'},
+            'iface_id': 7,
+            'vif_model': 'VirtualE1000'}
+        result = vm_util.get_network_attach_config_spec(
+                fake.FakeFactory(), vif_info, 1)
+        port = 'ns0:DistributedVirtualSwitchPortConnection'
+        backing = 'ns0:VirtualEthernetCardDistributedVirtualPortBackingInfo'
+        expected = """{
+            'extraConfig': [{'value': 7,
+                             'key': 'nvp.iface-id.1',
+                             'obj_name': 'ns0:OptionValue'}],
+            'deviceChange': [
+                {'device': {'macAddress': '00:00:00:ca:fe:01',
+                            'addressType': 'manual',
+                            'connectable': {
+                                'allowGuestControl': True,
+                                'startConnected': True,
+                                'connected': True,
+                                'obj_name': 'ns0:VirtualDeviceConnectInfo'},
+                 'backing': {
+                     'port': {
+                         'portgroupKey': 'fake-group',
+                         'switchUuid': 'fake-network-id',
+                         'obj_name': '%(obj_name_port)s'},
+                     'obj_name': '%(obj_name_backing)s'},
+                     'key': -47,
+                     'obj_name': 'ns0:VirtualE1000',
+                     'wakeOnLanEnabled': True},
+                 'operation': 'add',
+                 'obj_name': 'ns0:VirtualDeviceConfigSpec'}],
+            'obj_name':'ns0:VirtualMachineConfigSpec'}""" % {
+                    'obj_name_backing': backing,
+                    'obj_name_port': port}
+        expected = re.sub(r'\s+', '', expected)
+        result = re.sub(r'\s+', '', repr(result))
+        self.assertEqual(expected, result)
+
+    def test_get_network_detach_config_spec(self):
+        result = vm_util.get_network_detach_config_spec(
+                fake.FakeFactory(), 'fake-device', 2)
+        expected = """{
+            'extraConfig': [{'value': 'free',
+                             'key': 'nvp.iface-id.2',
+                             'obj_name': 'ns0:OptionValue'}],
+            'deviceChange': [{'device': 'fake-device',
+                              'operation': 'remove',
+                              'obj_name': 'ns0:VirtualDeviceConfigSpec'}],
+            'obj_name':'ns0:VirtualMachineConfigSpec'}"""
+        expected = re.sub(r'\s+', '', expected)
+        result = re.sub(r'\s+', '', repr(result))
+        self.assertEqual(expected, result)
+
+    @mock.patch.object(vm_util, "get_vm_ref")
+    def test_power_off_instance(self, fake_get_ref):
+        session = fake.FakeSession()
+        fake_instance = mock.MagicMock()
+        with contextlib.nested(
+            mock.patch.object(session, '_call_method',
+                              return_value='fake-task'),
+            mock.patch.object(session, '_wait_for_task')
+        ) as (fake_call_method, fake_wait_for_task):
+            vm_util.power_off_instance(session, fake_instance, 'fake-vm-ref')
+            fake_call_method.assert_called_once_with(session._get_vim(),
+                                                     "PowerOffVM_Task",
+                                                     'fake-vm-ref')
+            fake_wait_for_task.assert_called_once_with('fake-task')
+            self.assertFalse(fake_get_ref.called)
+
+    @mock.patch.object(vm_util, "get_vm_ref", return_value="fake-vm-ref")
+    def test_power_off_instance_no_vm_ref(self, fake_get_ref):
+        session = fake.FakeSession()
+        fake_instance = mock.MagicMock()
+        with contextlib.nested(
+            mock.patch.object(session, '_call_method',
+                              return_value='fake-task'),
+            mock.patch.object(session, '_wait_for_task')
+        ) as (fake_call_method, fake_wait_for_task):
+            vm_util.power_off_instance(session, fake_instance)
+            fake_get_ref.assert_called_once_with(session, fake_instance)
+            fake_call_method.assert_called_once_with(session._get_vim(),
+                                                     "PowerOffVM_Task",
+                                                     'fake-vm-ref')
+            fake_wait_for_task.assert_called_once_with('fake-task')
+
+    @mock.patch.object(vm_util, "get_vm_ref")
+    def test_power_off_instance_with_exception(self, fake_get_ref):
+        session = fake.FakeSession()
+        fake_instance = mock.MagicMock()
+        with contextlib.nested(
+            mock.patch.object(session, '_call_method',
+                              return_value='fake-task'),
+            mock.patch.object(session, '_wait_for_task',
+                              side_effect=exception.NovaException('fake'))
+        ) as (fake_call_method, fake_wait_for_task):
+            self.assertRaises(exception.NovaException,
+                              vm_util.power_off_instance,
+                              session, fake_instance, 'fake-vm-ref')
+            fake_call_method.assert_called_once_with(session._get_vim(),
+                                                     "PowerOffVM_Task",
+                                                     'fake-vm-ref')
+            fake_wait_for_task.assert_called_once_with('fake-task')
+            self.assertFalse(fake_get_ref.called)
+
+    @mock.patch.object(vm_util, "get_vm_ref")
+    def test_power_off_instance_power_state_exception(self, fake_get_ref):
+        session = fake.FakeSession()
+        fake_instance = mock.MagicMock()
+        with contextlib.nested(
+            mock.patch.object(session, '_call_method',
+                              return_value='fake-task'),
+            mock.patch.object(
+                    session, '_wait_for_task',
+                    side_effect=error_util.InvalidPowerStateException)
+        ) as (fake_call_method, fake_wait_for_task):
+            vm_util.power_off_instance(session, fake_instance, 'fake-vm-ref')
+            fake_call_method.assert_called_once_with(session._get_vim(),
+                                                     "PowerOffVM_Task",
+                                                     'fake-vm-ref')
+            fake_wait_for_task.assert_called_once_with('fake-task')
+            self.assertFalse(fake_get_ref.called)

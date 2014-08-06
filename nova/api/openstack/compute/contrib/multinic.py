@@ -22,7 +22,7 @@ from nova.api.openstack import extensions
 from nova.api.openstack import wsgi
 from nova import compute
 from nova import exception
-from nova.openstack.common.gettextutils import _
+from nova.i18n import _
 from nova.openstack.common import log as logging
 
 
@@ -52,11 +52,15 @@ class MultinicController(wsgi.Controller):
         # Validate the input entity
         if 'networkId' not in body['addFixedIp']:
             msg = _("Missing 'networkId' argument for addFixedIp")
-            raise exc.HTTPUnprocessableEntity(explanation=msg)
+            raise exc.HTTPBadRequest(explanation=msg)
 
         instance = self._get_instance(context, id, want_objects=True)
         network_id = body['addFixedIp']['networkId']
-        self.compute_api.add_fixed_ip(context, instance, network_id)
+        try:
+            self.compute_api.add_fixed_ip(context, instance, network_id)
+        except exception.NoMoreFixedIps as e:
+            raise exc.HTTPBadRequest(explanation=e.format_message())
+
         return webob.Response(status_int=202)
 
     @wsgi.action('removeFixedIp')
@@ -68,7 +72,7 @@ class MultinicController(wsgi.Controller):
         # Validate the input entity
         if 'address' not in body['removeFixedIp']:
             msg = _("Missing 'address' argument for removeFixedIp")
-            raise exc.HTTPUnprocessableEntity(explanation=msg)
+            raise exc.HTTPBadRequest(explanation=msg)
 
         instance = self._get_instance(context, id,
                                       want_objects=True)

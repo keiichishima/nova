@@ -22,6 +22,7 @@ from oslo.config import cfg
 
 from nova.compute import flavors
 from nova.compute import resource_tracker
+from nova.compute import resources
 from nova.compute import task_states
 from nova.compute import vm_states
 from nova import context
@@ -45,6 +46,9 @@ ROOT_GB = 5
 EPHEMERAL_GB = 1
 FAKE_VIRT_LOCAL_GB = ROOT_GB + EPHEMERAL_GB
 FAKE_VIRT_VCPUS = 1
+FAKE_VIRT_STATS = {'virt_stat': 10}
+FAKE_VIRT_STATS_JSON = jsonutils.dumps(FAKE_VIRT_STATS)
+RESOURCE_NAMES = ['vcpu']
 CONF = cfg.CONF
 
 
@@ -64,7 +68,7 @@ class UnsupportedVirtDriver(driver.ComputeDriver):
 
 class FakeVirtDriver(driver.ComputeDriver):
 
-    def __init__(self, pci_support=False):
+    def __init__(self, pci_support=False, stats=None):
         super(FakeVirtDriver, self).__init__(None)
         self.memory_mb = FAKE_VIRT_MEMORY_MB
         self.local_gb = FAKE_VIRT_LOCAL_GB
@@ -87,6 +91,8 @@ class FakeVirtDriver(driver.ComputeDriver):
             'vendor_id': 'v1',
             'product_id': 'p1',
             'extra_info': {'extra_k1': 'v1'}}] if self.pci_support else []
+        if stats is not None:
+            self.stats = stats
 
     def get_host_ip_addr(self):
         return '127.0.0.1'
@@ -106,7 +112,8 @@ class FakeVirtDriver(driver.ComputeDriver):
         }
         if self.pci_support:
             d['pci_passthrough_devices'] = jsonutils.dumps(self.pci_devices)
-
+        if hasattr(self, 'stats'):
+            d['stats'] = self.stats
         return d
 
     def estimate_instance_overhead(self, instance_info):
@@ -160,8 +167,10 @@ class BaseTestCase(test.TestCase):
             "current_workload": 1,
             "running_vms": 0,
             "cpu_info": None,
-            "stats": [{"key": "num_instances", "value": "1"}],
-           "hypervisor_hostname": "fakenode",
+            "stats": {
+                "num_instances": "1",
+            },
+            "hypervisor_hostname": "fakenode",
         }
         if values:
             compute.update(values)
@@ -314,6 +323,8 @@ class BaseTestCase(test.TestCase):
         driver = self._driver()
 
         tracker = resource_tracker.ResourceTracker(host, driver, node)
+        tracker.ext_resources_handler = \
+            resources.ResourceHandler(RESOURCE_NAMES, True)
         return tracker
 
 
@@ -425,6 +436,7 @@ class BaseTrackerTestCase(BaseTestCase):
 
         self.updated = False
         self.deleted = False
+        self.update_call_count = 0
 
         self.tracker = self._tracker()
         self._migrations = {}
@@ -440,7 +452,7 @@ class BaseTrackerTestCase(BaseTestCase):
         self.stubs.Set(db, 'migration_get_in_progress_by_host_and_node',
                 self._fake_migration_get_in_progress_by_host_and_node)
 
-        self.tracker.update_available_resource(self.context)
+        self._init_tracker()
         self.limits = self._limits()
 
     def _fake_service_get_by_compute_host(self, ctx, host):
@@ -450,9 +462,8 @@ class BaseTrackerTestCase(BaseTestCase):
 
     def _fake_compute_node_update(self, ctx, compute_node_id, values,
             prune_stats=False):
+        self.update_call_count += 1
         self.updated = True
-        values['stats'] = [{"key": "num_instances", "value": "1"}]
-
         self.compute.update(values)
         return self.compute
 
@@ -482,6 +493,9 @@ class BaseTrackerTestCase(BaseTestCase):
         migration = self._migrations.values()[0]
         migration.update(values)
         return migration
+
+    def _init_tracker(self):
+        self.tracker.update_available_resource(self.context)
 
     def _limits(self, memory_mb=FAKE_VIRT_MEMORY_WITH_OVERHEAD,
             disk_gb=FAKE_VIRT_LOCAL_GB,
@@ -564,6 +578,38 @@ class TrackerPciStatsTestCase(BaseTrackerTestCase):
 
     def _driver(self):
         return FakeVirtDriver(pci_support=True)
+
+
+class TrackerExtraResourcesTestCase(BaseTrackerTestCase):
+
+    def setUp(self):
+        super(TrackerExtraResourcesTestCase, self).setUp()
+        self.driver = self._driver()
+
+    def _driver(self):
+        return FakeVirtDriver()
+
+    def test_set_empty_ext_resources(self):
+        resources = self.driver.get_available_resource(self.tracker.nodename)
+        self.assertNotIn('stats', resources)
+        self.tracker._write_ext_resources(resources)
+        self.assertIn('stats', resources)
+
+    def test_set_extra_resources(self):
+        def fake_write_resources(resources):
+            resources['stats']['resA'] = '123'
+            resources['stats']['resB'] = 12
+
+        self.stubs.Set(self.tracker.ext_resources_handler,
+                       'write_resources',
+                       fake_write_resources)
+
+        resources = self.driver.get_available_resource(self.tracker.nodename)
+        self.tracker._write_ext_resources(resources)
+
+        expected = {"resA": "123", "resB": 12}
+        self.assertEqual(sorted(expected),
+                         sorted(resources['stats']))
 
 
 class InstanceClaimTestCase(BaseTrackerTestCase):
@@ -1144,3 +1190,122 @@ class ComputeMonitorTestCase(BaseTestCase):
             self.context, 'compute.metrics.update', payload)
 
         self.assertEqual(metrics, expected_metrics)
+
+
+class TrackerPeriodicTestCase(BaseTrackerTestCase):
+
+    def test_periodic_status_update(self):
+        # verify update called on instantiation
+        self.assertEqual(1, self.update_call_count)
+
+        # verify update not called if no change to resources
+        self.tracker.update_available_resource(self.context)
+        self.assertEqual(1, self.update_call_count)
+
+        # verify update is called when resources change
+        driver = self.tracker.driver
+        driver.memory_mb += 1
+        self.tracker.update_available_resource(self.context)
+        self.assertEqual(2, self.update_call_count)
+
+
+class StatsDictTestCase(BaseTrackerTestCase):
+    """Test stats handling for a virt driver that provides
+    stats as a dictionary.
+    """
+    def _driver(self):
+        return FakeVirtDriver(stats=FAKE_VIRT_STATS)
+
+    def _get_stats(self):
+        return jsonutils.loads(self.tracker.compute_node['stats'])
+
+    def test_virt_stats(self):
+        # start with virt driver stats
+        stats = self._get_stats()
+        self.assertEqual(FAKE_VIRT_STATS, stats)
+
+        # adding an instance should keep virt driver stats
+        self._fake_instance(vm_state=vm_states.ACTIVE, host=self.host)
+        self.tracker.update_available_resource(self.context)
+
+        stats = self._get_stats()
+        expected_stats = {}
+        expected_stats.update(FAKE_VIRT_STATS)
+        expected_stats.update(self.tracker.stats)
+        self.assertEqual(expected_stats, stats)
+
+        # removing the instances should keep only virt driver stats
+        self._instances = {}
+        self.tracker.update_available_resource(self.context)
+
+        stats = self._get_stats()
+        self.assertEqual(FAKE_VIRT_STATS, stats)
+
+
+class StatsJsonTestCase(BaseTrackerTestCase):
+    """Test stats handling for a virt driver that provides
+    stats as a json string.
+    """
+    def _driver(self):
+        return FakeVirtDriver(stats=FAKE_VIRT_STATS_JSON)
+
+    def _get_stats(self):
+        return jsonutils.loads(self.tracker.compute_node['stats'])
+
+    def test_virt_stats(self):
+        # start with virt driver stats
+        stats = self._get_stats()
+        self.assertEqual(FAKE_VIRT_STATS, stats)
+
+        # adding an instance should keep virt driver stats
+        # and add rt stats
+        self._fake_instance(vm_state=vm_states.ACTIVE, host=self.host)
+        self.tracker.update_available_resource(self.context)
+
+        stats = self._get_stats()
+        expected_stats = {}
+        expected_stats.update(FAKE_VIRT_STATS)
+        expected_stats.update(self.tracker.stats)
+        self.assertEqual(expected_stats, stats)
+
+        # removing the instances should keep only virt driver stats
+        self._instances = {}
+        self.tracker.update_available_resource(self.context)
+        stats = self._get_stats()
+        self.assertEqual(FAKE_VIRT_STATS, stats)
+
+
+class StatsInvalidJsonTestCase(BaseTrackerTestCase):
+    """Test stats handling for a virt driver that provides
+    an invalid type for stats.
+    """
+    def _driver(self):
+        return FakeVirtDriver(stats='this is not json')
+
+    def _init_tracker(self):
+        # do not do initial update in setup
+        pass
+
+    def test_virt_stats(self):
+        # should throw exception for string that does not parse as json
+        self.assertRaises(ValueError,
+                          self.tracker.update_available_resource,
+                          context=self.context)
+
+
+class StatsInvalidTypeTestCase(BaseTrackerTestCase):
+    """Test stats handling for a virt driver that provides
+    an invalid type for stats.
+    """
+    def _driver(self):
+        return FakeVirtDriver(stats=10)
+
+    def _init_tracker(self):
+        # do not do initial update in setup
+        pass
+
+    def test_virt_stats(self):
+        # should throw exception for incorrect stats value type
+        self.assertRaises(ValueError,
+                          self.tracker.update_available_resource,
+                          context=self.context)

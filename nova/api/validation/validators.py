@@ -17,10 +17,22 @@ Internal implementation of request Body validating middleware.
 """
 
 import jsonschema
+import six
 
 from nova import exception
-from nova.openstack.common.gettextutils import _
+from nova.i18n import _
+from nova.openstack.common import timeutils
 from nova.openstack.common import uuidutils
+
+
+@jsonschema.FormatChecker.cls_checks('date-time')
+def _validate_datetime_format(instance):
+    try:
+        timeutils.parse_isotime(instance)
+    except ValueError:
+        return False
+    else:
+        return True
 
 
 @jsonschema.FormatChecker.cls_checks('uuid')
@@ -65,7 +77,11 @@ class _SchemaValidator(object):
                            }
             else:
                 detail = ex.message
-
+            raise exception.ValidationError(detail=detail)
+        except TypeError as ex:
+            # NOTE: If passing non string value to patternProperties parameter,
+            #       TypeError happens. Here is for catching the TypeError.
+            detail = six.text_type(ex)
             raise exception.ValidationError(detail=detail)
 
     def _number_from_str(self, instance):

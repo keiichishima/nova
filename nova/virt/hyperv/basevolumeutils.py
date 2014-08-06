@@ -28,7 +28,7 @@ if sys.platform == 'win32':
     import wmi
 
 from nova import block_device
-from nova.openstack.common.gettextutils import _
+from nova.i18n import _
 from nova.openstack.common import log as logging
 from nova.virt import driver
 
@@ -70,8 +70,9 @@ class BaseVolumeUtils(object):
         except Exception:
             LOG.info(_("The ISCSI initiator name can't be found. "
                        "Choosing the default one"))
-            computer_system = self._conn_cimv2.Win32_ComputerSystem()[0]
             initiator_name = "iqn.1991-05.com.microsoft:" + hostname.lower()
+            if computer_system.PartofDomain:
+                initiator_name += '.' + computer_system.Domain.lower()
         return initiator_name
 
     def volume_in_mapping(self, mount_device, block_device_info):

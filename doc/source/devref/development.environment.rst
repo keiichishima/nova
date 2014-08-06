@@ -40,7 +40,7 @@ environments with venv are also available with the source code.
 The easiest way to build a fully functional development environment is
 with DevStack. Create a machine (such as a VM or Vagrant box) running a
 distribution supported by DevStack and install DevStack there. For
-example, there is a Vagrant script for DevStack at https://github.com/jogo/DevstackUp.
+example, there is a Vagrant script for DevStack at http://git.openstack.org/cgit/openstack-dev/devstack-vagrant/.
 
  .. note::
 
@@ -60,15 +60,19 @@ Install the prerequisite packages.
 
 On Ubuntu::
 
-  sudo apt-get install python-dev libssl-dev python-pip git-core libxml2-dev libxslt-dev pkg-config libffi-dev libpq-dev libmysqlclient-dev
+  sudo apt-get install python-dev libssl-dev python-pip git-core libxml2-dev libxslt-dev pkg-config libffi-dev libpq-dev libmysqlclient-dev libvirt-dev
 
 On Ubuntu Precise (12.04) you may also need to add the following packages::
 
   sudo apt-get build-dep python-mysqldb
+  # enable cloud-archive to get the latest libvirt
+  sudo apt-get install python-software-properties
+  sudo add-apt-repository cloud-archive:icehouse
+  sudo apt-get install libvirt-dev
 
 On Fedora-based distributions (e.g., Fedora/RHEL/CentOS/Scientific Linux)::
 
-  sudo yum install python-devel openssl-devel python-pip git gcc libxslt-devel mysql-devel postgresql-devel libffi-devel
+  sudo yum install python-devel openssl-devel python-pip git gcc libxslt-devel mysql-devel postgresql-devel libffi-devel libvirt-devel
   sudo pip-python install tox
 
 
@@ -123,7 +127,7 @@ Using fake computes for tests
 -----------------------------
 
 The number of instances supported by fake computes is not limited by physical
-constraints. It allows to perform stress tests on a deployment with few
+constraints. It allows you to perform stress tests on a deployment with few
 resources (typically a laptop). But you must avoid using scheduler filters
 limiting the number of instances per compute (like RamFilter, DiskFilter,
 AggregateCoreFilter), otherwise they will limit the number of instances per

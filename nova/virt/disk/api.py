@@ -33,7 +33,9 @@ if os.name != 'nt':
 from oslo.config import cfg
 
 from nova import exception
-from nova.openstack.common.gettextutils import _
+from nova.i18n import _
+from nova.i18n import _LE
+from nova.i18n import _LW
 from nova.openstack.common import jsonutils
 from nova.openstack.common import log as logging
 from nova.openstack.common import processutils
@@ -75,8 +77,16 @@ CONF.import_opt('default_ephemeral_format', 'nova.virt.driver')
 
 _MKFS_COMMAND = {}
 _DEFAULT_MKFS_COMMAND = None
-_DEFAULT_FS_BY_OSTYPE = {'linux': 'ext3',
-                         'windows': 'ntfs'}
+
+FS_FORMAT_EXT2 = "ext2"
+FS_FORMAT_EXT3 = "ext3"
+FS_FORMAT_EXT4 = "ext4"
+FS_FORMAT_XFS = "xfs"
+FS_FORMAT_NTFS = "ntfs"
+FS_FORMAT_VFAT = "vfat"
+
+_DEFAULT_FS_BY_OSTYPE = {'linux': FS_FORMAT_EXT3,
+                         'windows': FS_FORMAT_NTFS}
 
 for s in CONF.virt_mkfs:
     # NOTE(yamahata): mkfs command may includes '=' for its options.
@@ -92,7 +102,7 @@ def get_fs_type_for_os_type(os_type):
     return os_type if _MKFS_COMMAND.get(os_type) else 'default'
 
 
-def mkfs(os_type, fs_label, target, run_as_root=True):
+def mkfs(os_type, fs_label, target, run_as_root=True, specified_fs=None):
     """Format a file or block device using
        a user provided command for each os type.
        If user has not provided any configuration,
@@ -106,10 +116,12 @@ def mkfs(os_type, fs_label, target, run_as_root=True):
     if mkfs_command:
         utils.execute(*mkfs_command.split(), run_as_root=run_as_root)
     else:
-        default_fs = CONF.default_ephemeral_format
-        if not default_fs:
-            default_fs = _DEFAULT_FS_BY_OSTYPE.get(os_type, 'ext3')
-        utils.mkfs(default_fs, target, fs_label, run_as_root=run_as_root)
+        if not specified_fs:
+            specified_fs = CONF.default_ephemeral_format
+            if not specified_fs:
+                specified_fs = _DEFAULT_FS_BY_OSTYPE.get(os_type, 'ext3')
+
+        utils.mkfs(specified_fs, target, fs_label, run_as_root=run_as_root)
 
 
 def resize2fs(image, check_exit_code=False, run_as_root=False):
@@ -351,8 +363,8 @@ def inject_data(image, key=None, net=None, metadata=None, admin_password=None,
             inject_val = locals()[inject]
             if inject_val:
                 raise
-        LOG.warn(_('Ignoring error injecting data into image '
-                   '(%(e)s)'), {'e': e})
+        LOG.warn(_LW('Ignoring error injecting data into image %(image)s '
+                   '(%(e)s)'), {'image': image, 'e': e})
         return False
 
     try:
@@ -373,7 +385,7 @@ def setup_container(image, container_dir, use_cow=False):
     img = _DiskImage(image=image, use_cow=use_cow, mount_dir=container_dir)
     dev = img.mount()
     if dev is None:
-        LOG.error(_("Failed to mount container filesystem '%(image)s' "
+        LOG.error(_LE("Failed to mount container filesystem '%(image)s' "
                     "on '%(target)s': %(errors)s"),
                   {"image": img, "target": container_dir,
                    "errors": img.errors})
@@ -441,8 +453,8 @@ def inject_data_into_fs(fs, key, net, metadata, admin_password, files,
             except Exception as e:
                 if inject in mandatory:
                     raise
-                LOG.warn(_('Ignoring error injecting %(inject)s into image '
-                           '(%(e)s)'), {'e': e, 'inject': inject})
+                LOG.warn(_LW('Ignoring error injecting %(inject)s into image '
+                           '(%(e)s)'), {'inject': inject, 'e': e})
                 status = False
     return status
 

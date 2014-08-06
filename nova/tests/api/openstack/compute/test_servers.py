@@ -43,12 +43,12 @@ from nova import context
 from nova import db
 from nova.db.sqlalchemy import models
 from nova import exception
+from nova.i18n import _
 from nova.image import glance
 from nova.network import manager
 from nova.network.neutronv2 import api as neutron_api
 from nova import objects
 from nova.objects import instance as instance_obj
-from nova.openstack.common.gettextutils import _
 from nova.openstack.common import jsonutils
 from nova.openstack.common import policy as common_policy
 from nova.openstack.common import timeutils
@@ -196,8 +196,6 @@ class ServersControllerTest(ControllerTest):
 
     def setUp(self):
         super(ServersControllerTest, self).setUp()
-        self.compute_api = self.controller.compute_api
-        self.context = context.RequestContext('fake', 'fake')
 
     def test_can_check_loaded_extensions(self):
         self.ext_mgr.extensions = {'os-fake': None}
@@ -260,25 +258,6 @@ class ServersControllerTest(ControllerTest):
         req = fakes.HTTPRequest.blank('/fake/servers/%s' % FAKE_UUID)
         res_dict = self.controller.show(req, FAKE_UUID)
         self.assertEqual(res_dict['server']['id'], FAKE_UUID)
-
-    def test_get_server_no_image(self):
-
-        def return_instance(self, *args, **kwargs):
-            return fakes.stub_instance(id=1, uuid=FAKE_UUID,
-                                       project_id=str(uuid.uuid4()),
-                                       image_ref='')
-
-        def fake_add_image_ref(context, instance):
-            instance['image_ref'] = 'fake_image'
-            return instance
-
-        self.stubs.Set(db, 'instance_get_by_uuid', return_instance)
-        self.stubs.Set(instance_obj, 'add_image_ref', fake_add_image_ref)
-
-        req = fakes.HTTPRequest.blank('/fake/servers/%s' % FAKE_UUID)
-        server = self.controller.show(req, FAKE_UUID)
-
-        self.assertEqual('fake_image', server['server']['image']['id'])
 
     def test_unique_host_id(self):
         """Create two servers with the same host and different
@@ -537,29 +516,6 @@ class ServersControllerTest(ControllerTest):
             ]
 
             self.assertEqual(s['links'], expected_links)
-
-    def test_get_servers_no_image(self):
-
-        def fake_get_all(compute_self, context, search_opts=None,
-                         sort_key=None, sort_dir='desc',
-                         limit=None, marker=None, want_objects=False):
-            db_list = [fakes.stub_instance(100,
-                                           uuid=FAKE_UUID,
-                                           image_ref='')]
-            return instance_obj._make_instance_list(
-                context, objects.InstanceList(), db_list, FIELDS)
-
-        def fake_add_image_ref(context, instance):
-            instance['image_ref'] = 'fake_image'
-            return instance
-
-        self.stubs.Set(instance_obj, 'add_image_ref', fake_add_image_ref)
-        self.stubs.Set(compute_api.API, 'get_all', fake_get_all)
-
-        req = fakes.HTTPRequest.blank('/fake/servers/detail')
-        res_dict = self.controller.detail(req)
-        for s in res_dict['servers']:
-            self.assertEqual('fake_image', s['image']['id'])
 
     def test_get_servers_with_limit(self):
         req = fakes.HTTPRequest.blank('/fake/servers?limit=3')
@@ -916,6 +872,51 @@ class ServersControllerTest(ControllerTest):
 
         self.assertEqual(len(servers), 1)
         self.assertEqual(servers[0]['id'], server_uuid)
+
+    @mock.patch.object(compute_api.API, 'get_all')
+    def test_get_servers_allows_multi_status(self, get_all_mock):
+        server_uuid0 = str(uuid.uuid4())
+        server_uuid1 = str(uuid.uuid4())
+        db_list = [fakes.stub_instance(100, uuid=server_uuid0),
+                        fakes.stub_instance(101, uuid=server_uuid1)]
+        get_all_mock.return_value = instance_obj._make_instance_list(
+                        context, instance_obj.InstanceList(), db_list, FIELDS)
+
+        req = fakes.HTTPRequest.blank(
+                        '/fake/servers?status=active&status=error')
+        servers = self.controller.index(req)['servers']
+        self.assertEqual(2, len(servers))
+        self.assertEqual(server_uuid0, servers[0]['id'])
+        self.assertEqual(server_uuid1, servers[1]['id'])
+        expected_search_opts = dict(deleted=False,
+                                    vm_state=[vm_states.ACTIVE,
+                                              vm_states.ERROR],
+                                    project_id='fake')
+        get_all_mock.assert_called_once_with(mock.ANY,
+                        search_opts=expected_search_opts, limit=mock.ANY,
+                        marker=mock.ANY, want_objects=mock.ANY)
+
+    @mock.patch.object(compute_api.API, 'get_all')
+    def test_get_servers_allows_invalid_status(self, get_all_mock):
+        server_uuid0 = str(uuid.uuid4())
+        server_uuid1 = str(uuid.uuid4())
+        db_list = [fakes.stub_instance(100, uuid=server_uuid0),
+                        fakes.stub_instance(101, uuid=server_uuid1)]
+        get_all_mock.return_value = instance_obj._make_instance_list(
+                        context, instance_obj.InstanceList(), db_list, FIELDS)
+
+        req = fakes.HTTPRequest.blank(
+                        '/fake/servers?status=active&status=invalid')
+        servers = self.controller.index(req)['servers']
+        self.assertEqual(2, len(servers))
+        self.assertEqual(server_uuid0, servers[0]['id'])
+        self.assertEqual(server_uuid1, servers[1]['id'])
+        expected_search_opts = dict(deleted=False,
+                                    vm_state=[vm_states.ACTIVE],
+                                    project_id='fake')
+        get_all_mock.assert_called_once_with(mock.ANY,
+                        search_opts=expected_search_opts, limit=mock.ANY,
+                        marker=mock.ANY, want_objects=mock.ANY)
 
     def test_get_servers_allows_task_status(self):
         server_uuid = str(uuid.uuid4())
@@ -1606,7 +1607,7 @@ class ServersControllerRebuildInstanceTest(ControllerTest):
 
     def test_rebuild_instance_fails_when_min_ram_too_small(self):
         # make min_ram larger than our instance ram size
-        def fake_get_image(self, context, image_href):
+        def fake_get_image(self, context, image_href, **kwargs):
             return dict(id='76fa36fc-c930-4bf3-8c8a-ea2a2420deb6',
                         name='public image', is_public=True,
                         status='active', properties={'key1': 'value1'},
@@ -1621,7 +1622,7 @@ class ServersControllerRebuildInstanceTest(ControllerTest):
 
     def test_rebuild_instance_fails_when_min_disk_too_small(self):
         # make min_disk larger than our instance disk size
-        def fake_get_image(self, context, image_href):
+        def fake_get_image(self, context, image_href, **kwargs):
             return dict(id='76fa36fc-c930-4bf3-8c8a-ea2a2420deb6',
                         name='public image', is_public=True,
                         status='active', properties={'key1': 'value1'},
@@ -1637,7 +1638,7 @@ class ServersControllerRebuildInstanceTest(ControllerTest):
         # make image size larger than our instance disk size
         size = str(1000 * (1024 ** 3))
 
-        def fake_get_image(self, context, image_href):
+        def fake_get_image(self, context, image_href, **kwargs):
             return dict(id='76fa36fc-c930-4bf3-8c8a-ea2a2420deb6',
                         name='public image', is_public=True,
                         status='active', size=size)
@@ -1648,7 +1649,7 @@ class ServersControllerRebuildInstanceTest(ControllerTest):
             self.controller._action_rebuild, self.req, FAKE_UUID, self.body)
 
     def test_rebuild_instance_with_deleted_image(self):
-        def fake_get_image(self, context, image_href):
+        def fake_get_image(self, context, image_href, **kwargs):
             return dict(id='76fa36fc-c930-4bf3-8c8a-ea2a2420deb6',
                         name='public image', is_public=True,
                         status='DELETED')
@@ -2818,7 +2819,7 @@ class ServersControllerCreateTest(test.TestCase):
         self.stubs.Set(compute_api.API, '_validate_bdm', _validate_bdm)
         self.stubs.Set(objects.Instance, 'destroy', _instance_destroy)
 
-        for _ in xrange(len(bdm_exceptions)):
+        for _unused in xrange(len(bdm_exceptions)):
             params = {'block_device_mapping_v2': [bdm.copy()]}
             self.assertRaises(webob.exc.HTTPBadRequest,
                               self._test_create_extra, params)
@@ -4285,7 +4286,7 @@ class ServersViewBuilderTest(test.TestCase):
         self.assertNotIn('fault', output['server'])
 
     def test_build_server_detail_active_status(self):
-        #set the power state of the instance to running
+        # set the power state of the instance to running
         self.instance['vm_state'] = vm_states.ACTIVE
         self.instance['progress'] = 100
 

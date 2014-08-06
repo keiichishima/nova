@@ -34,14 +34,15 @@ from nova.network.neutronv2 import api as neutronapi
 from nova.network.neutronv2 import constants
 from nova.openstack.common import jsonutils
 from nova import test
+from nova.tests import fake_instance
 from nova import utils
 
 CONF = cfg.CONF
 
-#NOTE: Neutron client raises Exception which is discouraged by HACKING.
-#      We set this variable here and use it for assertions below to avoid
-#      the hacking checks until we can make neutron client throw a custom
-#      exception class instead.
+# NOTE: Neutron client raises Exception which is discouraged by HACKING.
+#       We set this variable here and use it for assertions below to avoid
+#       the hacking checks until we can make neutron client throw a custom
+#       exception class instead.
 NEUTRON_CLIENT_EXCEPTION = Exception
 
 
@@ -467,9 +468,10 @@ class TestNeutronv2Base(test.TestCase):
         self.assertEqual('my_mac%s' % id_suffix, nw_inf[index]['address'])
         self.assertEqual('10.0.%s.0/24' % id_suffix,
             nw_inf[index]['network']['subnets'][0]['cidr'])
-        self.assertTrue(model.IP(address='8.8.%s.1' % id_suffix,
-                                 version=4, type='dns') in
-                        nw_inf[index]['network']['subnets'][0]['dns'])
+
+        ip_addr = model.IP(address='8.8.%s.1' % id_suffix,
+                           version=4, type='dns')
+        self.assertIn(ip_addr, nw_inf[index]['network']['subnets'][0]['dns'])
 
     def _get_instance_nw_info(self, number):
         api = neutronapi.API()
@@ -931,9 +933,7 @@ class TestNeutronv2(TestNeutronv2Base):
                 self.moxed_client.create_port(
                     MyComparator(port_req_body)).AndReturn({'port': port})
             else:
-                NeutronOverQuota = exceptions.NeutronClientException(
-                            message="Quota exceeded for resources: ['port']",
-                            status_code=409)
+                NeutronOverQuota = exceptions.OverQuotaClient()
                 self.moxed_client.create_port(
                     MyComparator(port_req_body)).AndRaise(NeutronOverQuota)
             index += 1
@@ -2326,6 +2326,62 @@ class TestNeutronv2WithMock(test.TestCase):
                           api.allocate_floating_ip,
                           self.context, pool_name)
 
+    def test_create_port_for_instance_no_more_ip(self):
+        instance = fake_instance.fake_instance_obj(self.context)
+        net = {'id': 'my_netid1',
+               'name': 'my_netname1',
+               'subnets': ['mysubnid1'],
+               'tenant_id': instance['project_id']}
+
+        with mock.patch.object(client.Client, 'create_port',
+            side_effect=exceptions.IpAddressGenerationFailureClient()) as (
+            create_port_mock):
+            zone = 'compute:%s' % instance['availability_zone']
+            port_req_body = {'port': {'device_id': instance['uuid'],
+                                      'device_owner': zone}}
+            self.assertRaises(exception.NoMoreFixedIps,
+                              self.api._create_port,
+                              neutronv2.get_client(self.context),
+                              instance, net['id'], port_req_body)
+            create_port_mock.assert_called_once_with(port_req_body)
+
+    @mock.patch.object(client.Client, 'create_port',
+                       side_effect=exceptions.MacAddressInUseClient())
+    def test_create_port_for_instance_mac_address_in_use(self,
+                                                         create_port_mock):
+        # Create fake data.
+        instance = fake_instance.fake_instance_obj(self.context)
+        net = {'id': 'my_netid1',
+               'name': 'my_netname1',
+               'subnets': ['mysubnid1'],
+               'tenant_id': instance['project_id']}
+        zone = 'compute:%s' % instance['availability_zone']
+        port_req_body = {'port': {'device_id': instance['uuid'],
+                                  'device_owner': zone,
+                                  'mac_address': 'XX:XX:XX:XX:XX:XX'}}
+        available_macs = set(['XX:XX:XX:XX:XX:XX'])
+        # Run the code.
+        self.assertRaises(exception.PortInUse,
+                          self.api._create_port,
+                          neutronv2.get_client(self.context),
+                          instance, net['id'], port_req_body,
+                          available_macs=available_macs)
+        # Assert the calls.
+        create_port_mock.assert_called_once_with(port_req_body)
+
+    def test_get_network_detail_not_found(self):
+        api = neutronapi.API()
+        expected_exc = exceptions.NetworkNotFoundClient()
+        network_uuid = '02cacbca-7d48-4a2c-8011-43eecf8a9786'
+        with mock.patch.object(client.Client, 'show_network',
+                               side_effect=expected_exc) as (
+            fake_show_network):
+            self.assertRaises(exception.NetworkNotFound,
+                              api.get,
+                              self.context,
+                              network_uuid)
+            fake_show_network.assert_called_once_with(network_uuid)
+
 
 class TestNeutronv2ModuleMethods(test.TestCase):
 
@@ -2482,6 +2538,7 @@ class TestNeutronClientForAdminScenarios(test.TestCase):
         self.flags(url_timeout=30, group='neutron')
         if use_id:
             self.flags(admin_tenant_id='admin_tenant_id', group='neutron')
+            self.flags(admin_user_id='admin_user_id', group='neutron')
 
         if admin_context:
             my_context = context.get_admin_context()
@@ -2492,7 +2549,6 @@ class TestNeutronClientForAdminScenarios(test.TestCase):
         kwargs = {
             'auth_url': CONF.neutron.admin_auth_url,
             'password': CONF.neutron.admin_password,
-            'username': CONF.neutron.admin_username,
             'endpoint_url': CONF.neutron.url,
             'auth_strategy': None,
             'timeout': CONF.neutron.url_timeout,
@@ -2501,12 +2557,14 @@ class TestNeutronClientForAdminScenarios(test.TestCase):
             'token': None}
         if use_id:
             kwargs['tenant_id'] = CONF.neutron.admin_tenant_id
+            kwargs['user_id'] = CONF.neutron.admin_user_id
         else:
             kwargs['tenant_name'] = CONF.neutron.admin_tenant_name
+            kwargs['username'] = CONF.neutron.admin_username
         client.Client.__init__(**kwargs).WithSideEffects(client_mock)
         self.mox.ReplayAll()
 
-        #clean global
+        # clean global
         token_store = neutronv2.AdminTokenStore.get()
         token_store.admin_auth_token = None
         if admin_context:

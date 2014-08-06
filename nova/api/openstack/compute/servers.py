@@ -33,9 +33,9 @@ from nova import block_device
 from nova import compute
 from nova.compute import flavors
 from nova import exception
+from nova.i18n import _
+from nova.i18n import _LW
 from nova import objects
-from nova.objects import instance as instance_obj
-from nova.openstack.common.gettextutils import _
 from nova.openstack.common import log as logging
 from nova.openstack.common import strutils
 from nova.openstack.common import timeutils
@@ -79,8 +79,8 @@ def make_server(elem, detailed=False):
 
     global XML_WARNING
     if not XML_WARNING:
-        LOG.warning(_('XML support has been deprecated and may be removed '
-                      'as early as the Juno release.'))
+        LOG.warn(_LW('XML support has been deprecated and may be removed '
+                     'as early as the Juno release.'))
         XML_WARNING = True
 
     if detailed:
@@ -534,9 +534,11 @@ class Controller(wsgi.Controller):
 
         # Verify search by 'status' contains a valid status.
         # Convert it to filter by vm_state or task_state for compute_api.
-        status = search_opts.pop('status', None)
-        if status is not None:
-            vm_state, task_state = common.task_and_vm_state_from_status(status)
+        search_opts.pop('status', None)
+        if 'status' in req.GET.keys():
+            statuses = req.GET.getall('status')
+            states = common.task_and_vm_state_from_status(statuses)
+            vm_state, task_state = states
             if not vm_state and not task_state:
                 return {'servers': []}
             search_opts['vm_state'] = vm_state
@@ -600,8 +602,6 @@ class Controller(wsgi.Controller):
                                                      limit=limit,
                                                      marker=marker,
                                                      want_objects=True)
-            for instance in instance_list:
-                instance_obj.add_image_ref(context, instance)
         except exception.MarkerNotFound:
             msg = _('marker [%s] not found') % marker
             raise exc.HTTPBadRequest(explanation=msg)
@@ -695,9 +695,9 @@ class Controller(wsgi.Controller):
                                 "(%s)") % network_uuid
                         raise exc.HTTPBadRequest(explanation=msg)
 
-                #fixed IP address is optional
-                #if the fixed IP address is not provided then
-                #it will use one of the available IP address from the network
+                # fixed IP address is optional
+                # if the fixed IP address is not provided then
+                # it will use one of the available IP address from the network
                 address = network.get('fixed_ip', None)
                 if address is not None and not utils.is_valid_ip_address(
                         address):
@@ -769,8 +769,7 @@ class Controller(wsgi.Controller):
             context = req.environ['nova.context']
             instance = self.compute_api.get(context, id,
                                             want_objects=True)
-            req.cache_db_instance(instance_obj.add_image_ref(context,
-                                                             instance))
+            req.cache_db_instance(instance)
             return self._view_builder.show(req, instance)
         except exception.NotFound:
             msg = _("Instance could not be found")
@@ -1177,6 +1176,8 @@ class Controller(wsgi.Controller):
         except exception.CannotResizeToSameFlavor:
             msg = _("Resize requires a flavor change.")
             raise exc.HTTPBadRequest(explanation=msg)
+        except exception.CannotResizeDisk as e:
+            raise exc.HTTPBadRequest(explanation=e.format_message())
         except exception.InstanceIsLocked as e:
             raise exc.HTTPConflict(explanation=e.format_message())
         except exception.InstanceInvalidState as state_error:
@@ -1450,10 +1451,10 @@ class Controller(wsgi.Controller):
                                                           bdms):
                 img = instance['image_ref']
                 if not img:
-                    props = bdms.root_metadata(
+                    properties = bdms.root_metadata(
                             context, self.compute_api.image_api,
                             self.compute_api.volume_api)
-                    image_meta = {'properties': props}
+                    image_meta = {'properties': properties}
                 else:
                     image_meta = self.compute_api.image_api.get(context, img)
 

@@ -31,8 +31,8 @@ from oslo.config import cfg
 from nova.api.ec2 import ec2utils
 import nova.cert.rpcapi
 from nova import exception
+from nova.i18n import _
 from nova.image import glance
-from nova.openstack.common.gettextutils import _
 from nova.openstack.common import log as logging
 from nova.openstack.common import processutils
 from nova import utils
@@ -160,7 +160,7 @@ class S3ImageService(object):
         return self._translate_uuid_to_id(context, image)
 
     def detail(self, context, **kwargs):
-        #NOTE(bcwaldon): sort asc to make sure we assign lower ids
+        # NOTE(bcwaldon): sort asc to make sure we assign lower ids
         # to older images
         kwargs.setdefault('sort_dir', 'asc')
         images = self.service.detail(context, **kwargs)
@@ -264,7 +264,7 @@ class S3ImageService(object):
                          'properties': properties})
         metadata['properties']['image_state'] = 'pending'
 
-        #TODO(bcwaldon): right now, this removes user-defined ids.
+        # TODO(bcwaldon): right now, this removes user-defined ids.
         # We need to re-enable this.
         metadata.pop('id', None)
 

@@ -15,7 +15,8 @@
 from eventlet import tpool
 
 from nova import exception
-from nova.openstack.common.gettextutils import _
+from nova.i18n import _, _LI
+from nova.openstack.common import importutils
 from nova.openstack.common import log as logging
 from nova.virt.disk.vfs import api as vfs
 
@@ -23,6 +24,18 @@ from nova.virt.disk.vfs import api as vfs
 LOG = logging.getLogger(__name__)
 
 guestfs = None
+forceTCG = False
+
+
+def force_tcg(force=True):
+    """Prevent libguestfs trying to use KVM acceleration
+
+    It is a good idea to call this if it is known that
+    KVM is not desired, even if technically available.
+    """
+
+    global forceTCG
+    forceTCG = force
 
 
 class VFSGuestFS(vfs.VFS):
@@ -37,7 +50,7 @@ class VFSGuestFS(vfs.VFS):
 
         global guestfs
         if guestfs is None:
-            guestfs = __import__('guestfs')
+            guestfs = importutils.import_module('guestfs')
 
         self.handle = None
 
@@ -114,6 +127,16 @@ class VFSGuestFS(vfs.VFS):
                 self.handle = tpool.Proxy(guestfs.GuestFS())
             else:
                 raise
+
+        try:
+            if forceTCG:
+                self.handle.set_backend_settings("force_tcg")
+        except AttributeError as ex:
+            # set_backend_settings method doesn't exist in older
+            # libguestfs versions, so nothing we can do but ignore
+            LOG.info(_LI("Unable to force TCG mode, libguestfs too old?"),
+                     ex)
+            pass
 
         try:
             self.handle.add_drive_opts(self.imgfile, format=self.imgfmt)

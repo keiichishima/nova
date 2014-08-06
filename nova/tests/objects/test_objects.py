@@ -302,7 +302,7 @@ class _BaseTestCase(test.TestCase):
 
     def json_comparator(self, expected, obj_val):
         # json-ify an object field for comparison with its db str
-        #equivalent
+        # equivalent
         self.assertEqual(expected, jsonutils.dumps(obj_val))
 
     def str_comparator(self, expected, obj_val):
@@ -901,7 +901,7 @@ object_data = {
     'Agent': '1.0-c4ff8a833aee8ae44ab8aed1a171273d',
     'AgentList': '1.0-f8b860e1f2ce80e676ba1a37ddf86e4f',
     'Aggregate': '1.1-f5d477be06150529a9b2d27cc49030b5',
-    'AggregateList': '1.1-3e67b6a4840b19c797504cc6056b27ff',
+    'AggregateList': '1.2-504137b7ec3855b00d01f165dcebc23e',
     'BlockDeviceMapping': '1.1-9968ffe513e7672484b0f528b034cd0f',
     'BlockDeviceMappingList': '1.2-d6d7df540ca149dda78b22b4b10bdef3',
     'ComputeNode': '1.4-ed20e7a7c1a4612fe7d2836d5887c726',
@@ -937,8 +937,8 @@ object_data = {
     'NetworkList': '1.2-16510568c6e64cb8b358cb2b11333196',
     'PciDevice': '1.1-523c46f960d93f78db55f0280b09441e',
     'PciDeviceList': '1.0-5da7b4748a5a2594bae2cd0bd211cca2',
-    'Quotas': '1.0-1933ffdc585c205445331fe842567eb3',
-    'QuotasNoOp': '1.0-187356d5a8b8e4a3505148ea4e96cfcb',
+    'Quotas': '1.1-7897deef00e6cd3095c8916f68d24418',
+    'QuotasNoOp': '1.1-4b06fd721c586b907ddd6543a00d6c2f',
     'SecurityGroup': '1.1-bba0e72865e0953793e796571692453b',
     'SecurityGroupList': '1.0-9513387aabf08c2a7961ac4da4315ed4',
     'SecurityGroupRule': '1.0-fdd020bdd7eb8bac744ad6f9a4ef8165',

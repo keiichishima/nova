@@ -28,8 +28,8 @@ import sys
 from oslo.config import cfg
 import webob.exc
 
+from nova.i18n import _
 from nova.openstack.common import excutils
-from nova.openstack.common.gettextutils import _
 from nova.openstack.common import log as logging
 from nova import safe_utils
 
@@ -650,6 +650,10 @@ class ExternalNetworkAttachForbidden(Forbidden):
                 "external network %(network_uuid)s")
 
 
+class NetworkMissingPhysicalNetwork(NovaException):
+    msg_fmt = _("Physical network is missing for network %(network_uuid)s")
+
+
 class DatastoreNotFound(NotFound):
     msg_fmt = _("Could not find the datastore reference(s) which the VM uses.")
 
@@ -817,6 +821,10 @@ class InvalidReservationExpiration(Invalid):
 class InvalidQuotaValue(Invalid):
     msg_fmt = _("Change would make usage less than 0 for the following "
                 "resources: %(unders)s")
+
+
+class InvalidQuotaMethodUsage(Invalid):
+    msg_fmt = _("Wrong quota method %(method)s used on resource %(res)s")
 
 
 class QuotaNotFound(NotFound):

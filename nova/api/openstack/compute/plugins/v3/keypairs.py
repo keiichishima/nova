@@ -24,7 +24,7 @@ from nova.api.openstack import wsgi
 from nova.api import validation
 from nova.compute import api as compute_api
 from nova import exception
-from nova.openstack.common.gettextutils import _
+from nova.i18n import _
 
 
 ALIAS = 'keypairs'
@@ -180,3 +180,6 @@ class Keypairs(extensions.V3APIExtensionBase):
     # server create kwargs
     def server_create(self, server_dict, create_kwargs):
         create_kwargs['key_name'] = server_dict.get('key_name')
+
+    def get_server_create_schema(self):
+        return keypairs.server_create

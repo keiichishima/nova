@@ -17,8 +17,8 @@ import webob.exc
 
 from nova.api.openstack import extensions
 from nova.api.openstack import wsgi
+from nova.i18n import _
 from nova import objects
-from nova.openstack.common.gettextutils import _
 
 authorize = extensions.extension_authorizer('compute', 'cloudpipe_update')
 
@@ -51,8 +51,9 @@ class CloudpipeUpdateController(wsgi.Controller):
                 network.vpn_public_address = vpn_ip
                 network.vpn_public_port = vpn_port
                 network.save()
-        except (TypeError, KeyError, ValueError):
-            raise webob.exc.HTTPUnprocessableEntity()
+        except (TypeError, KeyError, ValueError) as ex:
+            msg = _("Invalid request body: %s") % unicode(ex)
+            raise webob.exc.HTTPBadRequest(explanation=msg)
 
         return webob.exc.HTTPAccepted()
 

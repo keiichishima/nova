@@ -23,7 +23,7 @@ import collections
 import pprint
 
 from nova import exception
-from nova.openstack.common.gettextutils import _
+from nova.i18n import _
 from nova.openstack.common import jsonutils
 from nova.openstack.common import log as logging
 from nova.openstack.common import units
@@ -48,7 +48,7 @@ def log_db_contents(msg=None):
               {'text': msg or "", 'content': pprint.pformat(_db_content)})
 
 
-def reset(vc=False):
+def reset():
     """Resets the db contents."""
     cleanup()
     create_network()
@@ -56,16 +56,13 @@ def reset(vc=False):
     create_host_storage_system()
     ds_ref1 = create_datastore('ds1', 1024, 500)
     create_host(ds_ref=ds_ref1)
-    if vc:
-        ds_ref2 = create_datastore('ds2', 1024, 500)
-        create_host(ds_ref=ds_ref2)
+    ds_ref2 = create_datastore('ds2', 1024, 500)
+    create_host(ds_ref=ds_ref2)
     create_datacenter('dc1', ds_ref1)
-    if vc:
-        create_datacenter('dc2', ds_ref2)
+    create_datacenter('dc2', ds_ref2)
     create_res_pool()
-    if vc:
-        create_cluster('test_cluster', ds_ref1)
-        create_cluster('test_cluster2', ds_ref2)
+    create_cluster('test_cluster', ds_ref1)
+    create_cluster('test_cluster2', ds_ref2)
 
 
 def cleanup():
@@ -439,6 +436,20 @@ class VirtualMachine(ManagedObject):
             ('featureRequirement', [key1, key2])]
         self.set("summary.runtime", runtime)
 
+    def _update_extra_config(self, extra):
+        extra_config = self.get("config.extraConfig")
+        values = extra_config.OptionValue
+        for value in values:
+            if value.key == extra.key:
+                value.value = extra.value
+                return
+        kv = DataObject()
+        kv.key = extra.key
+        kv.value = extra.value
+        extra_config.OptionValue.append(kv)
+        self.set("config.extraConfig", extra_config)
+        extra_config = self.get("config.extraConfig")
+
     def reconfig(self, factory, val):
         """Called to reconfigure the VM. Actually customizes the property
         setting of the Virtual Machine object.
@@ -461,6 +472,11 @@ class VirtualMachine(ManagedObject):
         try:
             if not hasattr(val, 'deviceChange'):
                 return
+
+            if hasattr(val, 'extraConfig'):
+                # there are 2 cases - new entry or update an existing one
+                for extra in val.extraConfig:
+                    self._update_extra_config(extra)
 
             if len(val.deviceChange) < 2:
                 return
@@ -1445,8 +1461,6 @@ class FakeVim(object):
         elif attr_name == "FindAllByUuid":
             return lambda *args, **kwargs: self._find_all_by_uuid(attr_name,
                                                 *args, **kwargs)
-        elif attr_name == "Rename_Task":
-            return lambda *args, **kwargs: self._just_return_task(attr_name)
         elif attr_name == "SearchDatastore_Task":
             return lambda *args, **kwargs: self._search_ds(attr_name,
                                                 *args, **kwargs)
@@ -1465,16 +1479,12 @@ class FakeVim(object):
         elif attr_name == "CancelRetrievePropertiesEx":
             return lambda *args, **kwargs: self._retrieve_properties_cancel(
                                                 attr_name, *args, **kwargs)
-        elif attr_name == "AcquireCloneTicket":
-            return lambda *args, **kwargs: self._just_return()
         elif attr_name == "AddPortGroup":
             return lambda *args, **kwargs: self._add_port_group(attr_name,
                                                 *args, **kwargs)
         elif attr_name == "RebootHost_Task":
             return lambda *args, **kwargs: self._just_return_task(attr_name)
         elif attr_name == "ShutdownHost_Task":
-            return lambda *args, **kwargs: self._just_return_task(attr_name)
-        elif attr_name == "PowerDownHostToStandBy_Task":
             return lambda *args, **kwargs: self._just_return_task(attr_name)
         elif attr_name == "PowerUpHostFromStandBy_Task":
             return lambda *args, **kwargs: self._just_return_task(attr_name)

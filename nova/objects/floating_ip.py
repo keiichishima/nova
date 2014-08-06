@@ -106,7 +106,7 @@ class FloatingIP(obj_base.NovaPersistentObject, obj_base.NovaObject):
 
     @obj_base.remotable_classmethod
     def deallocate(cls, context, address):
-        db.floating_ip_deallocate(context, address)
+        return db.floating_ip_deallocate(context, address)
 
     @obj_base.remotable_classmethod
     def destroy(cls, context, address):
@@ -136,6 +136,14 @@ class FloatingIP(obj_base.NovaPersistentObject, obj_base.NovaObject):
         if 'address' in updates:
             raise exception.ObjectActionError(action='save',
                                               reason='address is not mutable')
+        if 'fixed_ip_id' in updates:
+            reason = 'fixed_ip_id is not mutable'
+            raise exception.ObjectActionError(action='save', reason=reason)
+
+        # NOTE(danms): Make sure we don't pass the calculated fixed_ip
+        # relationship to the DB update method
+        updates.pop('fixed_ip', None)
+
         db_floatingip = db.floating_ip_update(context, str(self.address),
                                               updates)
         self._from_db_object(context, self, db_floatingip)

@@ -184,7 +184,7 @@ class VMwareVMOpsTestCase(test.NoDBTestCase):
                 ref=dc_ref,
                 name='fake-name',
                 vmFolder='fake-folder')
-        path = ds_util.build_datastore_path(ds_name, base_name)
+        path = ds_util.DatastorePath(ds_name, base_name)
         ds_util.mkdir = mock.Mock()
         return ds_name, ds_ref, ops, path, dc_ref
 
@@ -406,7 +406,7 @@ class VMwareVMOpsTestCase(test.NoDBTestCase):
                                   return_value=vm_rescue_ref),
                 mock.patch.object(self._session, '_call_method',
                                   fake_call_method),
-                mock.patch.object(self._vmops, '_power_off_vm_ref'),
+                mock.patch.object(vm_util, 'power_off_instance'),
                 mock.patch.object(self._vmops, '_destroy_instance'),
                 mock.patch.object(copy, 'deepcopy', return_value=r_instance)
         ) as (_get_vmdk_path_and_adapter_type, _get_vmdk_volume_disk,
@@ -427,12 +427,18 @@ class VMwareVMOpsTestCase(test.NoDBTestCase):
                                                 self._instance)
             _get_vm_ref_from_name.assert_called_once_with(self._session,
                                                           'fake_uuid-rescue')
-            _power_off.assert_called_once_with(vm_rescue_ref)
-            _destroy_instance.assert_called_once_with(r_instance, None,
+            _power_off.assert_called_once_with(self._session, r_instance,
+                                               vm_rescue_ref)
+            _destroy_instance.assert_called_once_with(r_instance,
                 instance_name='fake_uuid-rescue')
 
     def _test_finish_migration(self, power_on=True, resize_instance=False):
         """Tests the finish_migration method on vmops."""
+        if resize_instance:
+            self._instance.system_metadata = {'old_instance_type_root_gb': '0'}
+        datastore = ds_util.Datastore(ref='fake-ref', name='fake')
+        dc_info = vmops.DcInfo(ref='fake_ref', name='fake',
+                               vmFolder='fake_folder')
         with contextlib.nested(
                 mock.patch.object(self._session, "_call_method",
                                   return_value='fake-task'),
@@ -440,9 +446,16 @@ class VMwareVMOpsTestCase(test.NoDBTestCase):
                 mock.patch.object(self._session, "_wait_for_task"),
                 mock.patch.object(vm_util, "get_vm_resize_spec",
                                   return_value='fake-spec'),
+                mock.patch.object(ds_util, "get_datastore",
+                                  return_value=datastore),
+                mock.patch.object(self._vmops, 'get_datacenter_ref_and_name',
+                                  return_value=dc_info),
+                mock.patch.object(self._vmops, '_extend_virtual_disk'),
                 mock.patch.object(vm_util, "power_on_instance")
         ) as (fake_call_method, fake_update_instance_progress,
-              fake_wait_for_task, fake_vm_resize_spec, fake_power_on):
+              fake_wait_for_task, fake_vm_resize_spec,
+              fake_get_datastore, fake_get_datacenter_ref_and_name,
+              fake_extend_virtual_disk, fake_power_on):
             self._vmops.finish_migration(context=self._context,
                                          migration=None,
                                          instance=self._instance,
@@ -462,9 +475,13 @@ class VMwareVMOpsTestCase(test.NoDBTestCase):
                     'f',
                     spec='fake-spec'))
                 fake_wait_for_task.assert_called_once_with('fake-task')
+                fake_extend_virtual_disk.assert_called_once_with(
+                    self._instance, self._instance['root_gb'] * units.Mi,
+                    None, dc_info.ref)
             else:
                 self.assertFalse(fake_vm_resize_spec.called)
                 self.assertFalse(fake_wait_for_task.called)
+                self.assertFalse(fake_extend_virtual_disk.called)
 
             if power_on:
                 fake_power_on.assert_called_once_with(self._session,
@@ -569,7 +586,7 @@ class VMwareVMOpsTestCase(test.NoDBTestCase):
         recorded_methods = [c[1][1] for c in mock_call_method.mock_calls]
         self.assertEqual(expected_methods, recorded_methods)
 
-    @mock.patch('nova.virt.vmwareapi.vm_util.get_datastore')
+    @mock.patch('nova.virt.vmwareapi.ds_util.get_datastore')
     @mock.patch(
         'nova.virt.vmwareapi.vmops.VMwareVCVMOps.get_datacenter_ref_and_name')
     @mock.patch('nova.virt.vmwareapi.vm_util.get_mo_id_from_instance',

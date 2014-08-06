@@ -144,6 +144,48 @@ class AdditionalPropertiesDisableTestCase(APIValidationTestCase):
                                     expected_detail=detail)
 
 
+class PatternPropertiesTestCase(APIValidationTestCase):
+
+    def setUp(self):
+        super(PatternPropertiesTestCase, self).setUp()
+        schema = {
+            'patternProperties': {
+                '^[a-zA-Z0-9]{1,10}$': {
+                    'type': 'string'
+                },
+            },
+            'additionalProperties': False,
+        }
+
+        @validation.schema(request_body_schema=schema)
+        def post(body):
+            return 'Validation succeeded.'
+
+        self.post = post
+
+    def test_validate_patternProperties(self):
+        self.assertEqual('Validation succeeded.',
+                         self.post(body={'foo': 'bar'}))
+
+    def test_validate_patternProperties_fails(self):
+        detail = "Additional properties are not allowed ('__' was unexpected)"
+        self.check_validation_error(self.post, body={'__': 'bar'},
+                                    expected_detail=detail)
+
+        detail = "Additional properties are not allowed ('' was unexpected)"
+        self.check_validation_error(self.post, body={'': 'bar'},
+                                    expected_detail=detail)
+
+        detail = ("Additional properties are not allowed ('0123456789a' was"
+                  " unexpected)")
+        self.check_validation_error(self.post, body={'0123456789a': 'bar'},
+                                    expected_detail=detail)
+
+        detail = "expected string or buffer"
+        self.check_validation_error(self.post, body={None: 'bar'},
+                                    expected_detail=detail)
+
+
 class StringTestCase(APIValidationTestCase):
 
     def setUp(self):
@@ -557,6 +599,51 @@ class TcpUdpPortTestCase(APIValidationTestCase):
         detail = ("Invalid input for field/attribute foo. Value: 65536."
                   " 65536.0 is greater than the maximum of 65535")
         self.check_validation_error(self.post, body={'foo': 65536},
+                                    expected_detail=detail)
+
+
+class DatetimeTestCase(APIValidationTestCase):
+
+    def setUp(self):
+        super(DatetimeTestCase, self).setUp()
+        schema = {
+            'type': 'object',
+            'properties': {
+                'foo': {
+                    'type': 'string',
+                    'format': 'date-time',
+                },
+            },
+        }
+
+        @validation.schema(schema)
+        def post(body):
+            return 'Validation succeeded.'
+
+        self.post = post
+
+    def test_validate_datetime(self):
+        self.assertEqual('Validation succeeded.',
+                         self.post(
+                         body={'foo': '2014-01-14T01:00:00Z'}
+                         ))
+
+    def test_validate_datetime_fails(self):
+        detail = ("Invalid input for field/attribute foo."
+                  " Value: 2014-13-14T01:00:00Z."
+                  " '2014-13-14T01:00:00Z' is not a 'date-time'")
+        self.check_validation_error(self.post,
+                                    body={'foo': '2014-13-14T01:00:00Z'},
+                                    expected_detail=detail)
+
+        detail = ("Invalid input for field/attribute foo."
+                  " Value: bar. 'bar' is not a 'date-time'")
+        self.check_validation_error(self.post, body={'foo': 'bar'},
+                                    expected_detail=detail)
+
+        detail = ("Invalid input for field/attribute foo. Value: 1."
+                  " '1' is not a 'date-time'")
+        self.check_validation_error(self.post, body={'foo': '1'},
                                     expected_detail=detail)
 
 

@@ -21,10 +21,10 @@ from oslo import messaging
 from nova import context
 from nova.db import base
 from nova import exception
+from nova.i18n import _
 from nova.network import rpcapi as network_rpcapi
 from nova import objects
 from nova.openstack.common import excutils
-from nova.openstack.common.gettextutils import _
 from nova.openstack.common import importutils
 from nova.openstack.common import log as logging
 from nova.openstack.common import processutils
@@ -112,6 +112,7 @@ class FloatingIP(object):
         nw_info = super(FloatingIP, self).allocate_for_instance(context,
                                                                 **kwargs)
         if CONF.auto_assign_floating_ip:
+            context = context.elevated()
             # allocate a floating ip
             floating_address = self.allocate_floating_ip(context, project_id,
                 True)
@@ -277,10 +278,10 @@ class FloatingIP(object):
             LOG.exception(_("Failed to update usages deallocating "
                             "floating IP"))
 
-        floating_ip_ref = objects.FloatingIP.deallocate(context, address)
-        # floating_ip_ref will be None if concurrently another
+        rows_updated = objects.FloatingIP.deallocate(context, address)
+        # number of updated rows will be 0 if concurrently another
         # API call has also deallocated the same floating ip
-        if floating_ip_ref is None:
+        if not rows_updated:
             if reservations:
                 QUOTAS.rollback(context, reservations, project_id=project_id)
         else:

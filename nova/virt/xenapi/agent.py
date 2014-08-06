@@ -28,8 +28,8 @@ from nova.compute import utils as compute_utils
 from nova import context
 from nova import crypto
 from nova import exception
+from nova.i18n import _
 from nova import objects
-from nova.openstack.common.gettextutils import _
 from nova.openstack.common import jsonutils
 from nova.openstack.common import log as logging
 from nova.openstack.common import strutils
@@ -338,7 +338,7 @@ class XenAPIBasedAgent(object):
     def resetnetwork(self):
         LOG.debug('Resetting network', instance=self.instance)
 
-        #NOTE(johngarbutt) old FreeBSD and Gentoo agents return 500 on success
+        # NOTE(johngarbutt) old FreeBSD and Gentoo agents return 500 on success
         return self._call_agent('resetnetwork',
                             timeout=CONF.xenserver.agent_resetnetwork_timeout,
                             success_codes=['0', '500'])

@@ -35,9 +35,9 @@ from nova.compute import vm_mode
 from nova.compute import vm_states
 from nova import context as nova_context
 from nova import exception
+from nova.i18n import _
 from nova import objects
 from nova.openstack.common import excutils
-from nova.openstack.common.gettextutils import _
 from nova.openstack.common import importutils
 from nova.openstack.common import jsonutils
 from nova.openstack.common import log as logging
@@ -266,7 +266,7 @@ class VMOps(object):
 
         def create_disks_step(undo_mgr, disk_image_type, image_meta,
                               name_label):
-            #TODO(johngarbutt) clean up if this is not run
+            # TODO(johngarbutt) clean up if this is not run
             vdis = vm_utils.import_all_migrated_disks(self._session,
                                                       instance)
 
@@ -341,6 +341,9 @@ class VMOps(object):
                 vdi_refs = [vdi['ref'] for vdi in vdis.values()
                         if not vdi.get('osvol')]
                 vm_utils.safe_destroy_vdis(self._session, vdi_refs)
+                vol_vdi_refs = [vdi['ref'] for vdi in vdis.values()
+                        if vdi.get('osvol')]
+                self._volumeops.safe_cleanup_from_vdis(vol_vdi_refs)
 
             undo_mgr.undo_with(undo_create_disks)
             return vdis
@@ -991,7 +994,7 @@ class VMOps(object):
                           instance=instance)
             try:
                 self._restore_orig_vm_and_cleanup_orphan(instance)
-                #TODO(johngarbutt) should also cleanup VHDs at destination
+                # TODO(johngarbutt) should also cleanup VHDs at destination
             except Exception as rollback_error:
                 LOG.warn(_("_migrate_disk_resizing_up failed to "
                            "rollback: %s"), rollback_error,
@@ -1400,11 +1403,11 @@ class VMOps(object):
             - spawn a rescue VM (the vm name-label will be instance-N-rescue).
 
         """
-        rescue_name_label = '%s-rescue' % instance['name']
+        rescue_name_label = '%s-rescue' % instance.name
         rescue_vm_ref = vm_utils.lookup(self._session, rescue_name_label)
         if rescue_vm_ref:
             raise RuntimeError(_("Instance is already in Rescue Mode: %s")
-                               % instance['name'])
+                               % instance.name)
 
         vm_ref = self._get_vm_opaque_ref(instance)
         vm_utils.hard_shutdown_vm(self._session, instance, vm_ref)
@@ -1429,10 +1432,10 @@ class VMOps(object):
 
         """
         rescue_vm_ref = vm_utils.lookup(self._session,
-                                        "%s-rescue" % instance['name'])
+                                        "%s-rescue" % instance.name)
         if not rescue_vm_ref:
             raise exception.InstanceNotInRescueMode(
-                    instance_id=instance['uuid'])
+                    instance_id=instance.uuid)
 
         original_vm_ref = self._get_vm_opaque_ref(instance)
 
@@ -1511,6 +1514,12 @@ class VMOps(object):
         vm_ref = self._get_vm_opaque_ref(instance)
         vm_rec = self._session.call_xenapi("VM.get_record", vm_ref)
         return vm_utils.compile_diagnostics(vm_rec)
+
+    def get_instance_diagnostics(self, instance):
+        """Return data about VM diagnostics using the common API."""
+        vm_ref = self._get_vm_opaque_ref(instance)
+        vm_rec = self._session.VM.get_record(vm_ref)
+        return vm_utils.compile_instance_diagnostics(instance, vm_rec)
 
     def _get_vif_device_map(self, vm_rec):
         vif_map = {}

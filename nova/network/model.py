@@ -20,7 +20,7 @@ import netaddr
 import six
 
 from nova import exception
-from nova.openstack.common.gettextutils import _
+from nova.i18n import _
 from nova.openstack.common import jsonutils
 
 
@@ -43,6 +43,7 @@ VIF_TYPE_OTHER = 'other'
 # class
 VIF_DETAIL_PORT_FILTER = 'port_filter'
 VIF_DETAIL_OVS_HYBRID_PLUG = 'ovs_hybrid_plug'
+VIF_DETAILS_PHYSICAL_NETWORK = 'physical_network'
 
 # Constants for the 'vif_model' values
 VIF_MODEL_VIRTIO = 'virtio'
@@ -52,6 +53,7 @@ VIF_MODEL_RTL8139 = 'rtl8139'
 VIF_MODEL_E1000 = 'e1000'
 VIF_MODEL_E1000E = 'e1000e'
 VIF_MODEL_NETFRONT = 'netfront'
+VIF_MODEL_SPAPR_VLAN = 'spapr-vlan'
 
 # Constant for max length of network interface names
 # eg 'bridge' in the Network class or 'devname' in
@@ -343,6 +345,12 @@ class VIF(Model):
 
     def is_neutron_filtering_enabled(self):
         return self['details'].get(VIF_DETAIL_PORT_FILTER, False)
+
+    def get_physical_network(self):
+        phy_network = self['network']['meta'].get('physical_network')
+        if not phy_network:
+            phy_network = self['details'].get(VIF_DETAILS_PHYSICAL_NETWORK)
+        return phy_network
 
     @classmethod
     def hydrate(cls, vif):

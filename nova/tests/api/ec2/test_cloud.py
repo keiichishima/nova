@@ -60,6 +60,7 @@ from nova.tests.api.openstack.compute.contrib import (
 from nova.tests import cast_as_call
 from nova.tests import fake_block_device
 from nova.tests import fake_network
+from nova.tests import fake_notifier
 from nova.tests import fake_utils
 from nova.tests.image import fake
 from nova.tests import matchers
@@ -141,7 +142,7 @@ class CloudTestCase(test.TestCase):
         self.useFixture(fixtures.FakeLogger('boto'))
         fake_utils.stub_out_utils_spawn_n(self.stubs)
 
-        def fake_show(meh, context, id):
+        def fake_show(meh, context, id, **kwargs):
             return {'id': id,
                     'name': 'fake_name',
                     'container_format': 'ami',
@@ -173,6 +174,12 @@ class CloudTestCase(test.TestCase):
 
         # Short-circuit the conductor service
         self.flags(use_local=True, group='conductor')
+
+        # Stub out the notification service so we use the no-op serializer
+        # and avoid lazy-load traces with the wrap_exception decorator in
+        # the compute service.
+        fake_notifier.stub_notifier(self.stubs)
+        self.addCleanup(fake_notifier.reset)
 
         # set up services
         self.conductor = self.start_service('conductor',
@@ -1496,7 +1503,7 @@ class CloudTestCase(test.TestCase):
                 'mappings': mappings2,
                 'block_device_mapping': block_device_mapping2}}
 
-        def fake_show(meh, context, image_id):
+        def fake_show(meh, context, image_id, **kwargs):
             _images = [copy.deepcopy(image1), copy.deepcopy(image2)]
             for i in _images:
                 if str(i['id']) == str(image_id):
@@ -1592,7 +1599,7 @@ class CloudTestCase(test.TestCase):
     def test_describe_image_attribute(self):
         describe_image_attribute = self.cloud.describe_image_attribute
 
-        def fake_show(meh, context, id):
+        def fake_show(meh, context, id, **kwargs):
             return {'id': 'cedef40a-ed67-4d10-800e-17455edce175',
                     'name': 'fake_name',
                     'status': 'active',
@@ -1660,7 +1667,7 @@ class CloudTestCase(test.TestCase):
                 'type': 'machine'},
             'is_public': False}
 
-        def fake_show(meh, context, id):
+        def fake_show(meh, context, id, **kwargs):
             return copy.deepcopy(fake_metadata)
 
         def fake_detail(self, context, **kwargs):
@@ -1933,7 +1940,7 @@ class CloudTestCase(test.TestCase):
                   'max_count': 1}
         run_instances = self.cloud.run_instances
 
-        def fake_show(self, context, id):
+        def fake_show(self, context, id, **kwargs):
             return {'id': 'cedef40a-ed67-4d10-800e-17455edce175',
                     'name': 'fake_name',
                     'properties': {
@@ -1964,7 +1971,7 @@ class CloudTestCase(test.TestCase):
                   'max_count': 0}
         run_instances = self.cloud.run_instances
 
-        def fake_show(self, context, id):
+        def fake_show(self, context, id, **kwargs):
             return {'id': 'cedef40a-ed67-4d10-800e-17455edce175',
                     'name': 'fake_name',
                     'container_format': 'ami',
@@ -1984,7 +1991,7 @@ class CloudTestCase(test.TestCase):
                   'min_count': 0}
         run_instances = self.cloud.run_instances
 
-        def fake_show(self, context, id):
+        def fake_show(self, context, id, **kwargs):
             return {'id': 'cedef40a-ed67-4d10-800e-17455edce175',
                     'name': 'fake_name',
                     'container_format': 'ami',
@@ -2005,7 +2012,7 @@ class CloudTestCase(test.TestCase):
                   'min_count': 2}
         run_instances = self.cloud.run_instances
 
-        def fake_show(self, context, id):
+        def fake_show(self, context, id, **kwargs):
             return {'id': 'cedef40a-ed67-4d10-800e-17455edce175',
                     'name': 'fake_name',
                     'container_format': 'ami',
@@ -2027,7 +2034,7 @@ class CloudTestCase(test.TestCase):
                  }
         run_instances = self.cloud.run_instances
 
-        def fake_show(self, context, id):
+        def fake_show(self, context, id, **kwargs):
             return {'id': 'cedef40a-ed67-4d10-800e-17455edce175',
                     'name': 'fake_name',
                     'properties': {
@@ -2078,7 +2085,7 @@ class CloudTestCase(test.TestCase):
 
         run_instances = self.cloud.run_instances
 
-        def fake_show(self, context, id):
+        def fake_show(self, context, id, **kwargs):
             return {'id': 'cedef40a-ed67-4d10-800e-17455edce175',
                     'name': 'fake_name',
                     'properties': {
@@ -2178,7 +2185,7 @@ class CloudTestCase(test.TestCase):
                   'max_count': 1}
         run_instances = self.cloud.run_instances
 
-        def fake_show_stat_active(self, context, id):
+        def fake_show_stat_active(self, context, id, **kwargs):
             return {'id': 'cedef40a-ed67-4d10-800e-17455edce175',
                     'name': 'fake_name',
                     'container_format': 'ami',
@@ -2221,14 +2228,32 @@ class CloudTestCase(test.TestCase):
                           self.cloud.start_instances,
                           self.context, [instance_id])
 
+        expected = {'instancesSet': [
+                        {'instanceId': 'i-00000001',
+                         'previousState': {'code': 16,
+                                           'name': 'running'},
+                         'currentState': {'code': 80,
+                                           'name': 'stopped'}}]}
         result = self.cloud.stop_instances(self.context, [instance_id])
-        self.assertTrue(result)
+        self.assertEqual(result, expected)
 
+        expected = {'instancesSet': [
+                        {'instanceId': 'i-00000001',
+                         'previousState': {'code': 80,
+                                           'name': 'stopped'},
+                         'currentState': {'code': 16,
+                                           'name': 'running'}}]}
         result = self.cloud.start_instances(self.context, [instance_id])
-        self.assertTrue(result)
+        self.assertEqual(result, expected)
 
+        expected = {'instancesSet': [
+                        {'instanceId': 'i-00000001',
+                         'previousState': {'code': 16,
+                                           'name': 'running'},
+                         'currentState': {'code': 80,
+                                           'name': 'stopped'}}]}
         result = self.cloud.stop_instances(self.context, [instance_id])
-        self.assertTrue(result)
+        self.assertEqual(result, expected)
 
         expected = {'instancesSet': [
                         {'instanceId': 'i-00000001',
@@ -2248,8 +2273,14 @@ class CloudTestCase(test.TestCase):
         result = self.cloud.stop_instances(self.context, [instance_id])
         self.assertTrue(result)
 
+        expected = {'instancesSet': [
+                        {'instanceId': 'i-00000001',
+                         'previousState': {'code': 80,
+                                           'name': 'stopped'},
+                         'currentState': {'code': 16,
+                                           'name': 'running'}}]}
         result = self.cloud.start_instances(self.context, [instance_id])
-        self.assertTrue(result)
+        self.assertEqual(result, expected)
 
         expected = {'instancesSet': [
                         {'instanceId': 'i-00000001',
@@ -2283,8 +2314,14 @@ class CloudTestCase(test.TestCase):
                   'max_count': 1, }
         instance_id = self._run_instance(**kwargs)
 
+        expected = {'instancesSet': [
+                        {'instanceId': 'i-00000001',
+                         'previousState': {'code': 16,
+                                           'name': 'running'},
+                         'currentState': {'code': 80,
+                                           'name': 'stopped'}}]}
         result = self.cloud.stop_instances(self.context, [instance_id])
-        self.assertTrue(result)
+        self.assertEqual(result, expected)
 
         expected = {'instancesSet': [
                         {'instanceId': 'i-00000001',
@@ -2384,8 +2421,14 @@ class CloudTestCase(test.TestCase):
         inst1 = self._run_instance(**kwargs)
         inst2 = self._run_instance(**kwargs)
 
+        expected = {'instancesSet': [
+                        {'instanceId': 'i-00000001',
+                         'previousState': {'code': 16,
+                                           'name': 'running'},
+                         'currentState': {'code': 80,
+                                           'name': 'stopped'}}]}
         result = self.cloud.stop_instances(self.context, [inst1])
-        self.assertTrue(result)
+        self.assertEqual(result, expected)
 
         expected = {'instancesSet': [
                         {'instanceId': 'i-00000001',
@@ -2454,7 +2497,7 @@ class CloudTestCase(test.TestCase):
                   'max_count': 1}
         ec2_instance_id = self._run_instance(**kwargs)
 
-        def fake_show(meh, context, id):
+        def fake_show(meh, context, id, **kwargs):
             bdm = [dict(snapshot_id=snapshots[0],
                         volume_size=1,
                         device_name='sda1',
@@ -2770,7 +2813,7 @@ class CloudTestCase(test.TestCase):
         test_dia_iisb('stop', image_id='ami-2',
                      block_device_mapping=block_device_mapping)
 
-        def fake_show(self, context, id_):
+        def fake_show(self, context, id_, **kwargs):
             LOG.debug("id_ %s", id_)
 
             prop = {}
@@ -2801,9 +2844,9 @@ class CloudTestCase(test.TestCase):
                 'container_format': 'ami',
                 'status': 'active'}
 
-        # NOTE(yamahata): create ami-3 ... ami-6
+        # NOTE(yamahata): create ami-3 ... ami-7
         # ami-1 and ami-2 is already created by setUp()
-        for i in range(3, 7):
+        for i in range(3, 8):
             db.s3_image_create(self.context, 'ami-%d' % i)
 
         self.stubs.Set(fake._FakeImageService, 'show', fake_show)
@@ -2812,6 +2855,8 @@ class CloudTestCase(test.TestCase):
         test_dia_iisb('stop', image_id='ami-4')
         test_dia_iisb('stop', image_id='ami-5')
         test_dia_iisb('stop', image_id='ami-6')
+        test_dia_iisb('terminate', image_id='ami-7',
+                      instance_initiated_shutdown_behavior='terminate')
 
     def test_create_delete_tags(self):
 
@@ -3091,7 +3136,7 @@ class CloudTestCase(test.TestCase):
             mock_ec2_vol_id_to_uuid.assert_called_once_with(ec2_volume_id)
 
 
-class CloudTestCaseNeutronProxy(test.TestCase):
+class CloudTestCaseNeutronProxy(test.NoDBTestCase):
     def setUp(self):
         super(CloudTestCaseNeutronProxy, self).setUp()
         cfg.CONF.set_override('security_group_api', 'neutron')

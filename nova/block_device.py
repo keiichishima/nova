@@ -18,7 +18,7 @@ import re
 from oslo.config import cfg
 
 from nova import exception
-from nova.openstack.common.gettextutils import _
+from nova.i18n import _
 from nova.openstack.common import log as logging
 from nova.openstack.common import strutils
 from nova import utils
@@ -420,6 +420,14 @@ def get_root_bdm(bdms):
         return (bdm for bdm in bdms if bdm.get('boot_index', -1) == 0).next()
     except StopIteration:
         return None
+
+
+def get_bdms_to_connect(bdms, exclude_root_mapping=False):
+    """Will return non-root mappings, when exclude_root_mapping is true.
+       Otherwise all mappings will be returned.
+    """
+    return (bdm for bdm in bdms if bdm.get('boot_index', -1) != 0 or
+            not exclude_root_mapping)
 
 
 def mappings_prepend_dev(mappings):

@@ -7,7 +7,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: nova\n"
 "Report-Msgid-Bugs-To: EMAIL@ADDRESS\n"
-"POT-Creation-Date: 2014-06-24 06:06+0000\n"
+"POT-Creation-Date: 2014-07-21 06:04+0000\n"
 "PO-Revision-Date: 2014-05-30 06:26+0000\n"
 "Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
 "Language-Team: French (http://www.transifex.com/projects/p/nova/language/"
@@ -18,6 +18,17 @@ msgstr ""
 "Content-Transfer-Encoding: 8bit\n"
 "Generated-By: Babel 1.3\n"
 "Plural-Forms: nplurals=2; plural=(n > 1);\n"
+
+#: nova/virt/vmwareapi/driver.py:864
+#, python-format
+msgid ""
+"Unable to connect to server at %(server)s, sleeping for %(seconds)s seconds"
+msgstr ""
+
+#: nova/virt/vmwareapi/driver.py:973
+#, python-format
+msgid "In vmwareapi: _call_method (session=%s)"
+msgstr ""
 
 #~ msgid "Dummy message for transifex setup."
 #~ msgstr "message fictif pour la configuration transifex"

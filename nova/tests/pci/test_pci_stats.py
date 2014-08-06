@@ -14,7 +14,7 @@
 #    under the License.
 
 from nova import exception
-from nova.objects import pci_device
+from nova import objects
 from nova.openstack.common import jsonutils
 from nova.pci import pci_stats as pci
 from nova import test
@@ -51,9 +51,9 @@ pci_requests_multiple = [{'count': 1,
 
 class PciDeviceStatsTestCase(test.NoDBTestCase):
     def _create_fake_devs(self):
-        self.fake_dev_1 = pci_device.PciDevice.create(fake_pci_1)
-        self.fake_dev_2 = pci_device.PciDevice.create(fake_pci_2)
-        self.fake_dev_3 = pci_device.PciDevice.create(fake_pci_3)
+        self.fake_dev_1 = objects.PciDevice.create(fake_pci_1)
+        self.fake_dev_2 = objects.PciDevice.create(fake_pci_2)
+        self.fake_dev_3 = objects.PciDevice.create(fake_pci_3)
 
         map(self.pci_stats.add_device,
             [self.fake_dev_1, self.fake_dev_2, self.fake_dev_3])
@@ -71,15 +71,15 @@ class PciDeviceStatsTestCase(test.NoDBTestCase):
                          set([1, 2]))
 
     def test_remove_device(self):
-        self.pci_stats.consume_device(self.fake_dev_2)
+        self.pci_stats.remove_device(self.fake_dev_2)
         self.assertEqual(len(self.pci_stats.pools), 1)
         self.assertEqual(self.pci_stats.pools[0]['count'], 2)
         self.assertEqual(self.pci_stats.pools[0]['vendor_id'], 'v1')
 
     def test_remove_device_exception(self):
-        self.pci_stats.consume_device(self.fake_dev_2)
+        self.pci_stats.remove_device(self.fake_dev_2)
         self.assertRaises(exception.PciDevicePoolEmpty,
-                          self.pci_stats.consume_device,
+                          self.pci_stats.remove_device,
                           self.fake_dev_2)
 
     def test_json_creat(self):
@@ -115,4 +115,19 @@ class PciDeviceStatsTestCase(test.NoDBTestCase):
     def test_apply_requests_failed(self):
         self.assertRaises(exception.PciDeviceRequestFailed,
             self.pci_stats.apply_requests,
+            pci_requests_multiple)
+
+    def test_consume_requests(self):
+        devs = self.pci_stats.consume_requests(pci_requests)
+        self.assertEqual(2, len(devs))
+        self.assertEqual(set(['v1', 'v2']),
+                         set([dev['vendor_id'] for dev in devs]))
+
+    def test_consume_requests_empty(self):
+        devs = self.pci_stats.consume_requests([])
+        self.assertEqual(0, len(devs))
+
+    def test_consume_requests_failed(self):
+        self.assertRaises(exception.PciDeviceRequestFailed,
+            self.pci_stats.consume_requests,
             pci_requests_multiple)

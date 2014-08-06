@@ -17,8 +17,8 @@ from nova.compute import rpcapi as compute_rpcapi
 from nova.compute import utils as compute_utils
 from nova import db
 from nova import exception
+from nova.i18n import _
 from nova import image
-from nova.openstack.common.gettextutils import _
 from nova.openstack.common import log as logging
 from nova.scheduler import rpcapi as scheduler_rpcapi
 from nova.scheduler import utils as scheduler_utils
@@ -60,8 +60,8 @@ class LiveMigrationTask(object):
         else:
             self._check_requested_destination()
 
-        #TODO(johngarbutt) need to move complexity out of compute manager
-        #TODO(johngarbutt) disk_over_commit?
+        # TODO(johngarbutt) need to move complexity out of compute manager
+        # TODO(johngarbutt) disk_over_commit?
         return self.compute_rpcapi.live_migration(self.context,
                 host=self.source,
                 instance=self.instance,
@@ -70,7 +70,7 @@ class LiveMigrationTask(object):
                 migrate_data=self.migrate_data)
 
     def rollback(self):
-        #TODO(johngarbutt) need to implement the clean up operation
+        # TODO(johngarbutt) need to implement the clean up operation
         # but this will make sense only once we pull in the compute
         # calls, since this class currently makes no state changes,
         # except to call the compute method, that has no matching
@@ -141,7 +141,7 @@ class LiveMigrationTask(object):
                 destination, self.block_migration, self.disk_over_commit)
 
     def _find_destination(self):
-        #TODO(johngarbutt) this retry loop should be shared
+        # TODO(johngarbutt) this retry loop should be shared
         attempted_hosts = [self.source]
         image = None
         if self.instance.image_ref:
@@ -187,5 +187,5 @@ def execute(context, instance, destination,
                              destination,
                              block_migration,
                              disk_over_commit)
-    #TODO(johngarbutt) create a superclass that contains a safe_execute call
+    # TODO(johngarbutt) create a superclass that contains a safe_execute call
     return task.execute()

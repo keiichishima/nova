@@ -25,8 +25,10 @@ import webob
 
 from nova.api.openstack import xmlutil
 from nova import exception
-from nova.openstack.common import gettextutils
-from nova.openstack.common.gettextutils import _
+from nova import i18n
+from nova.i18n import _
+from nova.i18n import _LE
+from nova.i18n import _LI
 from nova.openstack.common import jsonutils
 from nova.openstack.common import log as logging
 from nova import utils
@@ -193,7 +195,7 @@ class Request(webob.Request):
         if not self.accept_language:
             return None
         return self.accept_language.best_match(
-                gettextutils.get_available_languages('nova'))
+                i18n.get_available_languages())
 
 
 class ActionDispatcher(object):
@@ -373,7 +375,7 @@ class XMLDictSerializer(DictSerializer):
         self._add_xmlns(node, has_atom)
         return node.toxml('UTF-8')
 
-    #NOTE (ameade): the has_atom should be removed after all of the
+    # NOTE (ameade): the has_atom should be removed after all of the
     # xml serializers and view builders have been updated to the current
     # spec that required all responses include the xmlns:atom, the has_atom
     # flag is to prevent current tests from breaking
@@ -393,7 +395,7 @@ class XMLDictSerializer(DictSerializer):
         if xmlns:
             result.setAttribute('xmlns', xmlns)
 
-        #TODO(bcwaldon): accomplish this without a type-check
+        # TODO(bcwaldon): accomplish this without a type-check
         if isinstance(data, list):
             collections = metadata.get('list_collections', {})
             if nodename in collections:
@@ -412,7 +414,7 @@ class XMLDictSerializer(DictSerializer):
             for item in data:
                 node = self._to_xml_node(doc, metadata, singular, item)
                 result.appendChild(node)
-        #TODO(bcwaldon): accomplish this without a type-check
+        # TODO(bcwaldon): accomplish this without a type-check
         elif isinstance(data, dict):
             collections = metadata.get('dict_collections', {})
             if nodename in collections:
@@ -679,14 +681,14 @@ class ResourceExceptionHandler(object):
         # http://bugs.python.org/issue7853
         elif issubclass(ex_type, TypeError):
             exc_info = (ex_type, ex_value, ex_traceback)
-            LOG.error(_('Exception handling resource: %s') % ex_value,
-                    exc_info=exc_info)
+            LOG.error(_LE('Exception handling resource: %s'), ex_value,
+                      exc_info=exc_info)
             raise Fault(webob.exc.HTTPBadRequest())
         elif isinstance(ex_value, Fault):
-            LOG.info(_("Fault thrown: %s"), unicode(ex_value))
+            LOG.info(_LI("Fault thrown: %s"), unicode(ex_value))
             raise ex_value
         elif isinstance(ex_value, webob.exc.HTTPException):
-            LOG.info(_("HTTP exception thrown: %s"), unicode(ex_value))
+            LOG.info(_LI("HTTP exception thrown: %s"), unicode(ex_value))
             raise Fault(ex_value)
 
         # We didn't handle the exception
@@ -937,7 +939,7 @@ class Resource(wsgi.Application):
         try:
             contents = {}
             if self._should_have_body(request):
-                #allow empty body with PUT and POST
+                # allow empty body with PUT and POST
                 if request.content_length == 0:
                     contents = {'body': None}
                 else:
@@ -1197,8 +1199,7 @@ class Fault(webob.exc.HTTPException):
         LOG.debug("Returning %(code)s to user: %(explanation)s",
                   {'code': code, 'explanation': explanation})
 
-        explanation = gettextutils.translate(explanation,
-                                                         user_locale)
+        explanation = i18n.translate(explanation, user_locale)
         fault_data = {
             fault_name: {
                 'code': code,
@@ -1261,13 +1262,9 @@ class RateLimitFault(webob.exc.HTTPException):
         metadata = {"attributes": {"overLimit": ["code", "retryAfter"]}}
 
         self.content['overLimit']['message'] = \
-                gettextutils.translate(
-                        self.content['overLimit']['message'],
-                        user_locale)
+            i18n.translate(self.content['overLimit']['message'], user_locale)
         self.content['overLimit']['details'] = \
-                gettextutils.translate(
-                        self.content['overLimit']['details'],
-                        user_locale)
+            i18n.translate(self.content['overLimit']['details'], user_locale)
 
         xml_serializer = XMLDictSerializer(metadata, XMLNS_V11)
         serializer = {

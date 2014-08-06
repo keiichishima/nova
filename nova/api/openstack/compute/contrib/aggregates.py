@@ -22,7 +22,7 @@ from webob import exc
 from nova.api.openstack import extensions
 from nova.compute import api as compute_api
 from nova import exception
-from nova.openstack.common.gettextutils import _
+from nova.i18n import _
 from nova.openstack.common import log as logging
 from nova import utils
 
@@ -37,10 +37,19 @@ def _get_context(req):
 def get_host_from_body(fn):
     """Makes sure that the host exists."""
     def wrapped(self, req, id, body, *args, **kwargs):
-        if len(body) == 1 and "host" in body:
-            host = body['host']
-        else:
-            raise exc.HTTPBadRequest()
+        if len(body) != 1:
+            msg = _('Only host parameter can be specified')
+            raise exc.HTTPBadRequest(explanation=msg)
+        elif 'host' not in body:
+            msg = _('Host parameter must be specified')
+            raise exc.HTTPBadRequest(explanation=msg)
+        try:
+            utils.check_string_length(body['host'], 'host', 1, 255)
+        except exception.InvalidInput as e:
+            raise exc.HTTPBadRequest(explanation=e.format_message())
+
+        host = body['host']
+
         return fn(self, req, id, host, *args, **kwargs)
     return wrapped
 
@@ -219,7 +228,8 @@ class AggregateController(object):
         try:
             for key, value in metadata.items():
                 utils.check_string_length(key, "metadata.key", 1, 255)
-                utils.check_string_length(value, "metadata.value", 0, 255)
+                if value is not None:
+                    utils.check_string_length(value, "metadata.value", 0, 255)
         except exception.InvalidInput as e:
             raise exc.HTTPBadRequest(explanation=e.format_message())
         try:

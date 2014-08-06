@@ -65,6 +65,16 @@ class _ComputeAPIUnitTestMixIn(object):
         self.context = context.RequestContext(self.user_id,
                                               self.project_id)
 
+    def _get_vm_states(self, exclude_states=None):
+        vm_state = set([vm_states.ACTIVE, vm_states.BUILDING, vm_states.PAUSED,
+                    vm_states.SUSPENDED, vm_states.RESCUED, vm_states.STOPPED,
+                    vm_states.RESIZED, vm_states.SOFT_DELETED,
+                    vm_states.DELETED, vm_states.ERROR, vm_states.SHELVED,
+                    vm_states.SHELVED_OFFLOADED])
+        if not exclude_states:
+            exclude_states = set()
+        return vm_state - exclude_states
+
     def _create_flavor(self, params=None):
         flavor = {'id': 1,
                   'flavorid': 1,
@@ -161,6 +171,9 @@ class _ComputeAPIUnitTestMixIn(object):
             quota.QUOTAS.limit_check(self.context, metadata_items=mox.IsA(int))
             quota.QUOTAS.reserve(self.context, instances=40,
                                  cores=mox.IsA(int),
+                                 expire=mox.IgnoreArg(),
+                                 project_id=mox.IgnoreArg(),
+                                 user_id=mox.IgnoreArg(),
                                  ram=mox.IsA(int)).AndRaise(quota_exception)
 
         self.mox.ReplayAll()
@@ -243,6 +256,19 @@ class _ComputeAPIUnitTestMixIn(object):
         self.assertEqual(vm_states.ACTIVE, instance.vm_state)
         self.assertEqual(task_states.SUSPENDING,
                          instance.task_state)
+
+    def _test_suspend_fails(self, vm_state):
+        params = dict(vm_state=vm_state)
+        instance = self._create_instance_obj(params=params)
+        self.assertIsNone(instance.task_state)
+        self.assertRaises(exception.InstanceInvalidState,
+                          self.compute_api.suspend,
+                          self.context, instance)
+
+    def test_suspend_fails_invalid_states(self):
+        invalid_vm_states = self._get_vm_states(set([vm_states.ACTIVE]))
+        for state in invalid_vm_states:
+            self._test_suspend_fails(state)
 
     def test_resume(self):
         # Ensure instance can be resumed (if suspended).
@@ -349,12 +375,18 @@ class _ComputeAPIUnitTestMixIn(object):
     def test_stop_stopped_instance_with_bypass(self):
         self._test_stop(vm_states.STOPPED, force=True)
 
-    def test_stop_invalid_state(self):
-        params = dict(vm_state=vm_states.PAUSED)
+    def _test_stop_invalid_state(self, vm_state):
+        params = dict(vm_state=vm_state)
         instance = self._create_instance_obj(params=params)
         self.assertRaises(exception.InstanceInvalidState,
                           self.compute_api.stop,
                           self.context, instance)
+
+    def test_stop_fails_invalid_states(self):
+        invalid_vm_states = self._get_vm_states(set([vm_states.ACTIVE,
+                                                     vm_states.ERROR]))
+        for state in invalid_vm_states:
+            self._test_stop_invalid_state(state)
 
     def test_stop_a_stopped_inst(self):
         params = {'vm_state': vm_states.STOPPED}
@@ -539,7 +571,7 @@ class _ComputeAPIUnitTestMixIn(object):
                 system_metadata=inst.system_metadata)
 
     def _test_delete(self, delete_type, **attrs):
-        reservations = 'fake-resv'
+        reservations = ['fake-resv']
         inst = self._create_instance_obj()
         inst.update(attrs)
         inst._context = self.context
@@ -593,6 +625,7 @@ class _ComputeAPIUnitTestMixIn(object):
             self._test_delete_resizing_part(inst, deltas)
         quota.QUOTAS.reserve(self.context, project_id=inst.project_id,
                              user_id=inst.user_id,
+                             expire=mox.IgnoreArg(),
                              **deltas).AndReturn(reservations)
 
         # NOTE(comstud): This is getting messy.  But what we are wanting
@@ -716,6 +749,7 @@ class _ComputeAPIUnitTestMixIn(object):
     def test_delete_fast_if_host_not_set(self):
         inst = self._create_instance_obj()
         inst.host = ''
+        quotas = quotas_obj.Quotas(self.context)
         updates = {'progress': 0, 'task_state': task_states.DELETING}
 
         self.mox.StubOutWithMock(inst, 'save')
@@ -740,7 +774,7 @@ class _ComputeAPIUnitTestMixIn(object):
         self.compute_api._create_reservations(self.context,
                                               inst, inst.task_state,
                                               inst.project_id, inst.user_id
-                                              ).AndReturn(None)
+                                              ).AndReturn(quotas)
 
         if self.cell_type == 'api':
             rpcapi.terminate_instance(
@@ -1283,6 +1317,19 @@ class _ComputeAPIUnitTestMixIn(object):
         self.assertEqual(task_states.PAUSING,
                          instance.task_state)
 
+    def _test_pause_fails(self, vm_state):
+        params = dict(vm_state=vm_state)
+        instance = self._create_instance_obj(params=params)
+        self.assertIsNone(instance.task_state)
+        self.assertRaises(exception.InstanceInvalidState,
+                          self.compute_api.pause,
+                          self.context, instance)
+
+    def test_pause_fails_invalid_states(self):
+        invalid_vm_states = self._get_vm_states(set([vm_states.ACTIVE]))
+        for state in invalid_vm_states:
+            self._test_pause_fails(state)
+
     def test_unpause(self):
         # Ensure instance can be unpaused.
         params = dict(vm_state=vm_states.PAUSED)
@@ -1602,6 +1649,7 @@ class _ComputeAPIUnitTestMixIn(object):
             'properties': {'mappings': []},
             'status': 'fake-status',
             'location': 'far-away',
+            'owner': 'fake-tenant',
         }
 
         expect_meta = {
@@ -1790,7 +1838,7 @@ class _ComputeAPIUnitTestMixIn(object):
             'properties': {"auto_disk_config": "Disabled"},
         }
 
-        def fake_show(obj, context, image_id):
+        def fake_show(obj, context, image_id, **kwargs):
             return self.fake_image
         fake_image.stub_out_image_service(self.stubs)
         self.stubs.Set(fake_image._FakeImageService, 'show', fake_show)
@@ -1851,7 +1899,7 @@ class _ComputeAPIUnitTestMixIn(object):
         _get_image.return_value = (None, image)
         bdm_get_by_instance_uuid.return_value = bdms
 
-        with mock.patch.object(self.compute_api.compute_rpcapi,
+        with mock.patch.object(self.compute_api.compute_task_api,
                 'rebuild_instance') as rebuild_instance:
             self.compute_api.rebuild(self.context, instance, image_href,
                     admin_pass, files_to_inject)
@@ -1861,7 +1909,7 @@ class _ComputeAPIUnitTestMixIn(object):
                     injected_files=files_to_inject, image_ref=image_href,
                     orig_image_ref=image_href,
                     orig_sys_metadata=orig_system_metadata, bdms=bdms,
-                    preserve_ephemeral=False, kwargs={})
+                    preserve_ephemeral=False, host=instance.host, kwargs={})
 
         _check_auto_disk_config.assert_called_once_with(image=image)
         _checks_for_create_and_rebuild.assert_called_once_with(self.context,
@@ -1909,7 +1957,7 @@ class _ComputeAPIUnitTestMixIn(object):
         _get_image.side_effect = get_image
         bdm_get_by_instance_uuid.return_value = bdms
 
-        with mock.patch.object(self.compute_api.compute_rpcapi,
+        with mock.patch.object(self.compute_api.compute_task_api,
                 'rebuild_instance') as rebuild_instance:
             self.compute_api.rebuild(self.context, instance, new_image_href,
                     admin_pass, files_to_inject)
@@ -1919,15 +1967,15 @@ class _ComputeAPIUnitTestMixIn(object):
                     injected_files=files_to_inject, image_ref=new_image_href,
                     orig_image_ref=orig_image_href,
                     orig_sys_metadata=orig_system_metadata, bdms=bdms,
-                    preserve_ephemeral=False, kwargs={})
+                    preserve_ephemeral=False, host=instance.host, kwargs={})
 
         _check_auto_disk_config.assert_called_once_with(image=new_image)
         _checks_for_create_and_rebuild.assert_called_once_with(self.context,
                 None, new_image, flavor, {}, [])
         self.assertEqual(vm_mode.XEN, instance.vm_mode)
 
-    @mock.patch('nova.quota.QUOTAS.commit')
-    @mock.patch('nova.quota.QUOTAS.reserve')
+    @mock.patch('nova.objects.Quotas.commit')
+    @mock.patch('nova.objects.Quotas.reserve')
     @mock.patch('nova.objects.Instance.save')
     @mock.patch('nova.objects.InstanceAction.action_start')
     def test_restore(self, action_start, instance_save, quota_reserve,
@@ -2036,8 +2084,6 @@ class _ComputeAPIUnitTestMixIn(object):
 
     @mock.patch.object(objects.Instance, 'create')
     @mock.patch.object(compute_api.SecurityGroupAPI, 'ensure_default')
-    @mock.patch.object(compute_api.API,
-                       '_populate_instance_shutdown_terminate')
     @mock.patch.object(compute_api.API, '_populate_instance_names')
     @mock.patch.object(compute_api.API, '_populate_instance_for_create')
     @mock.patch.object(cinder.API, 'get',
@@ -2045,7 +2091,6 @@ class _ComputeAPIUnitTestMixIn(object):
     def test_create_db_entry_for_new_instancewith_cinder_down(self, mock_get,
                                                             mock_create,
                                                             mock_names,
-                                                            mock_terminate,
                                                             mock_ensure,
                                                             mock_inst_create):
         instance = self._create_instance_obj()
@@ -2171,6 +2216,36 @@ class _ComputeAPIUnitTestMixIn(object):
                 self.context, instance=instance, new_pass=None)
 
         do_test()
+
+    def _test_attach_interface_invalid_state(self, state):
+        instance = self._create_instance_obj(
+            params={'vm_state': state})
+        self.assertRaises(exception.InstanceInvalidState,
+                          self.compute_api.attach_interface,
+                          self.context, instance, '', '', '', [])
+
+    def test_attach_interface_invalid_state(self):
+        for state in [vm_states.BUILDING, vm_states.DELETED,
+                      vm_states.ERROR, vm_states.RESCUED,
+                      vm_states.RESIZED, vm_states.SOFT_DELETED,
+                      vm_states.SUSPENDED, vm_states.SHELVED,
+                      vm_states.SHELVED_OFFLOADED]:
+            self._test_attach_interface_invalid_state(state)
+
+    def _test_detach_interface_invalid_state(self, state):
+        instance = self._create_instance_obj(
+            params={'vm_state': state})
+        self.assertRaises(exception.InstanceInvalidState,
+                          self.compute_api.detach_interface,
+                          self.context, instance, '', '', '', [])
+
+    def test_detach_interface_invalid_state(self):
+        for state in [vm_states.BUILDING, vm_states.DELETED,
+                      vm_states.ERROR, vm_states.RESCUED,
+                      vm_states.RESIZED, vm_states.SOFT_DELETED,
+                      vm_states.SUSPENDED, vm_states.SHELVED,
+                      vm_states.SHELVED_OFFLOADED]:
+            self._test_detach_interface_invalid_state(state)
 
 
 class ComputeAPIUnitTestCase(_ComputeAPIUnitTestMixIn, test.NoDBTestCase):

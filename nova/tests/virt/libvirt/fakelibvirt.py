@@ -17,7 +17,7 @@ from lxml import etree
 import time
 import uuid
 
-from nova.openstack.common.gettextutils import _
+from nova.i18n import _
 
 # Allow passing None to the various connect methods
 # (i.e. allow the client to rely on default URLs)
@@ -73,6 +73,13 @@ VIR_DOMAIN_SHUTOFF = 5
 VIR_DOMAIN_CRASHED = 6
 
 VIR_DOMAIN_XML_SECURE = 1
+VIR_DOMAIN_XML_INACTIVE = 2
+
+VIR_DOMAIN_BLOCK_REBASE_SHALLOW = 1
+VIR_DOMAIN_BLOCK_REBASE_REUSE_EXT = 2
+VIR_DOMAIN_BLOCK_REBASE_COPY = 8
+
+VIR_DOMAIN_BLOCK_JOB_ABORT_PIVOT = 2
 
 VIR_DOMAIN_EVENT_ID_LIFECYCLE = 0
 
@@ -597,7 +604,7 @@ class DomainSnapshot(object):
 
 
 class Connection(object):
-    def __init__(self, uri=None, readonly=False, version=9007):
+    def __init__(self, uri=None, readonly=False, version=9011):
         if not uri or uri == '':
             if allow_default_uri_connection:
                 uri = 'qemu:///session'

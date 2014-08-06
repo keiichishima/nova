@@ -338,20 +338,20 @@ class MonkeyPatchTestCase(test.NoDBTestCase):
 
         self.assertEqual(ret_b, 8)
         package_a = self.example_package + 'example_a.'
-        self.assertTrue(package_a + 'example_function_a'
-            in nova.tests.monkey_patch_example.CALLED_FUNCTION)
+        self.assertIn(package_a + 'example_function_a',
+                      nova.tests.monkey_patch_example.CALLED_FUNCTION)
 
-        self.assertTrue(package_a + 'ExampleClassA.example_method'
-            in nova.tests.monkey_patch_example.CALLED_FUNCTION)
-        self.assertTrue(package_a + 'ExampleClassA.example_method_add'
-            in nova.tests.monkey_patch_example.CALLED_FUNCTION)
+        self.assertIn(package_a + 'ExampleClassA.example_method',
+                        nova.tests.monkey_patch_example.CALLED_FUNCTION)
+        self.assertIn(package_a + 'ExampleClassA.example_method_add',
+                        nova.tests.monkey_patch_example.CALLED_FUNCTION)
         package_b = self.example_package + 'example_b.'
-        self.assertFalse(package_b + 'example_function_b'
-            in nova.tests.monkey_patch_example.CALLED_FUNCTION)
-        self.assertFalse(package_b + 'ExampleClassB.example_method'
-            in nova.tests.monkey_patch_example.CALLED_FUNCTION)
-        self.assertFalse(package_b + 'ExampleClassB.example_method_add'
-            in nova.tests.monkey_patch_example.CALLED_FUNCTION)
+        self.assertNotIn(package_b + 'example_function_b',
+                         nova.tests.monkey_patch_example.CALLED_FUNCTION)
+        self.assertNotIn(package_b + 'ExampleClassB.example_method',
+                         nova.tests.monkey_patch_example.CALLED_FUNCTION)
+        self.assertNotIn(package_b + 'ExampleClassB.example_method_add',
+                         nova.tests.monkey_patch_example.CALLED_FUNCTION)
 
 
 class MonkeyPatchDefaultTestCase(test.NoDBTestCase):
@@ -381,7 +381,7 @@ class AuditPeriodTest(test.NoDBTestCase):
 
     def setUp(self):
         super(AuditPeriodTest, self).setUp()
-        #a fairly random time to test with
+        # a fairly random time to test with
         self.test_time = datetime.datetime(second=23,
                                            minute=12,
                                            hour=8,

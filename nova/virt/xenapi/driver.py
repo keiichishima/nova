@@ -40,7 +40,7 @@ import math
 from oslo.config import cfg
 import six.moves.urllib.parse as urlparse
 
-from nova.openstack.common.gettextutils import _
+from nova.i18n import _
 from nova.openstack.common import jsonutils
 from nova.openstack.common import log as logging
 from nova.openstack.common import units
@@ -255,7 +255,7 @@ class XenAPIDriver(driver.ComputeDriver):
                             destroy_disks)
 
     def cleanup(self, context, instance, network_info, block_device_info=None,
-                destroy_disks=True, migrate_data=None):
+                destroy_disks=True, migrate_data=None, destroy_vifs=True):
         """Cleanup after instance being destroyed by Hypervisor."""
         pass
 
@@ -343,6 +343,10 @@ class XenAPIDriver(driver.ComputeDriver):
     def get_diagnostics(self, instance):
         """Return data about VM diagnostics."""
         return self._vmops.get_diagnostics(instance)
+
+    def get_instance_diagnostics(self, instance):
+        """Return data about VM diagnostics."""
+        return self._vmops.get_instance_diagnostics(instance)
 
     def get_all_bw_counters(self, instances):
         """Return bandwidth usage counters for each interface on each

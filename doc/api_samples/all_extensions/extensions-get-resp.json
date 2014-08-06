@@ -273,6 +273,14 @@
             "updated": "2013-01-06T00:00:00Z"
         },
         {
+            "alias": "os-extended-evacuate-find-host",
+            "description": "Enables server evacuation without target host. Scheduler will select\n       one to target.\n    ",
+            "links": [],
+            "name": "ExtendedEvacuateFindHost",
+            "namespace": "http://docs.openstack.org/compute/ext/extended_evacuate_find_host/api/v2",
+            "updated": "2014-02-12T00:00:00Z"
+        },
+        {
             "alias": "os-extended-floating-ips",
             "description": "Adds optional fixed_address to the add floating IP command.",
             "links": [],
@@ -303,6 +311,14 @@
             "name": "ExtendedRescueWithImage",
             "namespace": "http://docs.openstack.org/compute/ext/extended_rescue_with_image/api/v2",
             "updated": "2014-01-04T00:00:00Z"
+        },
+        {
+            "alias": "os-hypervisor-status",
+            "description": "Show hypervisor status.",
+            "links": [],
+            "name": "HypervisorStatus",
+            "namespace": "http://docs.openstack.org/compute/ext/hypervisor_status/api/v1.1",
+            "updated": "2014-04-17T00:00:00Z"
         },
         {
             "alias": "os-extended-services",
@@ -567,6 +583,14 @@
             "name": "ServerGroups",
             "namespace": "http://docs.openstack.org/compute/ext/servergroups/api/v2",
             "updated": "2013-06-20T00:00:00Z"
+        },
+        {
+            "alias": "os-server-list-multi-status",
+            "description": "Allow to filter the servers by a set of status values.",
+            "links": [],
+            "name": "ServerListMultiStatus",
+            "namespace": "http://docs.openstack.org/compute/ext/os-server-list-multi-status/api/v2",
+            "updated": "2014-05-11T00:00:00Z"
         },
         {
             "alias": "os-server-password",

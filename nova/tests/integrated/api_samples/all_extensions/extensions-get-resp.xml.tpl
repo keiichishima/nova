@@ -150,6 +150,9 @@
   <extension alias="os-extended-hypervisors" name="ExtendedHypervisors" namespace="http://docs.openstack.org/compute/ext/extended_hypervisors/api/v1.1" updated="%(isotime)s">
     <description>%(text)s</description>
   </extension>
+  <extension alias="os-hypervisor-status" updated="%(isotime)s" namespace="http://docs.openstack.org/compute/ext/hypervisor_status/api/v1.1" name="HypervisorStatus">
+    <description>%(text)s</description>
+  </extension>
   <extension alias="os-instance_usage_audit_log" updated="%(isotime)s" namespace="http://docs.openstack.org/ext/services/api/v1.1" name="OSInstanceUsageAuditLog">
     <description>%(text)s</description>
   </extension>
@@ -193,6 +196,9 @@
     <description>%(text)s</description>
   </extension>
   <extension alias="os-server-diagnostics" updated="%(isotime)s" namespace="http://docs.openstack.org/compute/ext/server-diagnostics/api/v1.1" name="ServerDiagnostics">
+    <description>%(text)s</description>
+  </extension>
+  <extension alias="os-server-list-multi-status" updated="%(isotime)s" namespace="http://docs.openstack.org/compute/ext/os-server-list-multi-status/api/v2" name="ServerListMultiStatus">
     <description>%(text)s</description>
   </extension>
   <extension alias="os-server-password" updated="%(isotime)s" namespace="http://docs.openstack.org/compute/ext/server-password/api/v2" name="ServerPassword">
@@ -249,6 +255,9 @@
     <description>%(text)s</description>
   </extension>
   <extension alias="os-server-groups" updated="%(isotime)s" namespace="http://docs.openstack.org/compute/ext/servergroups/api/v2" name="ServerGroups">
+    <description>%(text)s</description>
+  </extension>
+  <extension alias="os-extended-evacuate-find-host" updated="%(isotime)s" namespace="http://docs.openstack.org/compute/ext/extended_evacuate_find_host/api/v2" name="ExtendedEvacuateFindHost">
     <description>%(text)s</description>
   </extension>
 </extensions>

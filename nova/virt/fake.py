@@ -31,7 +31,7 @@ from nova.compute import power_state
 from nova.compute import task_states
 from nova import db
 from nova import exception
-from nova.openstack.common.gettextutils import _
+from nova.i18n import _
 from nova.openstack.common import jsonutils
 from nova.openstack.common import log as logging
 from nova import utils
@@ -219,7 +219,7 @@ class FakeDriver(driver.ComputeDriver):
                          'inst': self.instances}, instance=instance)
 
     def cleanup(self, context, instance, network_info, block_device_info=None,
-                destroy_disks=True, migrate_data=None):
+                destroy_disks=True, migrate_data=None, destroy_vifs=True):
         pass
 
     def attach_volume(self, context, connection_info, instance, mountpoint,
@@ -382,7 +382,7 @@ class FakeDriver(driver.ComputeDriver):
                'memory_mb_used': 0,
                'local_gb_used': 0,
                'hypervisor_type': 'fake',
-               'hypervisor_version': '1.0',
+               'hypervisor_version': utils.convert_version_to_int('1.0'),
                'hypervisor_hostname': nodename,
                'disk_available_least': 0,
                'cpu_info': '?',

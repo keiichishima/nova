@@ -24,8 +24,8 @@ from nova.api.openstack import extensions
 from nova.api import validation
 from nova import compute
 from nova import exception
+from nova.i18n import _
 from nova import network
-from nova.openstack.common.gettextutils import _
 from nova.openstack.common import log as logging
 
 
@@ -54,11 +54,13 @@ class InterfaceAttachmentController(object):
         self.network_api = network.API()
         super(InterfaceAttachmentController, self).__init__()
 
+    @extensions.expected_errors((404, 501))
     def index(self, req, server_id):
         """Returns the list of interface attachments for a given instance."""
         return self._items(req, server_id,
             entity_maker=_translate_interface_attachment_view)
 
+    @extensions.expected_errors(404)
     def show(self, req, server_id, id):
         """Return data about the given interface attachment."""
         context = req.environ['nova.context']
@@ -78,6 +80,7 @@ class InterfaceAttachmentController(object):
         return {'interface_attachment': _translate_interface_attachment_view(
                 port_info['port'])}
 
+    @extensions.expected_errors((400, 404, 409, 500, 501))
     @validation.schema(attach_interfaces.create)
     def create(self, req, server_id, body):
         """Attach an interface to an instance."""
@@ -123,14 +126,13 @@ class InterfaceAttachmentController(object):
             LOG.exception(e)
             raise webob.exc.HTTPInternalServerError(
                 explanation=e.format_message())
+        except exception.InstanceInvalidState as state_error:
+            common.raise_http_conflict_for_instance_invalid_state(state_error,
+                    'attach_interface')
 
         return self.show(req, server_id, vif['id'])
 
-    def update(self, req, server_id, id, body):
-        """Update a interface attachment.  We don't currently support this."""
-        msg = _("Attachments update is not supported")
-        raise exc.HTTPNotImplemented(explanation=msg)
-
+    @extensions.expected_errors((404, 409, 501))
     def delete(self, req, server_id, id):
         """Detach an interface from an instance."""
         context = req.environ['nova.context']
@@ -149,6 +151,9 @@ class InterfaceAttachmentController(object):
             raise exc.HTTPConflict(explanation=e.format_message())
         except NotImplementedError as e:
             raise webob.exc.HTTPNotImplemented(explanation=e.format_message())
+        except exception.InstanceInvalidState as state_error:
+            common.raise_http_conflict_for_instance_invalid_state(state_error,
+                    'detach_interface')
 
         return webob.Response(status_int=202)
 

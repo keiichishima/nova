@@ -53,8 +53,8 @@ import sqlalchemy.exc
 
 import nova.db.sqlalchemy.migrate_repo
 from nova.db.sqlalchemy import utils as db_utils
+from nova.i18n import _
 from nova.openstack.common.db.sqlalchemy import utils as oslodbutils
-from nova.openstack.common.gettextutils import _
 from nova.openstack.common import log as logging
 from nova.openstack.common import processutils
 from nova import test
@@ -707,6 +707,63 @@ class TestNovaMigrations(BaseWalkMigrationTestCase, CommonTestsMixIn):
         self.assertColumnNotExists(engine, 'networks', 'enable_dhcp')
         self.assertColumnNotExists(engine, 'networks', 'share_address')
 
+    def _check_246(self, engine, data):
+        pci_devices = oslodbutils.get_table(engine, 'pci_devices')
+        self.assertEqual(1, len([fk for fk in pci_devices.foreign_keys
+                                 if fk.parent.name == 'compute_node_id']))
+
+    def _post_downgrade_246(self, engine):
+        pci_devices = oslodbutils.get_table(engine, 'pci_devices')
+        self.assertEqual(0, len([fk for fk in pci_devices.foreign_keys
+                                 if fk.parent.name == 'compute_node_id']))
+
+    def _check_247(self, engine, data):
+        quota_usages = oslodbutils.get_table(engine, 'quota_usages')
+        self.assertFalse(quota_usages.c.resource.nullable)
+
+        pci_devices = oslodbutils.get_table(engine, 'pci_devices')
+        self.assertTrue(pci_devices.c.deleted.nullable)
+        self.assertFalse(pci_devices.c.product_id.nullable)
+        self.assertFalse(pci_devices.c.vendor_id.nullable)
+        self.assertFalse(pci_devices.c.dev_type.nullable)
+
+    def _post_downgrade_247(self, engine):
+        quota_usages = oslodbutils.get_table(engine, 'quota_usages')
+        self.assertTrue(quota_usages.c.resource.nullable)
+
+        pci_devices = oslodbutils.get_table(engine, 'pci_devices')
+        self.assertFalse(pci_devices.c.deleted.nullable)
+        self.assertTrue(pci_devices.c.product_id.nullable)
+        self.assertTrue(pci_devices.c.vendor_id.nullable)
+        self.assertTrue(pci_devices.c.dev_type.nullable)
+
+    def _check_248(self, engine, data):
+        self.assertIndexMembers(engine, 'reservations',
+                                'reservations_deleted_expire_idx',
+                                ['deleted', 'expire'])
+
+    def _post_downgrade_248(self, engine):
+        reservations = oslodbutils.get_table(engine, 'reservations')
+        index_names = [idx.name for idx in reservations.indexes]
+        self.assertNotIn('reservations_deleted_expire_idx', index_names)
+
+    def _check_249(self, engine, data):
+        # Assert that only one index exists that covers columns
+        # instance_uuid and device_name
+        bdm = oslodbutils.get_table(engine, 'block_device_mapping')
+        self.assertEqual(1, len([i for i in bdm.indexes
+                                 if [c.name for c in i.columns] ==
+                                    ['instance_uuid', 'device_name']]))
+
+    def _post_downgrade_249(self, engine):
+        # The duplicate index is not created on downgrade, so this
+        # asserts that only one index exists that covers columns
+        # instance_uuid and device_name
+        bdm = oslodbutils.get_table(engine, 'block_device_mapping')
+        self.assertEqual(1, len([i for i in bdm.indexes
+                                 if [c.name for c in i.columns] ==
+                                    ['instance_uuid', 'device_name']]))
+
 
 class TestBaremetalMigrations(BaseWalkMigrationTestCase, CommonTestsMixIn):
     """Test sqlalchemy-migrate migrations."""
@@ -865,4 +922,4 @@ class ProjectTestCase(test.NoDBTestCase):
 
         helpful_msg = (_("The following migrations are missing a downgrade:"
                          "\n\t%s") % '\n\t'.join(sorted(missing_downgrade)))
-        self.assertTrue(not missing_downgrade, helpful_msg)
+        self.assertFalse(missing_downgrade, helpful_msg)

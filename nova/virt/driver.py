@@ -24,7 +24,7 @@ import sys
 
 from oslo.config import cfg
 
-from nova.openstack.common.gettextutils import _
+from nova.i18n import _
 from nova.openstack.common import importutils
 from nova.openstack.common import log as logging
 from nova import utils
@@ -33,9 +33,9 @@ from nova.virt import event as virtevent
 driver_opts = [
     cfg.StrOpt('compute_driver',
                help='Driver to use for controlling virtualization. Options '
-                   'include: libvirt.LibvirtDriver, xenapi.XenAPIDriver, '
-                   'fake.FakeDriver, baremetal.BareMetalDriver, '
-                   'vmwareapi.VMwareVCDriver'),
+                    'include: libvirt.LibvirtDriver, xenapi.XenAPIDriver, '
+                    'fake.FakeDriver, baremetal.BareMetalDriver, '
+                    'vmwareapi.VMwareVCDriver, hyperv.HyperVDriver'),
     cfg.StrOpt('default_ephemeral_format',
                help='The default format an ephemeral_volume will be '
                     'formatted with on creation.'),
@@ -319,7 +319,7 @@ class ComputeDriver(object):
         raise NotImplementedError()
 
     def cleanup(self, context, instance, network_info, block_device_info=None,
-                destroy_disks=True, migrate_data=None):
+                destroy_disks=True, migrate_data=None, destroy_vifs=True):
         """Cleanup the instance resources .
 
         Instance should have been destroyed from the Hypervisor before calling
@@ -694,6 +694,16 @@ class ComputeDriver(object):
         :param migrate_data: if not None, it is a dict which has data
         """
         pass
+
+    def post_live_migration_at_source(self, context, instance, network_info):
+        """Unplug VIFs from networks at source.
+
+        :param context: security context
+        :param instance: instance object reference
+        :param network_info: instance network information
+        """
+        raise NotImplementedError(_("Hypervisor driver does not support "
+                                    "post_live_migration_at_source method"))
 
     def post_live_migration_at_destination(self, context, instance,
                                            network_info,
@@ -1078,6 +1088,10 @@ class ComputeDriver(object):
         """
         raise NotImplementedError()
 
+    def deallocate_networks_on_reschedule(self, instance):
+        """Does the driver want networks deallocated on reschedule?"""
+        return False
+
     def macs_for_instance(self, instance):
         """What MAC addresses must this instance have?
 
@@ -1145,7 +1159,7 @@ class ComputeDriver(object):
 
     def add_to_aggregate(self, context, aggregate, host, **kwargs):
         """Add a compute host to an aggregate."""
-        #NOTE(jogo) Currently only used for XenAPI-Pool
+        # NOTE(jogo) Currently only used for XenAPI-Pool
         raise NotImplementedError()
 
     def remove_from_aggregate(self, context, aggregate, host, **kwargs):
@@ -1307,6 +1321,18 @@ class ComputeDriver(object):
                                           *block_device_lists):
         """Default the missing device names in the block device mapping."""
         raise NotImplementedError()
+
+    def is_supported_fs_format(self, fs_type):
+        """Check whether the file format is supported by this driver
+
+        :param fs_type: the file system type to be checked,
+                        the validate values are defined at disk API module.
+        """
+        # NOTE(jichenjc): Return False here so that every hypervisor
+        #                 need to define their supported file system
+        #                 type and implement this function at their
+        #                 virt layer.
+        return False
 
 
 def load_compute_driver(virtapi, compute_driver=None):

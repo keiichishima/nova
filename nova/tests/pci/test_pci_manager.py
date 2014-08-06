@@ -21,7 +21,6 @@ from nova import context
 from nova import db
 from nova import exception
 from nova import objects
-from nova.objects import pci_device as pci_device_obj
 from nova.pci import pci_device
 from nova.pci import pci_manager
 from nova.pci import pci_request
@@ -75,7 +74,7 @@ class PciDevTrackerTestCase(test.TestCase):
     def _create_fake_instance(self):
         self.inst = objects.Instance()
         self.inst.uuid = 'fake-inst-uuid'
-        self.inst.pci_devices = pci_device_obj.PciDeviceList()
+        self.inst.pci_devices = objects.PciDeviceList()
         self.inst.vm_state = vm_states.ACTIVE
         self.inst.task_state = None
 
@@ -105,7 +104,8 @@ class PciDevTrackerTestCase(test.TestCase):
 
     def test_pcidev_tracker_create(self):
         self.assertEqual(len(self.tracker.pci_devs), 3)
-        self.assertEqual(len(self.tracker.free_devs), 3)
+        free_devs = self.tracker.pci_stats.get_free_devs()
+        self.assertEqual(len(free_devs), 3)
         self.assertEqual(self.tracker.stale.keys(), [])
         self.assertEqual(len(self.tracker.stats.pools), 2)
         self.assertEqual(self.tracker.node_id, 1)
@@ -113,23 +113,6 @@ class PciDevTrackerTestCase(test.TestCase):
     def test_pcidev_tracker_create_no_nodeid(self):
         self.tracker = pci_manager.PciDevTracker()
         self.assertEqual(len(self.tracker.pci_devs), 0)
-
-    def test_get_free_devices_for_requests(self):
-        devs = self.tracker.get_free_devices_for_requests(fake_pci_requests)
-        self.assertEqual(len(devs), 2)
-        self.assertEqual(set([dev['vendor_id'] for dev in devs]),
-                         set(['v1', 'v']))
-
-    def test_get_free_devices_for_requests_empty(self):
-        devs = self.tracker.get_free_devices_for_requests([])
-        self.assertEqual(len(devs), 0)
-
-    def test_get_free_devices_for_requests_meet_partial(self):
-        requests = copy.deepcopy(fake_pci_requests)
-        requests[1]['count'] = 2
-        requests[1]['spec'][0]['vendor_id'] = 'v'
-        devs = self.tracker.get_free_devices_for_requests(requests)
-        self.assertEqual(len(devs), 0)
 
     def test_set_hvdev_new_dev(self):
         fake_pci_3 = dict(fake_pci, address='0000:00:00.4', vendor_id='v2')
@@ -173,8 +156,9 @@ class PciDevTrackerTestCase(test.TestCase):
     def test_update_pci_for_instance_active(self):
         self.pci_requests = fake_pci_requests
         self.tracker.update_pci_for_instance(self.inst)
-        self.assertEqual(len(self.tracker.free_devs), 1)
-        self.assertEqual(self.tracker.free_devs[0]['vendor_id'], 'v')
+        free_devs = self.tracker.pci_stats.get_free_devs()
+        self.assertEqual(len(free_devs), 1)
+        self.assertEqual(free_devs[0]['vendor_id'], 'v')
 
     def test_update_pci_for_instance_fail(self):
         self.pci_requests = copy.deepcopy(fake_pci_requests)
@@ -186,10 +170,12 @@ class PciDevTrackerTestCase(test.TestCase):
     def test_update_pci_for_instance_deleted(self):
         self.pci_requests = fake_pci_requests
         self.tracker.update_pci_for_instance(self.inst)
-        self.assertEqual(len(self.tracker.free_devs), 1)
+        free_devs = self.tracker.pci_stats.get_free_devs()
+        self.assertEqual(len(free_devs), 1)
         self.inst.vm_state = vm_states.DELETED
         self.tracker.update_pci_for_instance(self.inst)
-        self.assertEqual(len(self.tracker.free_devs), 3)
+        free_devs = self.tracker.pci_stats.get_free_devs()
+        self.assertEqual(len(free_devs), 3)
         self.assertEqual(set([dev['vendor_id'] for
                               dev in self.tracker.pci_devs]),
                          set(['v', 'v1']))
@@ -197,15 +183,18 @@ class PciDevTrackerTestCase(test.TestCase):
     def test_update_pci_for_instance_resize_source(self):
         self.pci_requests = fake_pci_requests
         self.tracker.update_pci_for_instance(self.inst)
-        self.assertEqual(len(self.tracker.free_devs), 1)
+        free_devs = self.tracker.pci_stats.get_free_devs()
+        self.assertEqual(len(free_devs), 1)
         self.inst.task_state = task_states.RESIZE_MIGRATED
         self.tracker.update_pci_for_instance(self.inst)
-        self.assertEqual(len(self.tracker.free_devs), 3)
+        free_devs = self.tracker.pci_stats.get_free_devs()
+        self.assertEqual(len(free_devs), 3)
 
     def test_update_pci_for_instance_resize_dest(self):
         self.pci_requests = fake_pci_requests
         self.tracker.update_pci_for_migration(self.inst)
-        self.assertEqual(len(self.tracker.free_devs), 1)
+        free_devs = self.tracker.pci_stats.get_free_devs()
+        self.assertEqual(len(free_devs), 1)
         self.assertEqual(len(self.tracker.claims['fake-inst-uuid']), 2)
         self.assertNotIn('fake-inst-uuid', self.tracker.allocations)
         self.inst.task_state = task_states.RESIZE_FINISH
@@ -216,14 +205,16 @@ class PciDevTrackerTestCase(test.TestCase):
     def test_update_pci_for_migration_in(self):
         self.pci_requests = fake_pci_requests
         self.tracker.update_pci_for_migration(self.inst)
-        self.assertEqual(len(self.tracker.free_devs), 1)
-        self.assertEqual(self.tracker.free_devs[0]['vendor_id'], 'v')
+        free_devs = self.tracker.pci_stats.get_free_devs()
+        self.assertEqual(len(free_devs), 1)
+        self.assertEqual(free_devs[0]['vendor_id'], 'v')
 
     def test_update_pci_for_migration_out(self):
         self.pci_requests = fake_pci_requests
         self.tracker.update_pci_for_migration(self.inst)
         self.tracker.update_pci_for_migration(self.inst, sign=-1)
-        self.assertEqual(len(self.tracker.free_devs), 3)
+        free_devs = self.tracker.pci_stats.get_free_devs()
+        self.assertEqual(len(free_devs), 3)
         self.assertEqual(set([dev['vendor_id'] for
                               dev in self.tracker.pci_devs]),
                          set(['v', 'v1']))
@@ -277,13 +268,15 @@ class PciDevTrackerTestCase(test.TestCase):
         self.tracker.update_pci_for_instance(self.inst)
         self.pci_requests = [{'count': 1, 'spec': [{'vendor_id': 'v1'}]}]
         self.tracker.update_pci_for_instance(inst_2)
-        self.assertEqual(len(self.tracker.free_devs), 1)
-        self.assertEqual(self.tracker.free_devs[0]['vendor_id'], 'v')
+        free_devs = self.tracker.pci_stats.get_free_devs()
+        self.assertEqual(len(free_devs), 1)
+        self.assertEqual(free_devs[0]['vendor_id'], 'v')
 
         self.tracker.clean_usage([self.inst], [migr], [orph])
-        self.assertEqual(len(self.tracker.free_devs), 2)
+        free_devs = self.tracker.pci_stats.get_free_devs()
+        self.assertEqual(len(free_devs), 2)
         self.assertEqual(
-            set([dev['vendor_id'] for dev in self.tracker.free_devs]),
+            set([dev['vendor_id'] for dev in free_devs]),
             set(['v', 'v1']))
 
     def test_clean_usage_claims(self):
@@ -296,11 +289,13 @@ class PciDevTrackerTestCase(test.TestCase):
         self.tracker.update_pci_for_instance(self.inst)
         self.pci_requests = [{'count': 1, 'spec': [{'vendor_id': 'v1'}]}]
         self.tracker.update_pci_for_migration(inst_2)
-        self.assertEqual(len(self.tracker.free_devs), 1)
+        free_devs = self.tracker.pci_stats.get_free_devs()
+        self.assertEqual(len(free_devs), 1)
         self.tracker.clean_usage([self.inst], [migr], [orph])
-        self.assertEqual(len(self.tracker.free_devs), 2)
+        free_devs = self.tracker.pci_stats.get_free_devs()
+        self.assertEqual(len(free_devs), 2)
         self.assertEqual(
-            set([dev['vendor_id'] for dev in self.tracker.free_devs]),
+            set([dev['vendor_id'] for dev in free_devs]),
             set(['v', 'v1']))
 
     def test_clean_usage_no_request_match_no_claims(self):
@@ -309,11 +304,13 @@ class PciDevTrackerTestCase(test.TestCase):
         # calls clean_usage.
         self.pci_requests = None
         self.tracker.update_pci_for_migration(instance=self.inst, sign=1)
-        self.assertEqual(3, len(self.tracker.free_devs))
+        free_devs = self.tracker.pci_stats.get_free_devs()
+        self.assertEqual(3, len(free_devs))
         self.tracker.clean_usage([], [], [])
-        self.assertEqual(3, len(self.tracker.free_devs))
+        free_devs = self.tracker.pci_stats.get_free_devs()
+        self.assertEqual(3, len(free_devs))
         self.assertEqual(
-            set([dev['address'] for dev in self.tracker.free_devs]),
+            set([dev['address'] for dev in free_devs]),
             set(['0000:00:00.1', '0000:00:00.2', '0000:00:00.3']))
 
 
@@ -334,7 +331,7 @@ class PciGetInstanceDevs(test.TestCase):
         def _fake_obj_load_attr(foo, attrname):
             if attrname == 'pci_devices':
                 self.load_attr_called = True
-                foo.pci_devices = pci_device_obj.PciDeviceList()
+                foo.pci_devices = objects.PciDeviceList()
 
         inst = fakes.stub_instance(id='1')
         ctxt = context.get_admin_context()

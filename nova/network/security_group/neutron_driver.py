@@ -23,11 +23,11 @@ from webob import exc
 
 from nova.compute import api as compute_api
 from nova import exception
+from nova.i18n import _
 from nova.network import neutronv2
 from nova.network.security_group import security_group_base
 from nova import objects
 from nova.openstack.common import excutils
-from nova.openstack.common.gettextutils import _
 from nova.openstack.common import log as logging
 from nova.openstack.common import uuidutils
 from nova import utils
@@ -505,3 +505,23 @@ class SecurityGroupAPI(security_group_base.SecurityGroupBase):
         # in the nova database if using the neutron driver
         instance['security_groups'] = objects.SecurityGroupList()
         instance['security_groups'].objects = []
+
+    def get_default_rule(self, context, id):
+        msg = _("Network driver does not support this function.")
+        raise exc.HTTPNotImplemented(explanation=msg)
+
+    def get_all_default_rules(self, context):
+        msg = _("Network driver does not support this function.")
+        raise exc.HTTPNotImplemented(explanation=msg)
+
+    def add_default_rules(self, context, vals):
+        msg = _("Network driver does not support this function.")
+        raise exc.HTTPNotImplemented(explanation=msg)
+
+    def remove_default_rules(self, context, rule_ids):
+        msg = _("Network driver does not support this function.")
+        raise exc.HTTPNotImplemented(explanation=msg)
+
+    def default_rule_exists(self, context, values):
+        msg = _("Network driver does not support this function.")
+        raise exc.HTTPNotImplemented(explanation=msg)

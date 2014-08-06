@@ -13,9 +13,12 @@
 #    under the License.
 
 import contextlib
+import re
 
 import mock
 
+from nova import exception
+from nova.i18n import _
 from nova.openstack.common import units
 from nova import test
 from nova.tests.virt.vmwareapi import fake
@@ -44,7 +47,7 @@ class DsUtilTestCase(test.NoDBTestCase):
         def fake_call_method(module, method, *args, **kwargs):
             self.assertEqual('DeleteDatastoreFile_Task', method)
             name = kwargs.get('name')
-            self.assertEqual('fake-datastore-path', name)
+            self.assertEqual('[ds] fake/path', name)
             datacenter = kwargs.get('datacenter')
             self.assertEqual('fake-dc-ref', datacenter)
             return 'fake_delete_task'
@@ -54,8 +57,9 @@ class DsUtilTestCase(test.NoDBTestCase):
             mock.patch.object(self.session, '_call_method',
                               fake_call_method)
         ) as (_wait_for_task, _call_method):
+            ds_path = ds_util.DatastorePath('ds', 'fake/path')
             ds_util.file_delete(self.session,
-                                'fake-datastore-path', 'fake-dc-ref')
+                                ds_path, 'fake-dc-ref')
             _wait_for_task.assert_has_calls([
                    mock.call('fake_delete_task')])
 
@@ -77,8 +81,10 @@ class DsUtilTestCase(test.NoDBTestCase):
             mock.patch.object(self.session, '_call_method',
                               fake_call_method)
         ) as (_wait_for_task, _call_method):
+            src_ds_path = ds_util.DatastorePath('ds', 'tmp/src')
+            dst_ds_path = ds_util.DatastorePath('ds', 'base/dst')
             ds_util.file_move(self.session,
-                              'fake-dc-ref', '[ds] tmp/src', '[ds] base/dst')
+                              'fake-dc-ref', src_ds_path, dst_ds_path)
             _wait_for_task.assert_has_calls([
                    mock.call('fake_move_task')])
 
@@ -86,7 +92,7 @@ class DsUtilTestCase(test.NoDBTestCase):
         def fake_call_method(module, method, *args, **kwargs):
             self.assertEqual('MakeDirectory', method)
             name = kwargs.get('name')
-            self.assertEqual('fake-path', name)
+            self.assertEqual('[ds] fake/path', name)
             datacenter = kwargs.get('datacenter')
             self.assertEqual('fake-dc-ref', datacenter)
             createParentDirectories = kwargs.get('createParentDirectories')
@@ -94,7 +100,8 @@ class DsUtilTestCase(test.NoDBTestCase):
 
         with mock.patch.object(self.session, '_call_method',
                                fake_call_method):
-            ds_util.mkdir(self.session, 'fake-path', 'fake-dc-ref')
+            ds_path = ds_util.DatastorePath('ds', 'fake/path')
+            ds_util.mkdir(self.session, ds_path, 'fake-dc-ref')
 
     def test_file_exists(self):
         def fake_call_method(module, method, *args, **kwargs):
@@ -102,7 +109,7 @@ class DsUtilTestCase(test.NoDBTestCase):
                 ds_browser = args[0]
                 self.assertEqual('fake-browser', ds_browser)
                 datastorePath = kwargs.get('datastorePath')
-                self.assertEqual('fake-path', datastorePath)
+                self.assertEqual('[ds] fake/path', datastorePath)
                 return 'fake_exists_task'
 
             # Should never get here
@@ -115,6 +122,7 @@ class DsUtilTestCase(test.NoDBTestCase):
 
                 result = fake.DataObject()
                 result.file = [result_file]
+                result.path = '[ds] fake/path'
 
                 task_info = fake.DataObject()
                 task_info.result = result
@@ -129,8 +137,9 @@ class DsUtilTestCase(test.NoDBTestCase):
                                   fake_call_method),
                 mock.patch.object(self.session, '_wait_for_task',
                                   fake_wait_for_task)):
+            ds_path = ds_util.DatastorePath('ds', 'fake/path')
             file_exists = ds_util.file_exists(self.session,
-                    'fake-browser', 'fake-path', 'fake-file')
+                    'fake-browser', ds_path, 'fake-file')
             self.assertTrue(file_exists)
 
     def test_file_exists_fails(self):
@@ -153,9 +162,104 @@ class DsUtilTestCase(test.NoDBTestCase):
                                   fake_call_method),
                 mock.patch.object(self.session, '_wait_for_task',
                                   fake_wait_for_task)):
+            ds_path = ds_util.DatastorePath('ds', 'fake/path')
             file_exists = ds_util.file_exists(self.session,
-                    'fake-browser', 'fake-path', 'fake-file')
+                    'fake-browser', ds_path, 'fake-file')
             self.assertFalse(file_exists)
+
+    def test_get_datastore(self):
+        fake_objects = fake.FakeRetrieveResult()
+        fake_objects.add_object(fake.Datastore())
+        result = ds_util.get_datastore(
+            fake.FakeObjectRetrievalSession(fake_objects))
+
+        self.assertEqual("fake-ds", result.name)
+        self.assertEqual(units.Ti, result.capacity)
+        self.assertEqual(500 * units.Gi, result.freespace)
+
+    def test_get_datastore_with_regex(self):
+        # Test with a regex that matches with a datastore
+        datastore_valid_regex = re.compile("^openstack.*\d$")
+        fake_objects = fake.FakeRetrieveResult()
+        fake_objects.add_object(fake.Datastore("openstack-ds0"))
+        fake_objects.add_object(fake.Datastore("fake-ds0"))
+        fake_objects.add_object(fake.Datastore("fake-ds1"))
+        result = ds_util.get_datastore(
+            fake.FakeObjectRetrievalSession(fake_objects), None, None,
+            datastore_valid_regex)
+        self.assertEqual("openstack-ds0", result.name)
+
+    def test_get_datastore_with_token(self):
+        regex = re.compile("^ds.*\d$")
+        fake0 = fake.FakeRetrieveResult()
+        fake0.add_object(fake.Datastore("ds0", 10 * units.Gi, 5 * units.Gi))
+        fake0.add_object(fake.Datastore("foo", 10 * units.Gi, 9 * units.Gi))
+        setattr(fake0, 'token', 'token-0')
+        fake1 = fake.FakeRetrieveResult()
+        fake1.add_object(fake.Datastore("ds2", 10 * units.Gi, 8 * units.Gi))
+        fake1.add_object(fake.Datastore("ds3", 10 * units.Gi, 1 * units.Gi))
+        result = ds_util.get_datastore(
+            fake.FakeObjectRetrievalSession(fake0, fake1), None, None, regex)
+        self.assertEqual("ds2", result.name)
+
+    def test_get_datastore_with_list(self):
+        # Test with a regex containing whitelist of datastores
+        datastore_valid_regex = re.compile("(openstack-ds0|openstack-ds2)")
+        fake_objects = fake.FakeRetrieveResult()
+        fake_objects.add_object(fake.Datastore("openstack-ds0"))
+        fake_objects.add_object(fake.Datastore("openstack-ds1"))
+        fake_objects.add_object(fake.Datastore("openstack-ds2"))
+        result = ds_util.get_datastore(
+            fake.FakeObjectRetrievalSession(fake_objects), None, None,
+            datastore_valid_regex)
+        self.assertNotEqual("openstack-ds1", result.name)
+
+    def test_get_datastore_with_regex_error(self):
+        # Test with a regex that has no match
+        # Checks if code raises DatastoreNotFound with a specific message
+        datastore_invalid_regex = re.compile("unknown-ds")
+        exp_message = (_("Datastore regex %s did not match any datastores")
+                       % datastore_invalid_regex.pattern)
+        fake_objects = fake.FakeRetrieveResult()
+        fake_objects.add_object(fake.Datastore("fake-ds0"))
+        fake_objects.add_object(fake.Datastore("fake-ds1"))
+        # assertRaisesRegExp would have been a good choice instead of
+        # try/catch block, but it's available only from Py 2.7.
+        try:
+            ds_util.get_datastore(
+                fake.FakeObjectRetrievalSession(fake_objects), None, None,
+                datastore_invalid_regex)
+        except exception.DatastoreNotFound as e:
+            self.assertEqual(exp_message, e.args[0])
+        else:
+            self.fail("DatastoreNotFound Exception was not raised with "
+                      "message: %s" % exp_message)
+
+    def test_get_datastore_without_datastore(self):
+
+        self.assertRaises(exception.DatastoreNotFound,
+                ds_util.get_datastore,
+                fake.FakeObjectRetrievalSession(None), host="fake-host")
+
+        self.assertRaises(exception.DatastoreNotFound,
+                ds_util.get_datastore,
+                fake.FakeObjectRetrievalSession(None), cluster="fake-cluster")
+
+    def test_get_datastore_no_host_in_cluster(self):
+        self.assertRaises(exception.DatastoreNotFound,
+                          ds_util.get_datastore,
+                          fake.FakeObjectRetrievalSession(""), 'fake_cluster')
+
+    def test_get_datastore_inaccessible_ds(self):
+        data_store = fake.Datastore()
+        data_store.set("summary.accessible", False)
+
+        fake_objects = fake.FakeRetrieveResult()
+        fake_objects.add_object(data_store)
+
+        self.assertRaises(exception.DatastoreNotFound,
+                ds_util.get_datastore,
+                fake.FakeObjectRetrievalSession(fake_objects))
 
 
 class DatastoreTestCase(test.NoDBTestCase):
@@ -286,6 +390,28 @@ class DatastorePathTestCase(test.NoDBTestCase):
         for t in args:
             p = ds_util.DatastorePath(t[0], *t[1])
             self.assertNotEqual(str(canonical_p), str(p))
+
+    def test_equal(self):
+        a = ds_util.DatastorePath('ds_name', 'a')
+        b = ds_util.DatastorePath('ds_name', 'a')
+        self.assertEqual(a, b)
+
+    def test_join(self):
+        p = ds_util.DatastorePath('ds_name', 'a')
+        ds_path = p.join('b')
+        self.assertEqual('[ds_name] a/b', str(ds_path))
+
+        p = ds_util.DatastorePath('ds_name', 'a')
+        ds_path = p.join()
+        self.assertEqual('[ds_name] a', str(ds_path))
+
+        bad_args = [
+            [None],
+            ['', None],
+            ['a', None],
+            ['a', None, 'b']]
+        for arg in bad_args:
+            self.assertRaises(ValueError, p.join, *arg)
 
     def test_ds_path_parse(self):
         p = ds_util.DatastorePath.parse('[dsname]')

@@ -20,9 +20,11 @@ from nova.api.openstack import extensions
 from nova.api.openstack import wsgi
 from nova.compute import flavors
 from nova import exception
-from nova.openstack.common.gettextutils import _
+from nova.i18n import _
 from nova.openstack.common import strutils
 from nova import utils
+
+ALIAS = 'flavors'
 
 
 class FlavorsController(wsgi.Controller):
@@ -116,7 +118,7 @@ class FlavorsController(wsgi.Controller):
 class Flavors(extensions.V3APIExtensionBase):
     """Flavors Extension."""
     name = "Flavors"
-    alias = "flavors"
+    alias = ALIAS
     version = 1
 
     def get_resources(self):
@@ -124,7 +126,7 @@ class Flavors(extensions.V3APIExtensionBase):
         member_actions = {'action': 'POST'}
 
         resources = [
-            extensions.ResourceExtension('flavors',
+            extensions.ResourceExtension(ALIAS,
                                          FlavorsController(),
                                          member_name='flavor',
                                          collection_actions=collection_actions,

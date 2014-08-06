@@ -72,10 +72,10 @@ from nova import context
 from nova import db
 from nova.db import migration
 from nova import exception
+from nova.i18n import _
 from nova import objects
 from nova.openstack.common import cliutils
 from nova.openstack.common.db import exception as db_exc
-from nova.openstack.common.gettextutils import _
 from nova.openstack.common import importutils
 from nova.openstack.common import log as logging
 from nova import quota
@@ -614,10 +614,10 @@ class NetworkCommands(object):
         admin_context = context.get_admin_context()
         network = db.network_get_by_cidr(admin_context, fixed_range)
         net = {}
-        #User can choose the following actions each for project and host.
-        #1) Associate (set not None value given by project/host parameter)
-        #2) Disassociate (set None by disassociate parameter)
-        #3) Keep unchanged (project/host key is not added to 'net')
+        # User can choose the following actions each for project and host.
+        # 1) Associate (set not None value given by project/host parameter)
+        # 2) Disassociate (set None by disassociate parameter)
+        # 3) Keep unchanged (project/host key is not added to 'net')
         if dis_project:
             net['project_id'] = None
         if dis_host:

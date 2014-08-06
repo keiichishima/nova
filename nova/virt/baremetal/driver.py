@@ -27,8 +27,8 @@ from nova.compute import power_state
 from nova.compute import task_states
 from nova import context as nova_context
 from nova import exception
+from nova.i18n import _
 from nova.openstack.common import excutils
-from nova.openstack.common.gettextutils import _
 from nova.openstack.common import importutils
 from nova.openstack.common import jsonutils
 from nova.openstack.common import lockutils
@@ -218,6 +218,9 @@ class BareMetalDriver(driver.ComputeDriver):
         self.firewall_driver.unfilter_instance(
                 instance, network_info)
 
+    def deallocate_networks_on_reschedule(self, instance):
+        return True
+
     def macs_for_instance(self, instance):
         context = nova_context.get_admin_context()
         node_uuid = self._require_node(instance)
@@ -400,7 +403,7 @@ class BareMetalDriver(driver.ComputeDriver):
                                 "baremetal database: %s") % e)
 
     def cleanup(self, context, instance, network_info, block_device_info=None,
-                destroy_disks=True, migrate_data=None):
+                destroy_disks=True, migrate_data=None, destroy_vifs=True):
         """Cleanup after instance being destroyed."""
         pass
 

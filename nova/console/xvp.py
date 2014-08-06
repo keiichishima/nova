@@ -23,8 +23,8 @@ from oslo.config import cfg
 
 from nova import context
 from nova import db
+from nova.i18n import _
 from nova.openstack.common import excutils
-from nova.openstack.common.gettextutils import _
 from nova.openstack.common import log as logging
 from nova.openstack.common import processutils
 from nova import paths
@@ -69,7 +69,7 @@ class XVPConsoleProxy(object):
 
     def get_port(self, context):
         """Get available port for consoles that need one."""
-        #TODO(mdragon): implement port selection for non multiplex ports,
+        # TODO(mdragon): implement port selection for non multiplex ports,
         #               we are not using that, but someone else may want
         #               it.
         return CONF.console_xvp_multiplex_port
@@ -131,7 +131,7 @@ class XVPConsoleProxy(object):
         try:
             os.kill(pid, signal.SIGTERM)
         except OSError:
-            #if it's already not running, no problem.
+            # if it's already not running, no problem.
             pass
 
     def _xvp_start(self):
@@ -196,7 +196,7 @@ class XVPConsoleProxy(object):
         if is_pool_password:
             maxlen = 16
             flag = '-x'
-        #xvp will blow up on passwords that are too long (mdragon)
+        # xvp will blow up on passwords that are too long (mdragon)
         password = password[:maxlen]
         out, err = utils.execute('xvp', flag, process_input=password)
         if err:

@@ -22,9 +22,9 @@ from nova.compute import flavors
 from nova.compute import utils as compute_utils
 from nova import db
 from nova import exception
+from nova.i18n import _
 from nova import notifications
 from nova.objects import base as obj_base
-from nova.openstack.common.gettextutils import _
 from nova.openstack.common import jsonutils
 from nova.openstack.common import log as logging
 from nova import rpc
@@ -196,9 +196,7 @@ def _add_retry_host(filter_properties, host, node):
     node has already been tried.
     """
     retry = filter_properties.get('retry', None)
-    force_hosts = filter_properties.get('force_hosts', [])
-    force_nodes = filter_properties.get('force_nodes', [])
-    if not retry or force_hosts or force_nodes:
+    if not retry:
         return
     hosts = retry['hosts']
     hosts.append([host, node])
@@ -235,3 +233,8 @@ def parse_options(opts, sep='=', converter=str, name=""):
                 {'name': name,
                  'options': ", ".join(bad)})
     return good
+
+
+def validate_filter(filter):
+    """Validates that the filter is configured in the default filters."""
+    return filter in CONF.scheduler_default_filters

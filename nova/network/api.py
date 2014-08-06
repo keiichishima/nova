@@ -20,13 +20,13 @@ import functools
 
 from nova.compute import flavors
 from nova import exception
+from nova.i18n import _
 from nova.network import base_api
 from nova.network import floating_ips
 from nova.network import model as network_model
 from nova.network import rpcapi as network_rpcapi
 from nova import objects
 from nova.objects import base as obj_base
-from nova.openstack.common.gettextutils import _
 from nova.openstack.common import log as logging
 from nova import policy
 from nova import utils
@@ -78,13 +78,13 @@ class API(base_api.NetworkAPI):
         belong to the user's project.
         """
         try:
-            return self.db.network_get_all(context, project_only=True)
+            return objects.NetworkList.get_all(context, project_only=True)
         except exception.NoNetworksFound:
             return []
 
     @wrap_check_policy
     def get(self, context, network_uuid):
-        return self.db.network_get_by_uuid(context.elevated(), network_uuid)
+        return objects.Network.get_by_uuid(context.elevated(), network_uuid)
 
     @wrap_check_policy
     def create(self, context, **kwargs):
@@ -97,11 +97,12 @@ class API(base_api.NetworkAPI):
     @wrap_check_policy
     def disassociate(self, context, network_uuid):
         network = self.get(context, network_uuid)
-        self.db.network_disassociate(context, network['id'])
+        objects.Network.disassociate(context, network.id,
+                                     host=True, project=True)
 
     @wrap_check_policy
     def get_fixed_ip(self, context, id):
-        return self.db.fixed_ip_get(context, id)
+        return objects.FixedIP.get_by_id(context, id)
 
     @wrap_check_policy
     def get_fixed_ip_by_address(self, context, address):
@@ -134,11 +135,11 @@ class API(base_api.NetworkAPI):
 
     @wrap_check_policy
     def get_instance_id_by_floating_address(self, context, address):
-        fixed_ip = self.db.fixed_ip_get_by_floating_address(context, address)
+        fixed_ip = objects.FixedIP.get_by_floating_address(context, address)
         if fixed_ip is None:
             return None
         else:
-            return fixed_ip['instance_uuid']
+            return fixed_ip.instance_uuid
 
     @wrap_check_policy
     def get_vifs_by_instance(self, context, instance):
@@ -146,9 +147,9 @@ class API(base_api.NetworkAPI):
                                                          instance['uuid'])
         for vif in vifs:
             if vif.get('network_id') is not None:
-                network = self.db.network_get(context, vif['network_id'],
-                                              project_only="allow_none")
-                vif['net_uuid'] = network['uuid']
+                network = objects.Network.get_by_id(context, vif['network_id'],
+                                                    project_only='allow_none')
+                vif['net_uuid'] = network.uuid
         return vifs
 
     @wrap_check_policy
@@ -156,9 +157,9 @@ class API(base_api.NetworkAPI):
         vif = self.db.virtual_interface_get_by_address(context,
                                                        mac_address)
         if vif.get('network_id') is not None:
-            network = self.db.network_get(context, vif['network_id'],
-                                          project_only="allow_none")
-            vif['net_uuid'] = network['uuid']
+            network = objects.Network.get_by_id(context, vif['network_id'],
+                                                project_only='allow_none')
+            vif['net_uuid'] = network.uuid
         return vif
 
     @wrap_check_policy
@@ -317,21 +318,21 @@ class API(base_api.NetworkAPI):
     def associate(self, context, network_uuid, host=base_api.SENTINEL,
                   project=base_api.SENTINEL):
         """Associate or disassociate host or project to network."""
-        network_id = self.get(context, network_uuid)['id']
+        network = self.get(context, network_uuid)
         if host is not base_api.SENTINEL:
             if host is None:
-                self.db.network_disassociate(context, network_id,
-                                             disassociate_host=True,
-                                             disassociate_project=False)
+                objects.Network.disassociate(context, network.id,
+                                             host=True, project=False)
             else:
-                self.db.network_set_host(context, network_id, host)
+                network.host = host
+                network.save()
         if project is not base_api.SENTINEL:
             if project is None:
-                self.db.network_disassociate(context, network_id,
-                                             disassociate_host=False,
-                                             disassociate_project=True)
+                objects.Network.disassociate(context, network.id,
+                                             host=False, project=True)
             else:
-                self.db.network_associate(context, project, network_id, True)
+                objects.Network.associate(context, project,
+                                          network_id=network.id, force=True)
 
     @wrap_check_policy
     def get_instance_nw_info(self, context, instance, **kwargs):

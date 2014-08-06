@@ -18,8 +18,8 @@ Management class for Storage-related functions (attach, detach, etc).
 """
 
 from nova import exception
+from nova.i18n import _
 from nova.openstack.common import excutils
-from nova.openstack.common.gettextutils import _
 from nova.openstack.common import log as logging
 from nova.virt.xenapi import vm_utils
 from nova.virt.xenapi import volume_utils
@@ -37,7 +37,7 @@ class VolumeOps(object):
     def attach_volume(self, connection_info, instance_name, mountpoint,
                       hotplug=True):
         """Attach volume to VM instance."""
-        #TODO(johngarbutt) move this into _attach_volume_to_vm
+        # TODO(johngarbutt) move this into _attach_volume_to_vm
         dev_number = volume_utils.get_device_number(mountpoint)
 
         vm_ref = vm_utils.vm_ref_or_raise(self._session, instance_name)
@@ -204,3 +204,20 @@ class VolumeOps(object):
                     raise
 
         return bad_devices
+
+    def safe_cleanup_from_vdis(self, vdi_refs):
+        # A helper method to detach volumes that are not associated with an
+        # instance
+
+        for vdi_ref in vdi_refs:
+            try:
+                sr_ref = volume_utils.find_sr_from_vdi(self._session, vdi_ref)
+            except exception.StorageError as exc:
+                LOG.debug(exc.format_message())
+                continue
+            try:
+                # Forget (i.e. disconnect) SR only if not in use
+                volume_utils.purge_sr(self._session, sr_ref)
+            except Exception:
+                LOG.debug('Ignoring error while purging sr: %s' % sr_ref,
+                        exc_info=True)

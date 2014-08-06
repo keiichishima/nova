@@ -396,12 +396,20 @@ class AggregateTestCase(test.NoDBTestCase):
         self.assertRaises(exc.HTTPBadRequest, self.controller.action,
                 self.req, "1", body={"add_host": {"asdf": "asdf"}})
 
+    def test_add_host_with_invalid_format_host(self):
+        self.assertRaises(exc.HTTPBadRequest, self.controller.action,
+                self.req, "1", body={"add_host": {"host": "a" * 300}})
+
+    def test_add_host_with_multiple_hosts(self):
+        self.assertRaises(exc.HTTPBadRequest, self.controller.action,
+                self.req, "1", body={"add_host": {"host": ["host1", "host2"]}})
+
     def test_add_host_raises_key_error(self):
         def stub_add_host_to_aggregate(context, aggregate, host):
             raise KeyError
         self.stubs.Set(self.controller.api, "add_host_to_aggregate",
                        stub_add_host_to_aggregate)
-        #NOTE(mtreinish) The check for a KeyError here is to ensure that
+        # NOTE(mtreinish) The check for a KeyError here is to ensure that
         # if add_host_to_aggregate() raises a KeyError it propagates. At
         # one point the api code would mask the error as a HTTPBadRequest.
         # This test is to ensure that this doesn't occur again.
@@ -466,6 +474,11 @@ class AggregateTestCase(test.NoDBTestCase):
         self.assertRaises(exc.HTTPBadRequest, self.controller.action,
                 self.req, "1", body={"asdf": "asdf"})
 
+    def test_remove_host_with_multiple_hosts(self):
+        self.assertRaises(exc.HTTPBadRequest, self.controller.action,
+                self.req, "1", body={"remove_host": {"host":
+                                                     ["host1", "host2"]}})
+
     def test_remove_host_with_extra_param(self):
         self.assertRaises(exc.HTTPBadRequest, self.controller.action,
                 self.req, "1", body={"remove_host": {"asdf": "asdf",
@@ -487,6 +500,18 @@ class AggregateTestCase(test.NoDBTestCase):
         result = self.controller.action(self.req, "1", body=body)
 
         self.assertEqual(AGGREGATE, result["aggregate"])
+
+    def test_set_metadata_delete(self):
+        body = {"set_metadata": {"metadata": {"foo": None}}}
+
+        with mock.patch.object(self.controller.api,
+                               'update_aggregate_metadata') as mocked:
+            mocked.return_value = AGGREGATE
+            result = self.controller.action(self.req, "1", body=body)
+
+        self.assertEqual(AGGREGATE, result["aggregate"])
+        mocked.assert_called_once_with(self.context, "1",
+                                       body["set_metadata"]["metadata"])
 
     def test_set_metadata_no_admin(self):
         self.assertRaises(exception.PolicyNotAuthorized,

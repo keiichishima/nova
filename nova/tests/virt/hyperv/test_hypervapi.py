@@ -34,8 +34,8 @@ from nova.compute import task_states
 from nova import context
 from nova import db
 from nova import exception
+from nova.i18n import _
 from nova.image import glance
-from nova.openstack.common.gettextutils import _
 from nova.openstack.common import units
 from nova import test
 from nova.tests import fake_network
@@ -134,10 +134,6 @@ class HyperVAPIBaseTestCase(test.NoDBTestCase):
             pass
         self.stubs.Set(time, 'sleep', fake_sleep)
 
-        def fake_vmutils__init__(self, host='.'):
-            pass
-        vmutils.VMUtils.__init__ = fake_vmutils__init__
-
         self.stubs.Set(pathutils, 'PathUtils', fake.PathUtils)
         self._mox.StubOutWithMock(fake.PathUtils, 'open')
         self._mox.StubOutWithMock(fake.PathUtils, 'copyfile')
@@ -164,7 +160,7 @@ class HyperVAPIBaseTestCase(test.NoDBTestCase):
         self._mox.StubOutWithMock(vmutils.VMUtils, 'set_nic_connection')
         self._mox.StubOutWithMock(vmutils.VMUtils, 'get_vm_scsi_controller')
         self._mox.StubOutWithMock(vmutils.VMUtils, 'get_vm_ide_controller')
-        self._mox.StubOutWithMock(vmutils.VMUtils, 'get_attached_disks_count')
+        self._mox.StubOutWithMock(vmutils.VMUtils, 'get_attached_disks')
         self._mox.StubOutWithMock(vmutils.VMUtils,
                                   'attach_volume_to_controller')
         self._mox.StubOutWithMock(vmutils.VMUtils,
@@ -1022,15 +1018,25 @@ class HyperVAPITestCase(HyperVAPIBaseTestCase,
             m.AndReturn(self._test_instance_dir)
 
             self._setup_get_cached_image_mocks(cow, vhd_format)
+            m = vhdutils.VHDUtils.get_vhd_info(mox.IsA(str))
+            m.AndReturn({'MaxInternalSize': 1024, 'FileSize': 1024,
+                         'Type': 2})
 
             if cow:
-                vhdutils.VHDUtils.create_differencing_vhd(mox.IsA(str),
-                                                          mox.IsA(str))
+                m = vhdutils.VHDUtils.get_vhd_format(mox.IsA(str))
+                m.AndReturn(vhd_format)
+                if vhd_format == constants.DISK_FORMAT_VHD:
+                    vhdutils.VHDUtils.create_differencing_vhd(mox.IsA(str),
+                                                              mox.IsA(str))
+                else:
+                    m = vhdutils.VHDUtils.get_internal_vhd_size_by_file_size(
+                        mox.IsA(str), mox.IsA(object))
+                    m.AndReturn(1025)
+                    vhdutils.VHDUtils.create_differencing_vhd(mox.IsA(str),
+                                                              mox.IsA(str),
+                                                              mox.IsA(int))
             else:
                 fake.PathUtils.copyfile(mox.IsA(str), mox.IsA(str))
-                m = vhdutils.VHDUtils.get_vhd_info(mox.IsA(str))
-                m.AndReturn({'MaxInternalSize': 1024, 'FileSize': 1024,
-                             'Type': 2})
                 m = vhdutils.VHDUtils.get_internal_vhd_size_by_file_size(
                     mox.IsA(str), mox.IsA(object))
                 m.AndReturn(1025)
@@ -1121,6 +1127,8 @@ class HyperVAPITestCase(HyperVAPIBaseTestCase,
         fake_mounted_disk = "fake_mounted_disk"
         fake_device_number = 0
         fake_controller_path = 'fake_scsi_controller_path'
+        self._mox.StubOutWithMock(self._conn._volumeops,
+                                  '_get_free_controller_slot')
 
         self._mock_login_storage_target(target_iqn, target_lun,
                                         target_portal,
@@ -1140,7 +1148,8 @@ class HyperVAPITestCase(HyperVAPIBaseTestCase,
             m.AndReturn(fake_controller_path)
 
             fake_free_slot = 1
-            m = vmutils.VMUtils.get_attached_disks_count(fake_controller_path)
+            m = self._conn._volumeops._get_free_controller_slot(
+                fake_controller_path)
             m.AndReturn(fake_free_slot)
 
         m = vmutils.VMUtils.attach_volume_to_controller(instance_name,
@@ -1732,3 +1741,17 @@ class VolumeOpsTestCase(HyperVAPIBaseTestCase):
                 self.assertRaises(exception.NotFound,
                                   self.volumeops._get_mounted_disk_from_lun,
                                   target_iqn, target_lun)
+
+    def test_get_free_controller_slot_exception(self):
+        fake_drive = mock.MagicMock()
+        type(fake_drive).AddressOnParent = mock.PropertyMock(
+            side_effect=xrange(constants.SCSI_CONTROLLER_SLOTS_NUMBER))
+        fake_scsi_controller_path = 'fake_scsi_controller_path'
+
+        with mock.patch.object(self.volumeops._vmutils,
+                'get_attached_disks') as fake_get_attached_disks:
+            fake_get_attached_disks.return_value = (
+                [fake_drive] * constants.SCSI_CONTROLLER_SLOTS_NUMBER)
+            self.assertRaises(vmutils.HyperVException,
+                              self.volumeops._get_free_controller_slot,
+                              fake_scsi_controller_path)

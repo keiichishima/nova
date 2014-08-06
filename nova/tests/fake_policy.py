@@ -59,6 +59,9 @@ policy_data = """
     "compute:attach_volume": "",
     "compute:detach_volume": "",
 
+    "compute:attach_interface": "",
+    "compute:detach_interface": "",
+
     "compute:set_admin_password": "",
 
     "compute:rescue": "",
@@ -135,7 +138,15 @@ policy_data = """
     "compute_extension:v3:os-attach-interfaces": "",
     "compute_extension:baremetal_nodes": "",
     "compute_extension:cells": "",
+    "compute_extension:cells:create": "rule:admin_api",
+    "compute_extension:cells:delete": "rule:admin_api",
+    "compute_extension:cells:update": "rule:admin_api",
+    "compute_extension:cells:sync_instances": "rule:admin_api",
     "compute_extension:v3:os-cells": "",
+    "compute_extension:v3:os-cells:create": "rule:admin_api",
+    "compute_extension:v3:os-cells:delete": "rule:admin_api",
+    "compute_extension:v3:os-cells:update": "rule:admin_api",
+    "compute_extension:v3:os-cells:sync_instances": "rule:admin_api",
     "compute_extension:certificates": "",
     "compute_extension:v3:os-certificates:create": "",
     "compute_extension:v3:os-certificates:show": "",

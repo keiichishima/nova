@@ -82,6 +82,7 @@ class ImagePropertiesFilter(_FilterTestClass):
     def test_missing_hypervisor_version_in_cells(self):
         image = {'properties': {'hypervisor_version_requires': '>6.2.1'}}
         self.filter_props['request_spec'] = {'image': image}
+        self.cell1.capabilities = {"prominent_hypervisor_version": set([])}
         self.assertEqual(self.cells,
                          self._filter_cells(self.cells, self.filter_props))
 
@@ -162,8 +163,7 @@ class TestTargetCellFilter(_FilterTestClass):
                         'routing_path': current_cell,
                         'scheduler': self.scheduler,
                         'context': self.context,
-                        'host_sched_kwargs': 'meow',
-                        'cell_scheduler_method': 'build_instances'}
+                        'host_sched_kwargs': 'meow'}
         # None is returned to bypass further scheduling.
         self.assertIsNone(self._filter_cells(cells, filter_props))
         # The filter should have re-scheduled to the child cell itself.

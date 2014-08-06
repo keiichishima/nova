@@ -37,7 +37,7 @@ from sqlalchemy import Integer
 from sqlalchemy import MetaData
 from sqlalchemy.orm import exc as sqlalchemy_orm_exc
 from sqlalchemy.orm import query
-from sqlalchemy.sql.expression import select
+from sqlalchemy import sql
 from sqlalchemy import Table
 
 from nova import block_device
@@ -332,7 +332,7 @@ class AggregateDBApiTestCase(test.TestCase):
                         matchers.DictMatches(_get_fake_aggr_metadata()))
 
     def test_aggregate_create_delete_create_with_metadata(self):
-        #test for bug 1052479
+        # test for bug 1052479
         ctxt = context.get_admin_context()
         result = _create_aggregate(context=ctxt)
         expected_metadata = db.aggregate_metadata_get(ctxt, result['id'])
@@ -1635,29 +1635,29 @@ class InstanceTestCase(test.TestCase, ModelsObjectComparatorMixin):
         instance = self.create_instance_with_args(
             metadata={'foo': 'bar'})
         self.create_instance_with_args()
-        #For format 'tag-'
+        # For format 'tag-'
         result = db.instance_get_all_by_filters(
             self.ctxt, {'filter': [
                 {'name': 'tag-key', 'value': 'foo'},
                 {'name': 'tag-value', 'value': 'bar'},
             ]})
         self._assertEqualListsOfInstances([instance], result)
-        #For format 'tag:'
+        # For format 'tag:'
         result = db.instance_get_all_by_filters(
             self.ctxt, {'filter': [
                 {'name': 'tag:foo', 'value': 'bar'},
             ]})
         self._assertEqualListsOfInstances([instance], result)
-        #For non-existent tag
+        # For non-existent tag
         result = db.instance_get_all_by_filters(
             self.ctxt, {'filter': [
                 {'name': 'tag:foo', 'value': 'barred'},
             ]})
         self.assertEqual([], result)
 
-        #Confirm with deleted tags
+        # Confirm with deleted tags
         db.instance_metadata_delete(self.ctxt, instance['uuid'], 'foo')
-        #For format 'tag-'
+        # For format 'tag-'
         result = db.instance_get_all_by_filters(
             self.ctxt, {'filter': [
                 {'name': 'tag-key', 'value': 'foo'},
@@ -1668,7 +1668,7 @@ class InstanceTestCase(test.TestCase, ModelsObjectComparatorMixin):
                 {'name': 'tag-value', 'value': 'bar'}
             ]})
         self.assertEqual([], result)
-        #For format 'tag:'
+        # For format 'tag:'
         result = db.instance_get_all_by_filters(
             self.ctxt, {'filter': [
                 {'name': 'tag:foo', 'value': 'bar'},
@@ -2784,10 +2784,10 @@ class InstanceTypeTestCase(BaseInstanceTypeTestCase):
             real_it = db.flavor_get_all(self.ctxt, filters=filters)
             self._assertEqualListsOfObjects(expected_it, real_it)
 
-        #no filter
+        # no filter
         assert_multi_filter_flavor_get()
 
-        #test only with one filter
+        # test only with one filter
         for filt in mem_filts:
             assert_multi_filter_flavor_get(filt)
         for filt in root_filts:
@@ -2797,7 +2797,7 @@ class InstanceTypeTestCase(BaseInstanceTypeTestCase):
         for filt in is_public_filts:
             assert_multi_filter_flavor_get(filt)
 
-        #test all filters together
+        # test all filters together
         for mem in mem_filts:
             for root in root_filts:
                 for disabled in disabled_filts:
@@ -3894,12 +3894,16 @@ class FloatingIpTestCase(test.TestCase, ModelsObjectComparatorMixin):
     def test_floating_ip_deallocate(self):
         values = {'address': '1.1.1.1', 'project_id': 'fake', 'host': 'fake'}
         float_ip = self._create_floating_ip(values)
-        db.floating_ip_deallocate(self.ctxt, float_ip.address)
+        rows_updated = db.floating_ip_deallocate(self.ctxt, float_ip.address)
+        self.assertEqual(1, rows_updated)
 
         updated_float_ip = db.floating_ip_get(self.ctxt, float_ip.id)
         self.assertIsNone(updated_float_ip.project_id)
         self.assertIsNone(updated_float_ip.host)
         self.assertFalse(updated_float_ip.auto_assigned)
+
+    def test_floating_ip_deallocate_address_not_found(self):
+        self.assertEqual(0, db.floating_ip_deallocate(self.ctxt, '2.2.2.2'))
 
     def test_floating_ip_destroy(self):
         addresses = ['1.1.1.1', '1.1.1.2', '1.1.1.3']
@@ -4092,7 +4096,9 @@ class FloatingIpTestCase(test.TestCase, ModelsObjectComparatorMixin):
             'interface': 'some_interface',
             'pool': 'some_pool'
         }
-        db.floating_ip_update(self.ctxt, float_ip['address'], values)
+        floating_ref = db.floating_ip_update(self.ctxt, float_ip['address'],
+                                             values)
+        self.assertIsNot(floating_ref, None)
         updated_float_ip = db.floating_ip_get(self.ctxt, float_ip['id'])
         self._assertEqualObjects(updated_float_ip, values,
                                  ignored_keys=['id', 'address', 'updated_at',
@@ -6420,12 +6426,12 @@ class ArchiveTestCase(test.TestCase):
                 where(self.instance_id_mappings.c.uuid.in_(self.uuidstrs[:4]))\
                 .values(deleted=1)
         self.conn.execute(update_statement)
-        qiim = select([self.instance_id_mappings]).where(self.
+        qiim = sql.select([self.instance_id_mappings]).where(self.
                                 instance_id_mappings.c.uuid.in_(self.uuidstrs))
         rows = self.conn.execute(qiim).fetchall()
         # Verify we have 6 in main
         self.assertEqual(len(rows), 6)
-        qsiim = select([self.shadow_instance_id_mappings]).\
+        qsiim = sql.select([self.shadow_instance_id_mappings]).\
                 where(self.shadow_instance_id_mappings.c.uuid.in_(
                                                                 self.uuidstrs))
         rows = self.conn.execute(qsiim).fetchall()
@@ -6489,12 +6495,12 @@ class ArchiveTestCase(test.TestCase):
                 where(main_table.c.uuid.in_(self.uuidstrs[:4]))\
                 .values(deleted=1)
         self.conn.execute(update_statement)
-        qmt = select([main_table]).where(main_table.c.uuid.in_(
+        qmt = sql.select([main_table]).where(main_table.c.uuid.in_(
                                              self.uuidstrs))
         rows = self.conn.execute(qmt).fetchall()
         # Verify we have 6 in main
         self.assertEqual(len(rows), 6)
-        qst = select([shadow_table]).\
+        qst = sql.select([shadow_table]).\
                 where(shadow_table.c.uuid.in_(self.uuidstrs))
         rows = self.conn.execute(qst).fetchall()
         # Verify we have 0 in shadow
@@ -6533,11 +6539,11 @@ class ArchiveTestCase(test.TestCase):
                            where(self.dns_domains.c.domain == uuidstr0).\
                            values(deleted=True)
         self.conn.execute(update_statement)
-        qdd = select([self.dns_domains], self.dns_domains.c.domain ==
+        qdd = sql.select([self.dns_domains], self.dns_domains.c.domain ==
                                             uuidstr0)
         rows = self.conn.execute(qdd).fetchall()
         self.assertEqual(len(rows), 1)
-        qsdd = select([self.shadow_dns_domains],
+        qsdd = sql.select([self.shadow_dns_domains],
                         self.shadow_dns_domains.c.domain == uuidstr0)
         rows = self.conn.execute(qsdd).fetchall()
         self.assertEqual(len(rows), 0)
@@ -6598,21 +6604,21 @@ class ArchiveTestCase(test.TestCase):
                 .values(deleted=1)
         self.conn.execute(update_statement2)
         # Verify we have 6 in each main table
-        qiim = select([self.instance_id_mappings]).where(
+        qiim = sql.select([self.instance_id_mappings]).where(
                          self.instance_id_mappings.c.uuid.in_(self.uuidstrs))
         rows = self.conn.execute(qiim).fetchall()
         self.assertEqual(len(rows), 6)
-        qi = select([self.instances]).where(self.instances.c.uuid.in_(
+        qi = sql.select([self.instances]).where(self.instances.c.uuid.in_(
                                              self.uuidstrs))
         rows = self.conn.execute(qi).fetchall()
         self.assertEqual(len(rows), 6)
         # Verify we have 0 in each shadow table
-        qsiim = select([self.shadow_instance_id_mappings]).\
+        qsiim = sql.select([self.shadow_instance_id_mappings]).\
                 where(self.shadow_instance_id_mappings.c.uuid.in_(
                                                             self.uuidstrs))
         rows = self.conn.execute(qsiim).fetchall()
         self.assertEqual(len(rows), 0)
-        qsi = select([self.shadow_instances]).\
+        qsi = sql.select([self.shadow_instances]).\
                 where(self.shadow_instances.c.uuid.in_(self.uuidstrs))
         rows = self.conn.execute(qsi).fetchall()
         self.assertEqual(len(rows), 0)

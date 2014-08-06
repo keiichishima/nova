@@ -417,6 +417,14 @@
             "updated": "%(isotime)s"
         },
         {
+            "alias": "os-hypervisor-status",
+            "description": "%(text)s",
+            "links": [],
+            "name": "HypervisorStatus",
+            "namespace": "http://docs.openstack.org/compute/ext/hypervisor_status/api/v1.1",
+            "updated": "%(isotime)s"
+        },
+        {
             "alias": "os-server-external-events",
             "description": "%(text)s",
             "links": [],
@@ -545,6 +553,14 @@
             "updated": "%(isotime)s"
         },
         {
+            "alias": "os-server-list-multi-status",
+            "description": "%(text)s",
+            "links": [],
+            "name": "ServerListMultiStatus",
+            "namespace": "http://docs.openstack.org/compute/ext/os-server-list-multi-status/api/v2",
+            "updated": "%(isotime)s"
+        },
+        {
             "alias": "os-server-password",
             "description": "%(text)s",
             "links": [],
@@ -670,6 +686,14 @@
             "links": [],
             "name": "ServerGroups",
             "namespace": "http://docs.openstack.org/compute/ext/servergroups/api/v2",
+            "updated": "%(isotime)s"
+        },
+        {
+            "alias": "os-extended-evacuate-find-host",
+            "description": "%(text)s",
+            "links": [],
+            "name": "ExtendedEvacuateFindHost",
+            "namespace": "http://docs.openstack.org/compute/ext/extended_evacuate_find_host/api/v2",
             "updated": "%(isotime)s"
         }
     ]

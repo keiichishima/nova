@@ -38,12 +38,13 @@ from nova.compute import api as compute_api
 from nova.compute import vm_states
 from nova import db
 from nova import exception
+from nova.i18n import _
+from nova.i18n import _LW
 from nova.image import s3
 from nova import network
 from nova.network.security_group import neutron_driver
 from nova import objects
 from nova.objects import base as obj_base
-from nova.openstack.common.gettextutils import _
 from nova.openstack.common import log as logging
 from nova.openstack.common import timeutils
 from nova import quota
@@ -411,7 +412,7 @@ class CloudController(object):
         if key_name is not None:
             key_pairs = [x for x in key_pairs if x['name'] in key_name]
 
-        #If looking for non existent key pair
+        # If looking for non existent key pair
         if key_name is not None and not key_pairs:
             msg = _('Could not find key pair(s): %s') % ','.join(key_name)
             raise exception.KeypairNotFound(message=msg)
@@ -1048,6 +1049,28 @@ class CloudController(object):
             instances_set.append(i)
         return {'instancesSet': instances_set}
 
+    def _format_stop_instances(self, context, instance_ids, previous_states):
+        instances_set = []
+        for (ec2_id, previous_state) in zip(instance_ids, previous_states):
+            i = {}
+            i['instanceId'] = ec2_id
+            i['previousState'] = _state_description(previous_state['vm_state'],
+                                        previous_state['shutdown_terminate'])
+            i['currentState'] = _state_description(vm_states.STOPPED, True)
+            instances_set.append(i)
+        return {'instancesSet': instances_set}
+
+    def _format_start_instances(self, context, instance_id, previous_states):
+        instances_set = []
+        for (ec2_id, previous_state) in zip(instance_id, previous_states):
+            i = {}
+            i['instanceId'] = ec2_id
+            i['previousState'] = _state_description(previous_state['vm_state'],
+                                        previous_state['shutdown_terminate'])
+            i['currentState'] = _state_description(vm_states.ACTIVE, True)
+            instances_set.append(i)
+        return {'instancesSet': instances_set}
+
     def _format_instance_bdm(self, context, instance_uuid, root_device_name,
                              result):
         """Format InstanceBlockDeviceMappingResponseItemType."""
@@ -1263,8 +1286,8 @@ class CloudController(object):
         # changed to support specifying a particular fixed_ip if
         # multiple exist but this may not apply to ec2..
         if len(fixed_ips) > 1:
-            msg = _('multiple fixed_ips exist, using the first: %s')
-            LOG.warning(msg, fixed_ips[0])
+            LOG.warn(_LW('multiple fixed_ips exist, using the first: %s'),
+                     fixed_ips[0])
 
         self.network_api.associate_floating_ip(context, instance,
                                                floating_address=public_ip,
@@ -1328,6 +1351,9 @@ class CloudController(object):
             msg = _('Image must be available')
             raise exception.ImageNotActive(message=msg)
 
+        iisb = kwargs.get('instance_initiated_shutdown_behavior', 'stop')
+        shutdown_terminate = (iisb == 'terminate')
+
         flavor = objects.Flavor.get_by_name(context,
                                             kwargs.get('instance_type', None))
 
@@ -1343,7 +1369,8 @@ class CloudController(object):
             security_group=kwargs.get('security_group'),
             availability_zone=kwargs.get('placement', {}).get(
                                   'availability_zone'),
-            block_device_mapping=kwargs.get('block_device_mapping', {}))
+            block_device_mapping=kwargs.get('block_device_mapping', {}),
+            shutdown_terminate=shutdown_terminate)
 
         instances = self._format_run_instances(context, resv_id)
         if instances:
@@ -1435,7 +1462,8 @@ class CloudController(object):
         for instance in instances:
             extensions.check_compute_policy(context, 'stop', instance)
             self.compute_api.stop(context, instance)
-        return True
+        return self._format_stop_instances(context, instance_id,
+                                           instances)
 
     def start_instances(self, context, instance_id, **kwargs):
         """Start each instances in instance_id.
@@ -1446,7 +1474,8 @@ class CloudController(object):
         for instance in instances:
             extensions.check_compute_policy(context, 'start', instance)
             self.compute_api.start(context, instance)
-        return True
+        return self._format_start_instances(context, instance_id,
+                                            instances)
 
     def _get_image(self, context, ec2_id):
         try:

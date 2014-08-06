@@ -24,8 +24,9 @@ from nova.api.openstack import xmlutil
 from nova import compute
 from nova.compute import utils as compute_utils
 from nova import exception
+from nova.i18n import _
+from nova.i18n import _LW
 from nova import network
-from nova.openstack.common.gettextutils import _
 from nova.openstack.common import log as logging
 from nova.openstack.common import uuidutils
 
@@ -169,6 +170,8 @@ class FloatingIPController(object):
             else:
                 msg = _("IP allocation over quota.")
             raise webob.exc.HTTPForbidden(explanation=msg)
+        except exception.FloatingIpPoolNotFound as e:
+            raise webob.exc.HTTPNotFound(explanation=e.format_message())
 
         return _translate_floating_ip_view(ip)
 
@@ -248,8 +251,8 @@ class FloatingIPActionController(wsgi.Controller):
         if not fixed_address:
             fixed_address = fixed_ips[0]['address']
             if len(fixed_ips) > 1:
-                msg = _('multiple fixed_ips exist, using the first: %s')
-                LOG.warning(msg, fixed_address)
+                LOG.warn(_LW('multiple fixed_ips exist, using the first: '
+                             '%s'), fixed_address)
 
         try:
             self.network_api.associate_floating_ip(context, instance,

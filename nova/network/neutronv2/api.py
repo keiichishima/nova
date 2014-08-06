@@ -24,13 +24,13 @@ from nova.compute import flavors
 from nova.compute import utils as compute_utils
 from nova import conductor
 from nova import exception
+from nova.i18n import _, _LW
 from nova.network import base_api
 from nova.network import model as network_model
 from nova.network import neutronv2
 from nova.network.neutronv2 import constants
 from nova.network.security_group import openstack_driver
 from nova.openstack.common import excutils
-from nova.openstack.common.gettextutils import _
 from nova.openstack.common import log as logging
 from nova.openstack.common import uuidutils
 
@@ -45,6 +45,8 @@ neutron_opts = [
                help='Timeout value for connecting to neutron in seconds',
                deprecated_group='DEFAULT',
                deprecated_name='neutron_url_timeout'),
+    cfg.StrOpt('admin_user_id',
+               help='User id for connecting to neutron in admin context'),
     cfg.StrOpt('admin_username',
                help='Username for connecting to neutron in admin context',
                deprecated_group='DEFAULT',
@@ -60,9 +62,9 @@ neutron_opts = [
                deprecated_name='neutron_admin_tenant_id'),
     cfg.StrOpt('admin_tenant_name',
                help='Tenant name for connecting to neutron in admin context. '
-                    'This option is mutually exclusive with '
-                    'admin_tenant_id. Note that with Keystone V3 '
-                    'tenant names are only unique within a domain.',
+                    'This option will be ignored if neutron_admin_tenant_id '
+                    'is set. Note that with Keystone V3 tenant names are '
+                    'only unique within a domain.',
                deprecated_group='DEFAULT',
                deprecated_name='neutron_admin_tenant_name'),
     cfg.StrOpt('region_name',
@@ -185,6 +187,8 @@ class API(base_api.NetworkAPI):
         :param dhcp_opts: Optional DHCP options.
         :returns: ID of the created port.
         :raises PortLimitExceeded: If neutron fails with an OverQuota error.
+        :raises NoMoreFixedIps: If neutron fails with
+            IpAddressGenerationFailure error.
         """
         try:
             if fixed_ip:
@@ -206,11 +210,22 @@ class API(base_api.NetworkAPI):
             LOG.debug('Successfully created port: %s', port_id,
                       instance=instance)
             return port_id
-        except neutron_client_exc.NeutronClientException as e:
-            # NOTE(mriedem): OverQuota in neutron is a 409
-            if e.status_code == 409:
-                LOG.warning(_('Neutron error: quota exceeded'))
-                raise exception.PortLimitExceeded()
+        except neutron_client_exc.OverQuotaClient:
+            LOG.warning(_LW(
+                'Neutron error: Port quota exceeded in tenant: %s'),
+                port_req_body['port']['tenant_id'], instance=instance)
+            raise exception.PortLimitExceeded()
+        except neutron_client_exc.IpAddressGenerationFailureClient:
+            LOG.warning(_LW('Neutron error: No more fixed IPs in network: %s'),
+                        network_id, instance=instance)
+            raise exception.NoMoreFixedIps()
+        except neutron_client_exc.MacAddressInUseClient:
+            LOG.warning(_LW('Neutron error: MAC address %(mac)s is already '
+                            'in use on network %(network)s.') %
+                        {'mac': mac_address, 'network': network_id},
+                        instance=instance)
+            raise exception.PortInUse(port_id=mac_address)
+        except neutron_client_exc.NeutronClientException:
             with excutils.save_and_reraise_exception():
                 LOG.exception(_('Neutron error creating port on network %s'),
                               network_id, instance=instance)
@@ -573,8 +588,8 @@ class API(base_api.NetworkAPI):
                                                               port_req_body)
                     return self._get_instance_nw_info(context, instance)
                 except Exception as ex:
-                    msg = _("Unable to update port %(portid)s on subnet "
-                            "%(subnet_id)s with failure: %(exception)s")
+                    msg = ("Unable to update port %(portid)s on subnet "
+                           "%(subnet_id)s with failure: %(exception)s")
                     LOG.debug(msg, {'portid': p['id'],
                                     'subnet_id': subnet['id'],
                                     'exception': ex})
@@ -602,8 +617,8 @@ class API(base_api.NetworkAPI):
                 neutronv2.get_client(context).update_port(p['id'],
                                                           port_req_body)
             except Exception as ex:
-                msg = _("Unable to update port %(portid)s with"
-                        " failure: %(exception)s")
+                msg = ("Unable to update port %(portid)s with"
+                       " failure: %(exception)s")
                 LOG.debug(msg, {'portid': p['id'], 'exception': ex})
             return self._get_instance_nw_info(context, instance)
 
@@ -814,7 +829,10 @@ class API(base_api.NetworkAPI):
     def get(self, context, network_uuid):
         """Get specific network for client."""
         client = neutronv2.get_client(context)
-        network = client.show_network(network_uuid).get('network') or {}
+        try:
+            network = client.show_network(network_uuid).get('network') or {}
+        except neutron_client_exc.NetworkNotFoundClient:
+            raise exception.NetworkNotFound(network_id=network_uuid)
         network['label'] = network['name']
         return network
 

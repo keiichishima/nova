@@ -70,6 +70,28 @@ class LibvirtConfigCapsTest(LibvirtConfigBaseTest):
               <feature name='ibs'/>
               <feature name='osvw'/>
             </cpu>
+            <topology>
+              <cells num='2'>
+                <cell id='0'>
+                  <memory unit='KiB'>4048280</memory>
+                  <cpus num='4'>
+                    <cpu id='0' socket_id='0' core_id='0' siblings='0'/>
+                    <cpu id='1' socket_id='0' core_id='1' siblings='1'/>
+                    <cpu id='2' socket_id='0' core_id='2' siblings='2'/>
+                    <cpu id='3' socket_id='0' core_id='3' siblings='3'/>
+                  </cpus>
+                </cell>
+                <cell id='1'>
+                  <memory unit='KiB'>4127684</memory>
+                  <cpus num='4'>
+                    <cpu id='4' socket_id='1' core_id='0' siblings='4'/>
+                    <cpu id='5' socket_id='1' core_id='1' siblings='5'/>
+                    <cpu id='6' socket_id='1' core_id='2' siblings='6'/>
+                    <cpu id='7' socket_id='1' core_id='3' siblings='7'/>
+                  </cpus>
+                </cell>
+              </cells>
+            </topology>
           </host>
           <guest>
             <os_type>hvm</os_type>
@@ -207,6 +229,34 @@ class LibvirtConfigGuestCPUFeatureTest(LibvirtConfigBaseTest):
         """)
 
 
+class LibvirtConfigGuestCPUNUMATest(LibvirtConfigBaseTest):
+
+    def test_config_simple(self):
+        obj = config.LibvirtConfigGuestCPUNUMA()
+
+        cell = config.LibvirtConfigGuestCPUNUMACell()
+        cell.id = 0
+        cell.cpus = set([0, 1])
+        cell.memory = 1000000
+
+        obj.cells.append(cell)
+
+        cell = config.LibvirtConfigGuestCPUNUMACell()
+        cell.id = 1
+        cell.cpus = set([2, 3])
+        cell.memory = 1500000
+
+        obj.cells.append(cell)
+
+        xml = obj.to_xml()
+        self.assertXmlEqual(xml, """
+            <numa>
+              <cell id="0" cpus="0-1" memory="1000000"/>
+              <cell id="1" cpus="2-3" memory="1500000"/>
+            </numa>
+        """)
+
+
 class LibvirtConfigCPUTest(LibvirtConfigBaseTest):
 
     def test_config_simple(self):
@@ -320,6 +370,39 @@ class LibvirtConfigGuestCPUTest(LibvirtConfigBaseTest):
         xml = obj.to_xml()
         self.assertXmlEqual(xml, """
             <cpu mode="host-model" match="exact"/>
+        """)
+
+    def test_config_host_with_numa(self):
+        obj = config.LibvirtConfigGuestCPU()
+        obj.mode = "host-model"
+        obj.match = "exact"
+
+        numa = config.LibvirtConfigGuestCPUNUMA()
+
+        cell = config.LibvirtConfigGuestCPUNUMACell()
+        cell.id = 0
+        cell.cpus = set([0, 1])
+        cell.memory = 1000000
+
+        numa.cells.append(cell)
+
+        cell = config.LibvirtConfigGuestCPUNUMACell()
+        cell.id = 1
+        cell.cpus = set([2, 3])
+        cell.memory = 1500000
+
+        numa.cells.append(cell)
+
+        obj.numa = numa
+
+        xml = obj.to_xml()
+        self.assertXmlEqual(xml, """
+            <cpu mode="host-model" match="exact">
+              <numa>
+                <cell id="0" cpus="0-1" memory="1000000"/>
+                <cell id="1" cpus="2-3" memory="1500000"/>
+              </numa>
+            </cpu>
         """)
 
 
@@ -1114,6 +1197,15 @@ class LibvirtConfigGuestTest(LibvirtConfigBaseTest):
         obj.cputune.quota = 50000
         obj.cputune.period = 25000
 
+        obj.membacking = config.LibvirtConfigGuestMemoryBacking()
+        obj.membacking.hugepages = True
+
+        obj.memtune = config.LibvirtConfigGuestMemoryTune()
+        obj.memtune.hard_limit = 496
+        obj.memtune.soft_limit = 672
+        obj.memtune.swap_hard_limit = 1638
+        obj.memtune.min_guarantee = 2970
+
         obj.name = "demo"
         obj.uuid = "b38a3f43-4be2-4046-897f-b67c2f5e0147"
         obj.os_type = "linux"
@@ -1140,6 +1232,15 @@ class LibvirtConfigGuestTest(LibvirtConfigBaseTest):
               <uuid>b38a3f43-4be2-4046-897f-b67c2f5e0147</uuid>
               <name>demo</name>
               <memory>104857600</memory>
+              <memoryBacking>
+                <hugepages/>
+              </memoryBacking>
+              <memtune>
+                <hard_limit units="K">496</hard_limit>
+                <soft_limit units="K">672</soft_limit>
+                <swap_hard_limit units="K">1638</swap_hard_limit>
+                <min_guarantee units="K">2970</min_guarantee>
+              </memtune>
               <vcpu cpuset="0-1,3-5">2</vcpu>
               <sysinfo type='smbios'>
                  <bios>
@@ -1735,3 +1836,127 @@ class LibvirtConfigGuestCPUTuneTest(LibvirtConfigBaseTest):
             <quota>50000</quota>
             <period>25000</period>
           </cputune>""")
+
+    def test_config_cputune_vcpus(self):
+        cputune = config.LibvirtConfigGuestCPUTune()
+
+        vcpu0 = config.LibvirtConfigGuestCPUTuneVCPUPin()
+        vcpu0.id = 0
+        vcpu0.cpuset = set([0, 1])
+        vcpu1 = config.LibvirtConfigGuestCPUTuneVCPUPin()
+        vcpu1.id = 1
+        vcpu1.cpuset = set([2, 3])
+        vcpu2 = config.LibvirtConfigGuestCPUTuneVCPUPin()
+        vcpu2.id = 2
+        vcpu2.cpuset = set([4, 5])
+        vcpu3 = config.LibvirtConfigGuestCPUTuneVCPUPin()
+        vcpu3.id = 3
+        vcpu3.cpuset = set([6, 7])
+        cputune.vcpupin.extend([vcpu0, vcpu1, vcpu2, vcpu3])
+
+        xml = cputune.to_xml()
+        self.assertXmlEqual(xml, """
+          <cputune>
+            <vcpupin vcpu="0" cpuset="0-1"/>
+            <vcpupin vcpu="1" cpuset="2-3"/>
+            <vcpupin vcpu="2" cpuset="4-5"/>
+            <vcpupin vcpu="3" cpuset="6-7"/>
+          </cputune>""")
+
+
+class LibvirtConfigGuestMemoryBackingTest(LibvirtConfigBaseTest):
+    def test_config_memory_backing_none(self):
+        obj = config.LibvirtConfigGuestMemoryBacking()
+
+        xml = obj.to_xml()
+        self.assertXmlEqual(xml, "<memoryBacking/>")
+
+    def test_config_memory_backing_all(self):
+        obj = config.LibvirtConfigGuestMemoryBacking()
+        obj.locked = True
+        obj.sharedpages = False
+        obj.hugepages = True
+
+        xml = obj.to_xml()
+        self.assertXmlEqual(xml, """
+          <memoryBacking>
+            <hugepages/>
+            <nosharedpages/>
+            <locked/>
+          </memoryBacking>""")
+
+
+class LibvirtConfigGuestMemoryTuneTest(LibvirtConfigBaseTest):
+    def test_config_memory_backing_none(self):
+        obj = config.LibvirtConfigGuestMemoryTune()
+
+        xml = obj.to_xml()
+        self.assertXmlEqual(xml, "<memtune/>")
+
+    def test_config_memory_backing_all(self):
+        obj = config.LibvirtConfigGuestMemoryTune()
+        obj.soft_limit = 6
+        obj.hard_limit = 28
+        obj.swap_hard_limit = 140
+        obj.min_guarantee = 270
+
+        xml = obj.to_xml()
+        self.assertXmlEqual(xml, """
+          <memtune>
+            <hard_limit units="K">28</hard_limit>
+            <soft_limit units="K">6</soft_limit>
+            <swap_hard_limit units="K">140</swap_hard_limit>
+            <min_guarantee units="K">270</min_guarantee>
+          </memtune>""")
+
+
+class LibvirtConfigGuestMetadataNovaTest(LibvirtConfigBaseTest):
+
+    def test_config_metadata(self):
+        meta = config.LibvirtConfigGuestMetaNovaInstance()
+        meta.package = "2014.2.3"
+        meta.name = "moonbuggy"
+        meta.creationTime = 1234567890
+        meta.roottype = "image"
+        meta.rootid = "fe55c69a-8b2e-4bbc-811a-9ad2023a0426"
+
+        owner = config.LibvirtConfigGuestMetaNovaOwner()
+        owner.userid = "3472c2a6-de91-4fb5-b618-42bc781ef670"
+        owner.username = "buzz"
+        owner.projectid = "f241e906-010e-4917-ae81-53f4fb8aa021"
+        owner.projectname = "moonshot"
+
+        meta.owner = owner
+
+        flavor = config.LibvirtConfigGuestMetaNovaFlavor()
+        flavor.name = "m1.lowgravity"
+        flavor.vcpus = 8
+        flavor.memory = 2048
+        flavor.swap = 10
+        flavor.disk = 50
+        flavor.ephemeral = 10
+
+        meta.flavor = flavor
+
+        xml = meta.to_xml()
+        self.assertXmlEqual(xml, """
+    <nova:instance xmlns:nova='http://openstack.org/xmlns/libvirt/nova/1.0'>
+      <nova:package version="2014.2.3"/>
+      <nova:name>moonbuggy</nova:name>
+      <nova:creationTime>2009-02-13 23:31:30</nova:creationTime>
+      <nova:flavor name="m1.lowgravity">
+        <nova:memory>2048</nova:memory>
+        <nova:disk>50</nova:disk>
+        <nova:swap>10</nova:swap>
+        <nova:ephemeral>10</nova:ephemeral>
+        <nova:vcpus>8</nova:vcpus>
+      </nova:flavor>
+      <nova:owner>
+        <nova:user
+         uuid="3472c2a6-de91-4fb5-b618-42bc781ef670">buzz</nova:user>
+        <nova:project
+         uuid="f241e906-010e-4917-ae81-53f4fb8aa021">moonshot</nova:project>
+      </nova:owner>
+      <nova:root type="image" uuid="fe55c69a-8b2e-4bbc-811a-9ad2023a0426"/>
+    </nova:instance>
+        """)

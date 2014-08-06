@@ -25,15 +25,18 @@ import webob
 from webob import exc
 
 from nova.api.openstack import common
+from nova.api.openstack.compute.schemas.v3 import servers as schema_servers
 from nova.api.openstack.compute.views import servers as views_servers
 from nova.api.openstack import extensions
 from nova.api.openstack import wsgi
+from nova.api import validation
 from nova import compute
 from nova.compute import flavors
 from nova import exception
+from nova.i18n import _
+from nova.i18n import _LW
 from nova.image import glance
 from nova import objects
-from nova.openstack.common.gettextutils import _
 from nova.openstack.common import log as logging
 from nova.openstack.common import strutils
 from nova.openstack.common import timeutils
@@ -69,6 +72,8 @@ class ServersController(wsgi.Controller):
 
     _view_builder_class = views_servers.ViewBuilderV3
 
+    schema_server_create = schema_servers.base_create
+
     @staticmethod
     def _add_location(robj):
         # Just in case...
@@ -96,13 +101,13 @@ class ServersController(wsgi.Controller):
                     if ext.obj.alias not in CONF.osapi_v3.extensions_blacklist:
                         return True
                     else:
-                        LOG.warning(_("Not loading %s because it is "
-                                      "in the blacklist"), ext.obj.alias)
+                        LOG.warn(_LW("Not loading %s because it is "
+                                     "in the blacklist"), ext.obj.alias)
                         return False
                 else:
-                    LOG.warning(
-                        _("Not loading %s because it is not in the whitelist"),
-                        ext.obj.alias)
+                    LOG.warn(
+                        _LW("Not loading %s because it is not in the "
+                            "whitelist"), ext.obj.alias)
                     return False
 
             def check_load_extension(ext):
@@ -166,6 +171,21 @@ class ServersController(wsgi.Controller):
         if not list(self.update_extension_manager):
             LOG.debug("Did not find any server update extensions")
 
+        # Look for API schema of server create extension
+        self.create_schema_manager = \
+            stevedore.enabled.EnabledExtensionManager(
+                namespace=self.EXTENSION_CREATE_NAMESPACE,
+                check_func=_check_load_extension('get_server_create_schema'),
+                invoke_on_load=True,
+                invoke_kwds={"extension_info": self.extension_info},
+                propagate_map_exceptions=True)
+        if list(self.create_schema_manager):
+            self.create_schema_manager.map(self._create_extension_schema,
+                                           self.schema_server_create)
+        else:
+            LOG.debug("Did not find any server create schemas")
+
+    @extensions.expected_errors((400, 403))
     def index(self, req):
         """Returns a list of server names and ids for a given user."""
         try:
@@ -174,6 +194,7 @@ class ServersController(wsgi.Controller):
             raise exc.HTTPBadRequest(explanation=err.format_message())
         return servers
 
+    @extensions.expected_errors((400, 403))
     def detail(self, req):
         """Returns a list of server details for a given user."""
         try:
@@ -194,9 +215,11 @@ class ServersController(wsgi.Controller):
 
         # Verify search by 'status' contains a valid status.
         # Convert it to filter by vm_state or task_state for compute_api.
-        status = search_opts.pop('status', None)
-        if status is not None:
-            vm_state, task_state = common.task_and_vm_state_from_status(status)
+        search_opts.pop('status', None)
+        if 'status' in req.GET.keys():
+            statuses = req.GET.getall('status')
+            states = common.task_and_vm_state_from_status(statuses)
+            vm_state, task_state = states
             if not vm_state and not task_state:
                 return {'servers': []}
             search_opts['vm_state'] = vm_state
@@ -396,6 +419,7 @@ class ServersController(wsgi.Controller):
         except TypeError:
             return None
 
+    @extensions.expected_errors(404)
     def show(self, req, id):
         """Returns server details by server id."""
         context = req.environ['nova.context']
@@ -405,11 +429,11 @@ class ServersController(wsgi.Controller):
         req.cache_db_instance(instance)
         return self._view_builder.show(req, instance)
 
+    @extensions.expected_errors((400, 409, 413))
     @wsgi.response(202)
+    @validation.schema(schema_server_create)
     def create(self, req, body):
         """Creates a new server for a given user."""
-        if not self.is_valid_body(body, 'server'):
-            raise exc.HTTPBadRequest(_("The request body is invalid"))
 
         context = req.environ['nova.context']
         server_dict = body['server']
@@ -454,7 +478,7 @@ class ServersController(wsgi.Controller):
         # Replace with an extension point when the os-networks
         # extension is ported. Currently reworked
         # to take into account is_neutron
-        #if (self.ext_mgr.is_loaded('os-networks')
+        # if (self.ext_mgr.is_loaded('os-networks')
         #        or utils.is_neutron()):
         #    requested_networks = server_dict.get('networks')
 
@@ -527,6 +551,7 @@ class ServersController(wsgi.Controller):
                 exception.NetworkNotFound) as error:
             raise exc.HTTPBadRequest(explanation=error.format_message())
         except (exception.PortInUse,
+                exception.NetworkAmbiguous,
                 exception.NoUniqueMatch) as error:
             raise exc.HTTPConflict(explanation=error.format_message())
 
@@ -568,6 +593,13 @@ class ServersController(wsgi.Controller):
         LOG.debug("Running _update_extension_point for %s", ext.obj)
         handler.server_update(update_dict, update_kwargs)
 
+    def _create_extension_schema(self, ext, create_schema):
+        handler = ext.obj
+        LOG.debug("Running _create_extension_schema for %s", ext.obj)
+
+        schema = handler.get_server_create_schema()
+        create_schema['properties']['server']['properties'].update(schema)
+
     def _delete(self, context, req, instance_uuid):
         instance = self._get_server(context, req, instance_uuid)
         if CONF.reclaim_instance_interval:
@@ -581,6 +613,7 @@ class ServersController(wsgi.Controller):
         else:
             self.compute_api.delete(context, instance)
 
+    @extensions.expected_errors((400, 404))
     def update(self, req, id, body):
         """Update server then pass on to version-specific controller."""
         if not self.is_valid_body(body, 'server'):
@@ -617,6 +650,7 @@ class ServersController(wsgi.Controller):
             msg = _("Instance could not be found")
             raise exc.HTTPNotFound(explanation=msg)
 
+    @extensions.expected_errors((400, 404, 409))
     @wsgi.response(202)
     @wsgi.action('confirm_resize')
     def _action_confirm_resize(self, req, id, body):
@@ -633,6 +667,7 @@ class ServersController(wsgi.Controller):
             common.raise_http_conflict_for_instance_invalid_state(state_error,
                     'confirm_resize')
 
+    @extensions.expected_errors((400, 404, 409))
     @wsgi.response(202)
     @wsgi.action('revert_resize')
     def _action_revert_resize(self, req, id, body):
@@ -653,6 +688,7 @@ class ServersController(wsgi.Controller):
                     'revert_resize')
         return webob.Response(status_int=202)
 
+    @extensions.expected_errors((400, 404, 409))
     @wsgi.response(202)
     @wsgi.action('reboot')
     def _action_reboot(self, req, id, body):
@@ -701,6 +737,8 @@ class ServersController(wsgi.Controller):
         except exception.CannotResizeToSameFlavor:
             msg = _("Resize requires a flavor change.")
             raise exc.HTTPBadRequest(explanation=msg)
+        except exception.CannotResizeDisk as e:
+            raise exc.HTTPBadRequest(explanation=e.format_message())
         except exception.InstanceIsLocked as e:
             raise exc.HTTPConflict(explanation=e.format_message())
         except exception.InstanceInvalidState as state_error:
@@ -720,6 +758,7 @@ class ServersController(wsgi.Controller):
 
         return webob.Response(status_int=202)
 
+    @extensions.expected_errors((404, 409))
     @wsgi.response(204)
     def delete(self, req, id):
         """Destroys a server."""
@@ -771,6 +810,7 @@ class ServersController(wsgi.Controller):
 
         return common.get_id_from_href(flavor_ref)
 
+    @extensions.expected_errors((400, 401, 404, 409, 413))
     @wsgi.response(202)
     @wsgi.action('resize')
     def _action_resize(self, req, id, body):
@@ -789,6 +829,7 @@ class ServersController(wsgi.Controller):
 
         return self._resize(req, id, flavor_ref, **resize_kwargs)
 
+    @extensions.expected_errors((400, 404, 409, 413))
     @wsgi.response(202)
     @wsgi.action('rebuild')
     def _action_rebuild(self, req, id, body):
@@ -871,6 +912,7 @@ class ServersController(wsgi.Controller):
         robj = wsgi.ResponseObject(view)
         return self._add_location(robj)
 
+    @extensions.expected_errors((400, 404, 409, 413))
     @wsgi.response(202)
     @wsgi.action('create_image')
     @common.check_snapshots_enabled
@@ -904,10 +946,10 @@ class ServersController(wsgi.Controller):
                                                           bdms):
                 img = instance['image_ref']
                 if not img:
-                    props = bdms.root_metadata(
+                    properties = bdms.root_metadata(
                             context, self.compute_api.image_api,
                             self.compute_api.volume_api)
-                    image_meta = {'properties': props}
+                    image_meta = {'properties': properties}
                 else:
                     image_meta = self.compute_api.image_api.get(context, img)
 

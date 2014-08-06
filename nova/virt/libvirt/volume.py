@@ -26,9 +26,9 @@ import six
 import six.moves.urllib.parse as urlparse
 
 from nova import exception
-from nova.openstack.common.gettextutils import _
-from nova.openstack.common.gettextutils import _LE
-from nova.openstack.common.gettextutils import _LW
+from nova.i18n import _
+from nova.i18n import _LE
+from nova.i18n import _LW
 from nova.openstack.common import log as logging
 from nova.openstack.common import loopingcall
 from nova.openstack.common import processutils
@@ -36,7 +36,7 @@ from nova import paths
 from nova.storage import linuxscsi
 from nova import utils
 from nova.virt.libvirt import config as vconfig
-from nova.virt.libvirt import utils as virtutils
+from nova.virt.libvirt import utils as libvirt_utils
 
 LOG = logging.getLogger(__name__)
 
@@ -103,7 +103,7 @@ class LibvirtBaseVolumeDriver(object):
         """Connect the volume. Returns xml for libvirt."""
 
         conf = vconfig.LibvirtConfigGuestDisk()
-        conf.driver_name = virtutils.pick_disk_driver_name(
+        conf.driver_name = libvirt_utils.pick_disk_driver_name(
             self.connection._get_hypervisor_version(),
             self.is_block_dev
         )
@@ -237,8 +237,11 @@ class LibvirtISCSIVolumeDriver(LibvirtBaseVolumeDriver):
                                    '-p', iscsi_properties['target_portal'],
                                    *iscsi_command, run_as_root=True,
                                    check_exit_code=check_exit_code)
-        LOG.debug("iscsiadm %(command)s: stdout=%(out)s stderr=%(err)s",
-                  {'command': iscsi_command, 'out': out, 'err': err})
+        msg = ('iscsiadm %(command)s: stdout=%(out)s stderr=%(err)s' %
+               {'command': iscsi_command, 'out': out, 'err': err})
+        # NOTE(bpokorny): iscsi_command can contain passwords so we need to
+        # sanitize the password in the message.
+        LOG.debug(logging.mask_password(msg))
         return (out, err)
 
     def _iscsiadm_update(self, iscsi_properties, property_key, property_value,
@@ -261,9 +264,9 @@ class LibvirtISCSIVolumeDriver(LibvirtBaseVolumeDriver):
         iscsi_properties = connection_info['data']
 
         if self.use_multipath:
-            #multipath installed, discovering other targets if available
-            #multipath should be configured on the nova-compute node,
-            #in order to fit storage vendor
+            # multipath installed, discovering other targets if available
+            # multipath should be configured on the nova-compute node,
+            # in order to fit storage vendor
             out = self._run_iscsiadm_bare(['-m',
                                           'discovery',
                                           '-t',
@@ -315,7 +318,7 @@ class LibvirtISCSIVolumeDriver(LibvirtBaseVolumeDriver):
                        'tries': tries})
 
         if self.use_multipath:
-            #we use the multipath device instead of the single path device
+            # we use the multipath device instead of the single path device
             self._rescan_multipath()
 
             multipath_device = self._get_multipath_device_name(host_device)
@@ -468,8 +471,8 @@ class LibvirtISCSIVolumeDriver(LibvirtBaseVolumeDriver):
                                   "node.session.auth.password",
                                   iscsi_properties['auth_password'])
 
-        #duplicate logins crash iscsiadm after load,
-        #so we scan active sessions to see if the node is logged in.
+        # duplicate logins crash iscsiadm after load,
+        # so we scan active sessions to see if the node is logged in.
         out = self._run_iscsiadm_bare(["-m", "session"],
                                       run_as_root=True,
                                       check_exit_code=[0, 1, 21])[0] or ""
@@ -490,8 +493,8 @@ class LibvirtISCSIVolumeDriver(LibvirtBaseVolumeDriver):
                                    ("--login",),
                                    check_exit_code=[0, 255])
             except processutils.ProcessExecutionError as err:
-                #as this might be one of many paths,
-                #only set successful logins to startup automatically
+                # as this might be one of many paths,
+                # only set successful logins to startup automatically
                 if err.exit_code in [15]:
                     self._iscsiadm_update(iscsi_properties,
                                           "node.startup",
@@ -677,7 +680,7 @@ class LibvirtNFSVolumeDriver(LibvirtBaseVolumeDriver):
         """
         mount_path = os.path.join(CONF.libvirt.nfs_mount_point_base,
                                   utils.get_hash_str(nfs_export))
-        if not virtutils.is_mounted(mount_path, nfs_export):
+        if not libvirt_utils.is_mounted(mount_path, nfs_export):
             self._mount_nfs(mount_path, nfs_export, options, ensure=True)
         return mount_path
 
@@ -802,7 +805,7 @@ class LibvirtAOEVolumeDriver(LibvirtBaseVolumeDriver):
             # NOTE(jbr_): If aoedevpath does not exist, do a discover.
             self._aoe_discover()
 
-        #NOTE(jbr_): Device path is not always present immediately
+        # NOTE(jbr_): Device path is not always present immediately
         def _wait_for_device_discovery(aoedevpath, mount_device):
             tries = self.tries
             if os.path.exists(aoedevpath):
@@ -896,7 +899,7 @@ class LibvirtGlusterfsVolumeDriver(LibvirtBaseVolumeDriver):
         """
         mount_path = os.path.join(CONF.libvirt.glusterfs_mount_point_base,
                                   utils.get_hash_str(glusterfs_export))
-        if not virtutils.is_mounted(mount_path, glusterfs_export):
+        if not libvirt_utils.is_mounted(mount_path, glusterfs_export):
             self._mount_glusterfs(mount_path, glusterfs_export,
                                   options, ensure=True)
         return mount_path
@@ -966,7 +969,7 @@ class LibvirtFibreChannelVolumeDriver(LibvirtBaseVolumeDriver):
         # We need to look for wwns on every hba
         # because we don't know ahead of time
         # where they will show up.
-        hbas = virtutils.get_fc_hbas_info()
+        hbas = libvirt_utils.get_fc_hbas_info()
         host_devices = []
         for hba in hbas:
             pci_num = self._get_pci_num(hba)

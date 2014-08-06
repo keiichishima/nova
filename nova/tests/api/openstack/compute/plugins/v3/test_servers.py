@@ -15,6 +15,7 @@
 #    under the License.
 
 import base64
+import copy
 import datetime
 import uuid
 
@@ -32,6 +33,8 @@ from nova.api.openstack.compute.plugins.v3 import access_ips
 from nova.api.openstack.compute.plugins.v3 import ips
 from nova.api.openstack.compute.plugins.v3 import keypairs
 from nova.api.openstack.compute.plugins.v3 import servers
+from nova.api.openstack.compute.schemas.v3 import keypairs as keypairs_schema
+from nova.api.openstack.compute.schemas.v3 import servers as servers_schema
 from nova.api.openstack.compute import views
 from nova.api.openstack import extensions
 from nova.compute import api as compute_api
@@ -42,12 +45,12 @@ from nova import context
 from nova import db
 from nova.db.sqlalchemy import models
 from nova import exception
+from nova.i18n import _
 from nova.image import glance
 from nova.network import manager
 from nova.network.neutronv2 import api as neutron_api
 from nova import objects
 from nova.objects import instance as instance_obj
-from nova.openstack.common.gettextutils import _
 from nova.openstack.common import jsonutils
 from nova.openstack.common import policy as common_policy
 from nova.openstack.common import timeutils
@@ -721,7 +724,7 @@ class ServersControllerTest(ControllerTest):
 
         req = fakes.HTTPRequestV3.blank('/servers?tenant_id=newfake')
         res = self.controller.index(req)
-        self.assertTrue('servers' in res)
+        self.assertIn('servers', res)
 
     def test_tenant_id_filter_implies_all_tenants(self):
         def fake_get_all(context, filters=None, sort_key=None,
@@ -743,7 +746,7 @@ class ServersControllerTest(ControllerTest):
         req = fakes.HTTPRequestV3.blank('/servers?tenant_id=newfake',
                                       use_admin_context=True)
         res = self.controller.index(req)
-        self.assertTrue('servers' in res)
+        self.assertIn('servers', res)
 
     def test_all_tenants_param_normal(self):
         def fake_get_all(context, filters=None, sort_key=None,
@@ -1413,7 +1416,7 @@ class ServersControllerRebuildInstanceTest(ControllerTest):
 
     def test_rebuild_instance_fails_when_min_ram_too_small(self):
         # make min_ram larger than our instance ram size
-        def fake_get_image(self, context, image_href):
+        def fake_get_image(self, context, image_href, **kwargs):
             return dict(id='76fa36fc-c930-4bf3-8c8a-ea2a2420deb6',
                         name='public image', is_public=True,
                         status='active', properties={'key1': 'value1'},
@@ -1428,7 +1431,7 @@ class ServersControllerRebuildInstanceTest(ControllerTest):
 
     def test_rebuild_instance_fails_when_min_disk_too_small(self):
         # make min_disk larger than our instance disk size
-        def fake_get_image(self, context, image_href):
+        def fake_get_image(self, context, image_href, **kwargs):
             return dict(id='76fa36fc-c930-4bf3-8c8a-ea2a2420deb6',
                         name='public image', is_public=True,
                         status='active', properties={'key1': 'value1'},
@@ -1444,7 +1447,7 @@ class ServersControllerRebuildInstanceTest(ControllerTest):
         # make image size larger than our instance disk size
         size = str(1000 * (1024 ** 3))
 
-        def fake_get_image(self, context, image_href):
+        def fake_get_image(self, context, image_href, **kwargs):
             return dict(id='76fa36fc-c930-4bf3-8c8a-ea2a2420deb6',
                         name='public image', is_public=True,
                         status='active', size=size)
@@ -1456,7 +1459,7 @@ class ServersControllerRebuildInstanceTest(ControllerTest):
                           self.req, FAKE_UUID, body=self.body)
 
     def test_rebuild_instance_name_all_blank(self):
-        def fake_get_image(self, context, image_href):
+        def fake_get_image(self, context, image_href, **kwargs):
             return dict(id='76fa36fc-c930-4bf3-8c8a-ea2a2420deb6',
                         name='public image', is_public=True, status='active')
 
@@ -1468,7 +1471,7 @@ class ServersControllerRebuildInstanceTest(ControllerTest):
                           self.req, FAKE_UUID, body=self.body)
 
     def test_rebuild_instance_with_deleted_image(self):
-        def fake_get_image(self, context, image_href):
+        def fake_get_image(self, context, image_href, **kwargs):
             return dict(id='76fa36fc-c930-4bf3-8c8a-ea2a2420deb6',
                         name='public image', is_public=True,
                         status='DELETED')
@@ -2101,7 +2104,7 @@ class ServersControllerCreateTest(test.TestCase):
 
         self.assertRaises(webob.exc.HTTPBadRequest,
                           self.controller.create,
-                          self.req, self.body)
+                          self.req, body=self.body)
 
     def test_create_instance_with_network_with_no_subnet(self):
         network = 'eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee'
@@ -2243,7 +2246,8 @@ class ServersControllerCreateTest(test.TestCase):
         req.method = 'POST'
         req.body = jsonutils.dumps(body)
         req.headers["content-type"] = "application/json"
-        self.assertRaises(KeyError, self.controller.create, req, body=body)
+        self.assertRaises(webob.exc.HTTPInternalServerError,
+                          self.controller.create, req, body=body)
 
     def test_create_instance_pass_disabled(self):
         self.flags(enable_instance_password=False)
@@ -2514,6 +2518,12 @@ class ServersControllerCreateTest(test.TestCase):
         self.stubs.Set(compute_api.API, 'create', fake_create)
         self.assertRaises(webob.exc.HTTPBadRequest,
                           self._test_create_extra, params)
+
+    @mock.patch.object(compute_api.API, 'create')
+    def test_create_instance_with_network_ambiguous(self, mock_create):
+        mock_create.side_effect = exception.NetworkAmbiguous()
+        self.assertRaises(webob.exc.HTTPConflict,
+                          self._test_create_extra, {})
 
 
 class ServersControllerCreateTestWithMock(test.TestCase):
@@ -2880,7 +2890,7 @@ class ServersViewBuilderTest(test.TestCase):
         self.assertNotIn('fault', output['server'])
 
     def test_build_server_detail_active_status(self):
-        #set the power state of the instance to running
+        # set the power state of the instance to running
         self.instance['vm_state'] = vm_states.ACTIVE
         self.instance['progress'] = 100
         image_bookmark = "http://localhost:9292/images/5"
@@ -3079,7 +3089,7 @@ class ServersInvalidRequestTestCase(test.TestCase):
         req = fakes.HTTPRequestV3.blank('/servers')
         req.method = 'POST'
 
-        self.assertRaises(webob.exc.HTTPBadRequest,
+        self.assertRaises(exception.ValidationError,
                           self.controller.create, req, body=body)
 
     def test_create_server_no_body(self):
@@ -3153,3 +3163,29 @@ class TestServersExtensionPoint(test.NoDBTestCase):
 
     def test_load_create_extension_point(self):
         self._test_load_extension_point('create')
+
+
+class TestServersExtensionSchema(test.NoDBTestCase):
+    def setUp(self):
+        super(TestServersExtensionSchema, self).setUp()
+        CONF.set_override('extensions_whitelist', ['keypairs'], 'osapi_v3')
+
+    def _test_load_extension_schema(self, name):
+        setattr(FakeExt, 'get_server_%s_schema' % name,
+                FakeExt.fake_extension_point)
+        ext_info = plugins.LoadedExtensionInfo()
+        controller = servers.ServersController(extension_info=ext_info)
+        self.assertTrue(hasattr(controller, '%s_schema_manager' % name))
+
+        delattr(FakeExt, 'get_server_%s_schema' % name)
+        return getattr(controller, 'schema_server_%s' % name)
+
+    def test_load_create_extension_point(self):
+        # The expected is the schema combination of base and keypairs
+        # because of the above extensions_whitelist.
+        expected_schema = copy.deepcopy(servers_schema.base_create)
+        expected_schema['properties']['server']['properties'].update(
+            keypairs_schema.server_create)
+
+        actual_schema = self._test_load_extension_schema('create')
+        self.assertEqual(expected_schema, actual_schema)

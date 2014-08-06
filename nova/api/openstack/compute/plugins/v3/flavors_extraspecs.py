@@ -15,55 +15,43 @@
 
 import webob
 
+from nova.api.openstack.compute.schemas.v3 import flavors_extraspecs
 from nova.api.openstack import extensions
 from nova.api.openstack import wsgi
-from nova.compute import flavors
+from nova.api import validation
 from nova import exception
+from nova.i18n import _
 from nova import objects
-from nova.openstack.common.gettextutils import _
+
+ALIAS = 'flavor-extra-specs'
+authorize = extensions.extension_authorizer('compute', 'v3:' + ALIAS)
 
 
 class FlavorExtraSpecsController(object):
     """The flavor extra specs API controller for the OpenStack API."""
-    ALIAS = 'flavor-extra-specs'
 
     def __init__(self, *args, **kwargs):
         super(FlavorExtraSpecsController, self).__init__(*args, **kwargs)
-        self.authorize = extensions.extension_authorizer('compute',
-                                                         'v3:' + self.ALIAS)
 
     def _get_extra_specs(self, context, flavor_id):
         flavor = objects.Flavor.get_by_flavor_id(context, flavor_id)
         return dict(extra_specs=flavor.extra_specs)
 
-    def _check_body(self, body):
-        if body is None or body == "":
-            expl = _('No Request Body')
-            raise webob.exc.HTTPBadRequest(explanation=expl)
-
-    def _check_key_names(self, keys):
-        try:
-            flavors.validate_extra_spec_keys(keys)
-        except exception.InvalidInput as error:
-            raise webob.exc.HTTPBadRequest(explanation=error.format_message())
-
     @extensions.expected_errors(())
     def index(self, req, flavor_id):
         """Returns the list of extra specs for a given flavor."""
         context = req.environ['nova.context']
-        self.authorize(context, action='index')
+        authorize(context, action='index')
         return self._get_extra_specs(context, flavor_id)
 
     @extensions.expected_errors((400, 404, 409))
     @wsgi.response(201)
+    @validation.schema(flavors_extraspecs.create)
     def create(self, req, flavor_id, body):
         context = req.environ['nova.context']
-        self.authorize(context, action='create')
-        self._check_body(body)
-        specs = body.get('extra_specs', {})
-        if not specs or type(specs) is not dict:
-            raise webob.exc.HTTPBadRequest(_('No or bad extra_specs provided'))
-        self._check_key_names(specs.keys())
+        authorize(context, action='create')
+
+        specs = body['extra_specs']
         try:
             flavor = objects.Flavor.get_by_flavor_id(context, flavor_id)
             flavor.extra_specs = dict(flavor.extra_specs, **specs)
@@ -75,15 +63,13 @@ class FlavorExtraSpecsController(object):
         return body
 
     @extensions.expected_errors((400, 404, 409))
+    @validation.schema(flavors_extraspecs.update)
     def update(self, req, flavor_id, id, body):
         context = req.environ['nova.context']
-        self.authorize(context, action='update')
-        self._check_body(body)
+        authorize(context, action='update')
+
         if id not in body:
             expl = _('Request body and URI mismatch')
-            raise webob.exc.HTTPBadRequest(explanation=expl)
-        if len(body) > 1:
-            expl = _('Request body contains too many items')
             raise webob.exc.HTTPBadRequest(explanation=expl)
         try:
             flavor = objects.Flavor.get_by_flavor_id(context, flavor_id)
@@ -99,7 +85,7 @@ class FlavorExtraSpecsController(object):
     def show(self, req, flavor_id, id):
         """Return a single extra spec item."""
         context = req.environ['nova.context']
-        self.authorize(context, action='show')
+        authorize(context, action='show')
         try:
             flavor = objects.Flavor.get_by_flavor_id(context, flavor_id)
             return {id: flavor.extra_specs[id]}
@@ -117,7 +103,7 @@ class FlavorExtraSpecsController(object):
     def delete(self, req, flavor_id, id):
         """Deletes an existing extra spec."""
         context = req.environ['nova.context']
-        self.authorize(context, action='delete')
+        authorize(context, action='delete')
         try:
             flavor = objects.Flavor.get_by_flavor_id(context, flavor_id)
             del flavor.extra_specs[id]
@@ -135,12 +121,12 @@ class FlavorExtraSpecsController(object):
 class FlavorsExtraSpecs(extensions.V3APIExtensionBase):
     """Flavors extra specs support."""
     name = 'FlavorsExtraSpecs'
-    alias = FlavorExtraSpecsController.ALIAS
+    alias = ALIAS
     version = 1
 
     def get_resources(self):
         extra_specs = extensions.ResourceExtension(
-                self.alias,
+                ALIAS,
                 FlavorExtraSpecsController(),
                 parent=dict(member_name='flavor', collection_name='flavors'))
 
