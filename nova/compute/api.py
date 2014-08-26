@@ -409,16 +409,14 @@ class API(base.Base):
         # In future, we may support more variable length strings, so we act
         #  as if this is quota-controlled for forwards compatibility
         for k, v in metadata.iteritems():
-            if not isinstance(k, six.string_types):
-                msg = _("Metadata property key '%s' is not a string.") % k
-                raise exception.InvalidMetadata(reason=msg)
-            if not isinstance(v, six.string_types):
-                msg = (_("Metadata property value '%(v)s' for key '%(k)s' is "
-                         "not a string.") % {'v': v, 'k': k})
-                raise exception.InvalidMetadata(reason=msg)
-            if len(k) == 0:
-                msg = _("Metadata property key blank")
-                raise exception.InvalidMetadata(reason=msg)
+            try:
+                utils.check_string_length(v)
+                utils.check_string_length(k, min_length=1)
+            except exception.InvalidInput as e:
+                raise exception.InvalidMetadata(reason=e.format_message())
+
+            # For backward compatible we need raise HTTPRequestEntityTooLarge
+            # so we need to keep InvalidMetadataSize exception here
             if len(k) > 255:
                 msg = _("Metadata property key greater than 255 characters")
                 raise exception.InvalidMetadataSize(reason=msg)
@@ -745,8 +743,9 @@ class API(base.Base):
                                                    key_name)
             key_data = key_pair.public_key
 
-        root_device_name = block_device.properties_root_device_name(
-            boot_meta.get('properties', {}))
+        root_device_name = block_device.prepend_dev(
+                block_device.properties_root_device_name(
+                    boot_meta.get('properties', {})))
 
         system_metadata = flavors.save_flavor_info(
             dict(), instance_type)
@@ -1588,7 +1587,8 @@ class API(base.Base):
                     vram_mb = int(old_inst_type.get('extra_specs',
                                                     {}).get(VIDEO_RAM, 0))
                     instance_memory_mb = (old_inst_type['memory_mb'] + vram_mb)
-                    LOG.debug("going to delete a resizing instance")
+                    LOG.debug("going to delete a resizing instance",
+                              instance=instance)
 
         quotas = objects.Quotas(context)
         quotas.reserve(context,
@@ -3035,7 +3035,7 @@ class API(base.Base):
         :param admin_password: password to set on rebuilt instance
 
         """
-        LOG.debug('vm evacuation scheduled')
+        LOG.debug('vm evacuation scheduled', instance=instance)
         inst_host = instance.host
         service = objects.Service.get_by_compute_host(context, inst_host)
         if self.servicegroup_api.service_is_up(service):
@@ -3502,9 +3502,11 @@ class KeypairAPI(base.Base):
             raise exception.InvalidKeypair(
                 reason=_("Keypair name contains unsafe characters"))
 
-        if not 0 < len(key_name) < 256:
+        try:
+            utils.check_string_length(key_name, min_length=1, max_length=255)
+        except exception.InvalidInput:
             raise exception.InvalidKeypair(
-                reason=_('Keypair name must be between '
+                reason=_('Keypair name must be string and between '
                          '1 and 255 characters long'))
 
         count = QUOTAS.count(context, 'key_pairs', user_id)
@@ -3594,9 +3596,8 @@ class SecurityGroupAPI(base.Base, security_group_base.SecurityGroupBase):
         except AttributeError:
             msg = _("Security group %s is not a string or unicode") % property
             self.raise_invalid_property(msg)
-        if not val:
-            msg = _("Security group %s cannot be empty.") % property
-            self.raise_invalid_property(msg)
+
+        utils.check_string_length(val, min_length=1, max_length=255)
 
         if allowed and not re.match(allowed, val):
             # Some validation to ensure that values match API spec.
@@ -3607,10 +3608,6 @@ class SecurityGroupAPI(base.Base, security_group_base.SecurityGroupBase):
                      "invalid. Content limited to '%(allowed)s'.") %
                    {'value': value, 'allowed': allowed,
                     'property': property.capitalize()})
-            self.raise_invalid_property(msg)
-        if len(val) > 255:
-            msg = _("Security group %s should not be greater "
-                            "than 255 characters.") % property
             self.raise_invalid_property(msg)
 
     def ensure_default(self, context):

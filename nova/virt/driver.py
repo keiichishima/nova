@@ -438,10 +438,13 @@ class ComputeDriver(object):
         raise NotImplementedError()
 
     def swap_volume(self, old_connection_info, new_connection_info,
-                    instance, mountpoint):
+                    instance, mountpoint, resize_to):
         """Replace the disk attached to the instance.
 
         :param instance: nova.objects.instance.Instance
+        :param resize_to: This parameter is used to indicate the new volume
+                          size when the new volume lager than old volume.
+                          And the units is Gigabyte.
         """
         raise NotImplementedError()
 
@@ -461,11 +464,15 @@ class ComputeDriver(object):
 
     def migrate_disk_and_power_off(self, context, instance, dest,
                                    flavor, network_info,
-                                   block_device_info=None):
+                                   block_device_info=None,
+                                   timeout=0, retry_interval=0):
         """Transfers the disk of a running instance in multiple phases, turning
         off the instance before the end.
 
         :param instance: nova.objects.instance.Instance
+        :param timeout: time to wait for GuestOS to shutdown
+        :param retry_interval: How often to signal guest while
+                               waiting for it to shutdown
         """
         raise NotImplementedError()
 
@@ -478,6 +485,14 @@ class ComputeDriver(object):
                          hold the snapshot.
         """
         raise NotImplementedError()
+
+    def post_interrupted_snapshot_cleanup(self, context, instance):
+        """Cleans up any resources left after an interrupted snapshot.
+
+        :param context: security context
+        :param instance: nova.objects.instance.Instance
+        """
+        pass
 
     def finish_migration(self, context, migration, instance, disk_info,
                          network_info, image_meta, resize_instance,
@@ -589,10 +604,13 @@ class ComputeDriver(object):
         # TODO(Vek): Need to pass context in for access to auth_token
         raise NotImplementedError()
 
-    def power_off(self, instance):
+    def power_off(self, instance, timeout=0, retry_interval=0):
         """Power off the specified instance.
 
         :param instance: nova.objects.instance.Instance
+        :param timeout: time to wait for GuestOS to shutdown
+        :param retry_interval: How often to signal guest while
+                               waiting for it to shutdown
         """
         raise NotImplementedError()
 
@@ -1035,11 +1053,13 @@ class ComputeDriver(object):
         """Get the currently known host CPU stats.
 
         :returns: a dict containing the CPU stat info, eg:
-                  {'kernel': kern,
-                   'idle': idle,
-                   'user': user,
-                   'iowait': wait,
-                   'frequency': freq},
+
+            | {'kernel': kern,
+            |  'idle': idle,
+            |  'user': user,
+            |  'iowait': wait,
+            |   'frequency': freq},
+
                   where kern and user indicate the cumulative CPU time
                   (nanoseconds) spent by kernel and user processes
                   respectively, idle indicates the cumulative idle CPU time
@@ -1047,6 +1067,7 @@ class ComputeDriver(object):
                   time (nanoseconds), since the host is booting up; freq
                   indicates the current CPU frequency (MHz). All values are
                   long integers.
+
         """
         raise NotImplementedError()
 
@@ -1135,13 +1156,15 @@ class ComputeDriver(object):
         client API.
 
         :return: None, or a set of DHCP options, eg:
-                 [{'opt_name': 'bootfile-name',
-                   'opt_value': '/tftpboot/path/to/config'},
-                  {'opt_name': 'server-ip-address',
-                   'opt_value': '1.2.3.4'},
-                  {'opt_name': 'tftp-server',
-                   'opt_value': '1.2.3.4'}
-                 ]
+
+             |    [{'opt_name': 'bootfile-name',
+             |      'opt_value': '/tftpboot/path/to/config'},
+             |     {'opt_name': 'server-ip-address',
+             |      'opt_value': '1.2.3.4'},
+             |     {'opt_name': 'tftp-server',
+             |      'opt_value': '1.2.3.4'}
+             |    ]
+
         """
         pass
 

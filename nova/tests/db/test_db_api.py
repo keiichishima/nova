@@ -4098,7 +4098,7 @@ class FloatingIpTestCase(test.TestCase, ModelsObjectComparatorMixin):
         }
         floating_ref = db.floating_ip_update(self.ctxt, float_ip['address'],
                                              values)
-        self.assertIsNot(floating_ref, None)
+        self.assertIsNotNone(floating_ref)
         updated_float_ip = db.floating_ip_get(self.ctxt, float_ip['id'])
         self._assertEqualObjects(updated_float_ip, values,
                                  ignored_keys=['id', 'address', 'updated_at',
@@ -4623,18 +4623,18 @@ class BlockDeviceMappingTestCase(test.TestCase):
         uuid2 = db.instance_create(self.ctxt, {})['uuid']
 
         bmds_values = [{'instance_uuid': uuid1,
-                        'device_name': 'first'},
+                        'device_name': '/dev/vda'},
                        {'instance_uuid': uuid2,
-                        'device_name': 'second'},
+                        'device_name': '/dev/vdb'},
                        {'instance_uuid': uuid2,
-                        'device_name': 'third'}]
+                        'device_name': '/dev/vdc'}]
 
         for bdm in bmds_values:
             self._create_bdm(bdm)
 
         bmd = db.block_device_mapping_get_all_by_instance(self.ctxt, uuid1)
         self.assertEqual(len(bmd), 1)
-        self.assertEqual(bmd[0]['device_name'], 'first')
+        self.assertEqual(bmd[0]['device_name'], '/dev/vda')
 
         bmd = db.block_device_mapping_get_all_by_instance(self.ctxt, uuid2)
         self.assertEqual(len(bmd), 2)
@@ -4650,27 +4650,27 @@ class BlockDeviceMappingTestCase(test.TestCase):
         vol_id1 = '69f5c254-1a5b-4fff-acf7-cb369904f58f'
         vol_id2 = '69f5c254-1a5b-4fff-acf7-cb369904f59f'
 
-        self._create_bdm({'device_name': 'fake1', 'volume_id': vol_id1})
-        self._create_bdm({'device_name': 'fake2', 'volume_id': vol_id2})
+        self._create_bdm({'device_name': '/dev/vda', 'volume_id': vol_id1})
+        self._create_bdm({'device_name': '/dev/vdb', 'volume_id': vol_id2})
 
         uuid = self.instance['uuid']
         db.block_device_mapping_destroy_by_instance_and_volume(self.ctxt, uuid,
                                                                vol_id1)
         bdms = db.block_device_mapping_get_all_by_instance(self.ctxt, uuid)
         self.assertEqual(len(bdms), 1)
-        self.assertEqual(bdms[0]['device_name'], 'fake2')
+        self.assertEqual(bdms[0]['device_name'], '/dev/vdb')
 
     def test_block_device_mapping_destroy_by_instance_and_device(self):
-        self._create_bdm({'device_name': 'fake1'})
-        self._create_bdm({'device_name': 'fake2'})
+        self._create_bdm({'device_name': '/dev/vda'})
+        self._create_bdm({'device_name': '/dev/vdb'})
 
         uuid = self.instance['uuid']
-        params = (self.ctxt, uuid, 'fake1')
+        params = (self.ctxt, uuid, '/dev/vdb')
         db.block_device_mapping_destroy_by_instance_and_device(*params)
 
         bdms = db.block_device_mapping_get_all_by_instance(self.ctxt, uuid)
         self.assertEqual(len(bdms), 1)
-        self.assertEqual(bdms[0]['device_name'], 'fake2')
+        self.assertEqual(bdms[0]['device_name'], '/dev/vda')
 
     def test_block_device_mapping_get_by_volume_id(self):
         self._create_bdm({'volume_id': 'fake_id'})
@@ -6257,10 +6257,10 @@ class Ec2TestCase(test.TestCase):
             except exception.NotFound as exc:
                 self.assertIn(unicode(value), unicode(exc))
 
-        check_exc_format(db.get_ec2_snapshot_id_by_uuid, 'fake')
-        check_exc_format(db.get_snapshot_uuid_by_ec2_id, 123456)
         check_exc_format(db.get_ec2_instance_id_by_uuid, 'fake')
         check_exc_format(db.get_instance_uuid_by_ec2_id, 123456)
+        check_exc_format(db.ec2_snapshot_get_by_ec2_id, 123456)
+        check_exc_format(db.ec2_snapshot_get_by_uuid, 'fake')
 
     def test_ec2_volume_create(self):
         vol = db.ec2_volume_create(self.ctxt, 'fake-uuid')
@@ -6282,25 +6282,25 @@ class Ec2TestCase(test.TestCase):
         self.assertIsNotNone(snap['id'])
         self.assertEqual(snap['uuid'], 'fake-uuid')
 
-    def test_get_ec2_snapshot_id_by_uuid(self):
+    def test_ec2_snapshot_get_by_ec2_id(self):
         snap = db.ec2_snapshot_create(self.ctxt, 'fake-uuid')
-        snap_id = db.get_ec2_snapshot_id_by_uuid(self.ctxt, 'fake-uuid')
-        self.assertEqual(snap['id'], snap_id)
+        snap2 = db.ec2_snapshot_get_by_ec2_id(self.ctxt, snap['id'])
+        self.assertEqual(snap2['uuid'], 'fake-uuid')
 
-    def test_get_snapshot_uuid_by_ec2_id(self):
+    def test_ec2_snapshot_get_by_uuid(self):
         snap = db.ec2_snapshot_create(self.ctxt, 'fake-uuid')
-        snap_uuid = db.get_snapshot_uuid_by_ec2_id(self.ctxt, snap['id'])
-        self.assertEqual(snap_uuid, 'fake-uuid')
+        snap2 = db.ec2_snapshot_get_by_uuid(self.ctxt, 'fake-uuid')
+        self.assertEqual(snap['id'], snap2['id'])
 
-    def test_get_ec2_snapshot_id_by_uuid_not_found(self):
+    def test_ec2_snapshot_get_by_ec2_id_not_found(self):
         self.assertRaises(exception.SnapshotNotFound,
-                          db.get_ec2_snapshot_id_by_uuid,
-                          self.ctxt, 'uuid-not-present')
+                          db.ec2_snapshot_get_by_ec2_id,
+                          self.ctxt, 123456)
 
-    def test_get_snapshot_uuid_by_ec2_id_not_found(self):
+    def test_ec2_snapshot_get_by_uuid_not_found(self):
         self.assertRaises(exception.SnapshotNotFound,
-                          db.get_snapshot_uuid_by_ec2_id,
-                          self.ctxt, 100500)
+                          db.ec2_snapshot_get_by_uuid,
+                          self.ctxt, 'fake-uuid')
 
     def test_ec2_instance_create(self):
         inst = db.ec2_instance_create(self.ctxt, 'fake-uuid')
@@ -6667,9 +6667,9 @@ class InstanceGroupDBApiTestCase(test.TestCase, ModelsObjectComparatorMixin):
                 'project_id': self.project_id}
 
     def _create_instance_group(self, context, values, policies=None,
-                               metadata=None, members=None):
+                               members=None):
         return db.instance_group_create(context, values, policies=policies,
-                                        metadata=metadata, members=members)
+                                        members=members)
 
     def test_instance_group_create_no_key(self):
         values = self._get_default_values()
@@ -6781,15 +6781,6 @@ class InstanceGroupDBApiTestCase(test.TestCase, ModelsObjectComparatorMixin):
         db.instance_group_update(self.context, id, values)
         result = db.instance_group_get(self.context, id)
         self.assertEqual(result['name'], 'new_fake_name')
-        # update metadata
-        values = self._get_default_values()
-        metadataInput = {'key11': 'value1',
-                         'key12': 'value2'}
-        values['metadata'] = metadataInput
-        db.instance_group_update(self.context, id, values)
-        result = db.instance_group_get(self.context, id)
-        metadata = result['metadetails']
-        self._assertEqualObjects(metadata, metadataInput)
         # update update members
         values = self._get_default_values()
         members = ['instance_id1', 'instance_id2']
@@ -6808,86 +6799,6 @@ class InstanceGroupDBApiTestCase(test.TestCase, ModelsObjectComparatorMixin):
         self.assertRaises(exception.InstanceGroupNotFound,
                           db.instance_group_update, self.context,
                           'invalid_id', values)
-
-
-class InstanceGroupMetadataDBApiTestCase(InstanceGroupDBApiTestCase):
-    def test_instance_group_metadata_on_create(self):
-        values = self._get_default_values()
-        values['uuid'] = 'fake_id'
-        metadata = {'key11': 'value1',
-                    'key12': 'value2'}
-        result = self._create_instance_group(self.context, values,
-                                             metadata=metadata)
-        ignored_keys = ['id', 'deleted', 'deleted_at', 'updated_at',
-                        'created_at']
-        self._assertEqualObjects(result, values, ignored_keys)
-        self._assertEqualObjects(metadata, result['metadetails'])
-
-    def test_instance_group_metadata_add(self):
-        values = self._get_default_values()
-        values['uuid'] = 'fake_id'
-        result = self._create_instance_group(self.context, values)
-        id = result['uuid']
-        metadata = db.instance_group_metadata_get(self.context, id)
-        self._assertEqualObjects(metadata, {})
-        metadata = {'key1': 'value1',
-                    'key2': 'value2'}
-        db.instance_group_metadata_add(self.context, id, metadata)
-        metadata2 = db.instance_group_metadata_get(self.context, id)
-        self._assertEqualObjects(metadata, metadata2)
-
-    def test_instance_group_update(self):
-        values = self._get_default_values()
-        values['uuid'] = 'fake_id'
-        result = self._create_instance_group(self.context, values)
-        id = result['uuid']
-        metadata = {'key1': 'value1',
-                    'key2': 'value2'}
-        db.instance_group_metadata_add(self.context, id, metadata)
-        metadata2 = db.instance_group_metadata_get(self.context, id)
-        self._assertEqualObjects(metadata, metadata2)
-        # check add with existing keys
-        metadata = {'key1': 'value1',
-                    'key2': 'value2',
-                    'key3': 'value3'}
-        db.instance_group_metadata_add(self.context, id, metadata)
-        metadata3 = db.instance_group_metadata_get(self.context, id)
-        self._assertEqualObjects(metadata, metadata3)
-
-    def test_instance_group_delete(self):
-        values = self._get_default_values()
-        values['uuid'] = 'fake_id'
-        result = self._create_instance_group(self.context, values)
-        id = result['uuid']
-        metadata = {'key1': 'value1',
-                    'key2': 'value2',
-                    'key3': 'value3'}
-        db.instance_group_metadata_add(self.context, id, metadata)
-        metadata3 = db.instance_group_metadata_get(self.context, id)
-        self._assertEqualObjects(metadata, metadata3)
-        db.instance_group_metadata_delete(self.context, id, 'key1')
-        metadata = db.instance_group_metadata_get(self.context, id)
-        self.assertNotIn('key1', metadata)
-        db.instance_group_metadata_delete(self.context, id, 'key2')
-        metadata = db.instance_group_metadata_get(self.context, id)
-        self.assertNotIn('key2', metadata)
-
-    def test_instance_group_metadata_invalid_ids(self):
-        values = self._get_default_values()
-        result = self._create_instance_group(self.context, values)
-        id = result['uuid']
-        self.assertRaises(exception.InstanceGroupNotFound,
-                          db.instance_group_metadata_get,
-                          self.context, 'invalid')
-        self.assertRaises(exception.InstanceGroupNotFound,
-                          db.instance_group_metadata_delete, self.context,
-                          'invalidid', 'key1')
-        metadata = {'key1': 'value1',
-                    'key2': 'value2'}
-        db.instance_group_metadata_add(self.context, id, metadata)
-        self.assertRaises(exception.InstanceGroupMetadataNotFound,
-                          db.instance_group_metadata_delete,
-                          self.context, id, 'invalidkey')
 
 
 class InstanceGroupMembersDBApiTestCase(InstanceGroupDBApiTestCase):

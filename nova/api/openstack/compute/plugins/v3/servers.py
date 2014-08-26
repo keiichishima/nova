@@ -429,7 +429,7 @@ class ServersController(wsgi.Controller):
         req.cache_db_instance(instance)
         return self._view_builder.show(req, instance)
 
-    @extensions.expected_errors((400, 409, 413))
+    @extensions.expected_errors((400, 403, 409, 413))
     @wsgi.response(202)
     @validation.schema(schema_server_create)
     def create(self, req, body):
@@ -459,7 +459,7 @@ class ServersController(wsgi.Controller):
         # moved to the extension
         if list(self.create_extension_manager):
             self.create_extension_manager.map(self._create_extension_point,
-                                              server_dict, create_kwargs)
+                                              server_dict, create_kwargs, body)
 
         image_uuid = self._image_from_req_data(server_dict, create_kwargs)
 
@@ -491,7 +491,7 @@ class ServersController(wsgi.Controller):
         try:
             flavor_id = self._flavor_id_from_req_data(body)
         except ValueError as error:
-            msg = _("Invalid flavor_ref provided.")
+            msg = _("Invalid flavorRef provided.")
             raise exc.HTTPBadRequest(explanation=msg)
 
         try:
@@ -509,7 +509,7 @@ class ServersController(wsgi.Controller):
                             **create_kwargs)
         except (exception.QuotaError,
                 exception.PortLimitExceeded) as error:
-            raise exc.HTTPRequestEntityTooLarge(
+            raise exc.HTTPForbidden(
                 explanation=error.format_message(),
                 headers={'Retry-After': 0})
         except exception.InvalidMetadataSize as error:
@@ -519,7 +519,7 @@ class ServersController(wsgi.Controller):
             msg = _("Can not find requested image")
             raise exc.HTTPBadRequest(explanation=msg)
         except exception.FlavorNotFound as error:
-            msg = _("Invalid flavor_ref provided.")
+            msg = _("Invalid flavorRef provided.")
             raise exc.HTTPBadRequest(explanation=msg)
         except exception.KeypairNotFound as error:
             msg = _("Invalid key_name provided.")
@@ -564,17 +564,21 @@ class ServersController(wsgi.Controller):
         server = self._view_builder.create(req, instances[0])
 
         if CONF.enable_instance_password:
-            server['server']['admin_password'] = password
+            server['server']['adminPass'] = password
 
         robj = wsgi.ResponseObject(server)
 
         return self._add_location(robj)
 
-    def _create_extension_point(self, ext, server_dict, create_kwargs):
+    # NOTE(gmann): Parameter 'req_body' is placed to handle scheduler_hint
+    # extension for V2.1. No other extension supposed to use this as
+    # it will be removed soon.
+    def _create_extension_point(self, ext, server_dict,
+                                create_kwargs, req_body):
         handler = ext.obj
         LOG.debug("Running _create_extension_point for %s", ext.obj)
 
-        handler.server_create(server_dict, create_kwargs)
+        handler.server_create(server_dict, create_kwargs, req_body)
 
     def _rebuild_extension_point(self, ext, rebuild_dict, rebuild_kwargs):
         handler = ext.obj
@@ -728,7 +732,7 @@ class ServersController(wsgi.Controller):
         try:
             self.compute_api.resize(context, instance, flavor_id, **kwargs)
         except exception.QuotaError as error:
-            raise exc.HTTPRequestEntityTooLarge(
+            raise exc.HTTPForbidden(
                 explanation=error.format_message(),
                 headers={'Retry-After': 0})
         except exception.FlavorNotFound:
@@ -779,7 +783,7 @@ class ServersController(wsgi.Controller):
         image_uuid = image_href.split('/').pop()
 
         if not uuidutils.is_uuid_like(image_uuid):
-            msg = _("Invalid image_ref provided.")
+            msg = _("Invalid imageRef provided.")
             raise exc.HTTPBadRequest(explanation=msg)
 
         return image_uuid
@@ -788,48 +792,48 @@ class ServersController(wsgi.Controller):
         """Get image data from the request or raise appropriate
         exceptions.
 
-        The field image_ref is mandatory when no block devices have been
+        The field imageRef is mandatory when no block devices have been
         defined and must be a proper uuid when present.
         """
-        image_href = server_dict.get('image_ref')
+        image_href = server_dict.get('imageRef')
 
         if not image_href and create_kwargs.get('block_device_mapping'):
             return ''
         elif image_href:
             return self._image_uuid_from_href(unicode(image_href))
         else:
-            msg = _("Missing image_ref attribute")
+            msg = _("Missing imageRef attribute")
             raise exc.HTTPBadRequest(explanation=msg)
 
     def _flavor_id_from_req_data(self, data):
         try:
-            flavor_ref = data['server']['flavor_ref']
+            flavor_ref = data['server']['flavorRef']
         except (TypeError, KeyError):
-            msg = _("Missing flavor_ref attribute")
+            msg = _("Missing flavorRef attribute")
             raise exc.HTTPBadRequest(explanation=msg)
 
         return common.get_id_from_href(flavor_ref)
 
-    @extensions.expected_errors((400, 401, 404, 409, 413))
+    @extensions.expected_errors((400, 401, 403, 404, 409))
     @wsgi.response(202)
     @wsgi.action('resize')
     def _action_resize(self, req, id, body):
         """Resizes a given instance to the flavor size requested."""
         resize_dict = body['resize']
         try:
-            flavor_ref = str(resize_dict["flavor_ref"])
+            flavor_ref = str(resize_dict["flavorRef"])
             if not flavor_ref:
-                msg = _("Resize request has invalid 'flavor_ref' attribute.")
+                msg = _("Resize request has invalid 'flavorRef' attribute.")
                 raise exc.HTTPBadRequest(explanation=msg)
         except (KeyError, TypeError):
-            msg = _("Resize requests require 'flavor_ref' attribute.")
+            msg = _("Resize requests require 'flavorRef' attribute.")
             raise exc.HTTPBadRequest(explanation=msg)
 
         resize_kwargs = {}
 
         return self._resize(req, id, flavor_ref, **resize_kwargs)
 
-    @extensions.expected_errors((400, 404, 409, 413))
+    @extensions.expected_errors((400, 403, 404, 409, 413))
     @wsgi.response(202)
     @wsgi.action('rebuild')
     def _action_rebuild(self, req, id, body):
@@ -837,9 +841,9 @@ class ServersController(wsgi.Controller):
         rebuild_dict = body['rebuild']
 
         try:
-            image_href = rebuild_dict["image_ref"]
+            image_href = rebuild_dict["imageRef"]
         except (KeyError, TypeError):
-            msg = _("Could not parse image_ref from request.")
+            msg = _("Could not parse imageRef from request.")
             raise exc.HTTPBadRequest(explanation=msg)
 
         image_href = self._image_uuid_from_href(image_href)
@@ -894,6 +898,8 @@ class ServersController(wsgi.Controller):
         except exception.ImageNotFound:
             msg = _("Cannot find image for rebuild")
             raise exc.HTTPBadRequest(explanation=msg)
+        except exception.QuotaError as error:
+            raise exc.HTTPForbidden(explanation=error.format_message())
         except (exception.ImageNotActive,
                 exception.FlavorDiskTooSmall,
                 exception.FlavorMemoryTooSmall,
@@ -907,12 +913,12 @@ class ServersController(wsgi.Controller):
         # Add on the admin_password attribute since the view doesn't do it
         # unless instance passwords are disabled
         if CONF.enable_instance_password:
-            view['server']['admin_password'] = password
+            view['server']['adminPass'] = password
 
         robj = wsgi.ResponseObject(view)
         return self._add_location(robj)
 
-    @extensions.expected_errors((400, 404, 409, 413))
+    @extensions.expected_errors((400, 403, 404, 409))
     @wsgi.response(202)
     @wsgi.action('create_image')
     @common.check_snapshots_enabled
@@ -981,12 +987,12 @@ class ServersController(wsgi.Controller):
     def _get_server_admin_password(self, server):
         """Determine the admin password for a server on creation."""
         try:
-            password = server['admin_password']
+            password = server['adminPass']
             self._validate_admin_password(password)
         except KeyError:
             password = utils.generate_password()
         except ValueError:
-            raise exc.HTTPBadRequest(explanation=_("Invalid admin_password"))
+            raise exc.HTTPBadRequest(explanation=_("Invalid adminPass"))
 
         return password
 

@@ -17,7 +17,6 @@
 import contextlib
 import cStringIO
 import hashlib
-import json
 import os
 import time
 
@@ -26,6 +25,7 @@ from oslo.config import cfg
 from nova import conductor
 from nova import db
 from nova.openstack.common import importutils
+from nova.openstack.common import jsonutils
 from nova.openstack.common import log as logging
 from nova.openstack.common import processutils
 from nova import test
@@ -501,7 +501,7 @@ class ImageCacheManagerTestCase(test.NoDBTestCase):
 
             d = {'sha1': '21323454'}
             with open('%s.info' % fname, 'w') as f:
-                f.write(json.dumps(d))
+                f.write(jsonutils.dumps(d))
 
             image_cache_manager = imagecache.ImageCacheManager()
             image_cache_manager.unexplained_images = [fname]
@@ -609,21 +609,22 @@ class ImageCacheManagerTestCase(test.NoDBTestCase):
         self.stubs.Set(os.path, 'isfile', lambda x: isfile(x))
 
         # Fake the database call which lists running instances
-        all_instances = [{'image_ref': '1',
-                          'host': CONF.host,
-                          'name': 'instance-1',
-                          'uuid': '123',
-                          'vm_state': '',
-                          'task_state': ''},
-                         {'image_ref': '1',
-                          'kernel_id': '21',
-                          'ramdisk_id': '22',
-                          'host': CONF.host,
-                          'name': 'instance-2',
-                          'uuid': '456',
-                          'vm_state': '',
-                          'task_state': ''}]
-
+        instances = [{'image_ref': '1',
+                      'host': CONF.host,
+                      'name': 'instance-1',
+                      'uuid': '123',
+                      'vm_state': '',
+                      'task_state': ''},
+                     {'image_ref': '1',
+                      'kernel_id': '21',
+                      'ramdisk_id': '22',
+                      'host': CONF.host,
+                      'name': 'instance-2',
+                      'uuid': '456',
+                      'vm_state': '',
+                      'task_state': ''}]
+        all_instances = [fake_instance.fake_instance_obj(None, **instance)
+                         for instance in instances]
         image_cache_manager = imagecache.ImageCacheManager()
 
         # Fake the utils call which finds the backing image
@@ -717,18 +718,23 @@ class ImageCacheManagerTestCase(test.NoDBTestCase):
             os.mkdir(os.path.join(tmpdir, '_base'))
 
             # Fake the database call which lists running instances
-            all_instances = [{'image_ref': '1',
-                              'host': CONF.host,
-                              'name': 'instance-1',
-                              'uuid': '123',
-                              'vm_state': '',
-                              'task_state': ''},
-                             {'image_ref': '1',
-                              'host': CONF.host,
-                              'name': 'instance-2',
-                              'uuid': '456',
-                              'vm_state': '',
-                              'task_state': ''}]
+            instances = [{'image_ref': '1',
+                          'host': CONF.host,
+                          'name': 'instance-1',
+                          'uuid': '123',
+                          'vm_state': '',
+                          'task_state': ''},
+                         {'image_ref': '1',
+                          'host': CONF.host,
+                          'name': 'instance-2',
+                          'uuid': '456',
+                          'vm_state': '',
+                          'task_state': ''}]
+
+            all_instances = []
+            for instance in instances:
+                all_instances.append(fake_instance.fake_instance_obj(
+                    None, **instance))
 
             def touch(filename):
                 f = open(filename, 'w')

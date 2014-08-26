@@ -195,8 +195,7 @@ class Instance(base.NovaPersistentObject, base.NovaObject):
         return self
 
     def obj_make_compatible(self, primitive, target_version):
-        target_version = (int(target_version.split('.')[0]),
-                          int(target_version.split('.')[1]))
+        target_version = utils.convert_version_to_tuple(target_version)
         unicode_attributes = ['user_id', 'project_id', 'image_ref',
                               'kernel_id', 'ramdisk_id', 'hostname',
                               'key_name', 'key_data', 'host', 'node',
@@ -389,13 +388,15 @@ class Instance(base.NovaPersistentObject, base.NovaObject):
         self.what_changed(). If expected_task_state is provided,
         it will be checked against the in-database copy of the
         instance before updates are made.
-        :param context: Security context
-        :param expected_task_state: Optional tuple of valid task states
-                                    for the instance to be in.
-        :param expected_vm_state: Optional tuple of valid vm states
-                                  for the instance to be in.
+
+        :param:context: Security context
+        :param:expected_task_state: Optional tuple of valid task states
+        for the instance to be in
+        :param:expected_vm_state: Optional tuple of valid vm states
+        for the instance to be in
         :param admin_state_reset: True if admin API is forcing setting
-                                  of task_state/vm_state.
+        of task_state/vm_state
+
         """
 
         cell_type = cells_opts.get_cell_type()
@@ -500,6 +501,23 @@ class Instance(base.NovaPersistentObject, base.NovaObject):
                     self[field] = current[field]
         self.obj_reset_changes()
 
+    def _load_generic(self, attrname):
+        instance = self.__class__.get_by_uuid(self._context,
+                                              uuid=self.uuid,
+                                              expected_attrs=[attrname])
+
+        # NOTE(danms): Never allow us to recursively-load
+        if instance.obj_attr_is_set(attrname):
+            self[attrname] = instance[attrname]
+        else:
+            raise exception.ObjectActionError(
+                action='obj_load_attr',
+                reason='loading %s requires recursion' % attrname)
+
+    def _load_fault(self):
+        self.fault = objects.InstanceFault.get_latest_for_instance(
+            self._context, self.uuid)
+
     def obj_load_attr(self, attrname):
         if attrname not in INSTANCE_OPTIONAL_ATTRS:
             raise exception.ObjectActionError(
@@ -515,17 +533,13 @@ class Instance(base.NovaPersistentObject, base.NovaObject):
                    'uuid': self.uuid,
                    })
         # FIXME(comstud): This should be optimized to only load the attr.
-        instance = self.__class__.get_by_uuid(self._context,
-                                              uuid=self.uuid,
-                                              expected_attrs=[attrname])
-
-        # NOTE(danms): Never allow us to recursively-load
-        if instance.obj_attr_is_set(attrname):
-            self[attrname] = instance[attrname]
+        if attrname == 'fault':
+            # NOTE(danms): We handle fault differently here so that we
+            # can be more efficient
+            self._load_fault()
         else:
-            raise exception.ObjectActionError(
-                action='obj_load_attr',
-                reason='loading %s requires recursion' % attrname)
+            self._load_generic(attrname)
+        self.obj_reset_changes([attrname])
 
     def get_flavor(self, namespace=None):
         prefix = ('%s_' % namespace) if namespace is not None else ''
@@ -601,7 +615,8 @@ class InstanceList(base.ObjectListBase, base.NovaObject):
     # Version 1.4: Instance <= version 1.12
     # Version 1.5: Added method get_active_by_window_joined.
     # Version 1.6: Instance <= version 1.13
-    VERSION = '1.6'
+    # Version 1.7: Added use_slave to get_active_by_window_joined
+    VERSION = '1.7'
 
     fields = {
         'objects': fields.ListOfObjectsField('Instance'),
@@ -614,6 +629,7 @@ class InstanceList(base.ObjectListBase, base.NovaObject):
         '1.4': '1.12',
         '1.5': '1.12',
         '1.6': '1.13',
+        '1.7': '1.13',
         }
 
     @base.remotable_classmethod
@@ -661,7 +677,8 @@ class InstanceList(base.ObjectListBase, base.NovaObject):
     @base.remotable_classmethod
     def _get_active_by_window_joined(cls, context, begin, end=None,
                                     project_id=None, host=None,
-                                    expected_attrs=None):
+                                    expected_attrs=None,
+                                    use_slave=False):
         # NOTE(mriedem): We need to convert the begin/end timestamp strings
         # to timezone-aware datetime objects for the DB API call.
         begin = timeutils.parse_isotime(begin)
@@ -677,17 +694,20 @@ class InstanceList(base.ObjectListBase, base.NovaObject):
     @classmethod
     def get_active_by_window_joined(cls, context, begin, end=None,
                                     project_id=None, host=None,
-                                    expected_attrs=None):
+                                    expected_attrs=None,
+                                    use_slave=False):
         """Get instances and joins active during a certain time window.
 
-        :param context: nova request context
-        :param begin: datetime for the start of the time window
-        :param end: datetime for the end of the time window
-        :param project_id: used to filter instances by project
-        :param host: used to filter instances on a given compute host
-        :param expected_attrs: list of related fields that can be joined
+        :param:context: nova request context
+        :param:begin: datetime for the start of the time window
+        :param:end: datetime for the end of the time window
+        :param:project_id: used to filter instances by project
+        :param:host: used to filter instances on a given compute host
+        :param:expected_attrs: list of related fields that can be joined
         in the database layer when querying for instances
+        :param use_slave if True, ship this query off to a DB slave
         :returns: InstanceList
+
         """
         # NOTE(mriedem): We have to convert the datetime objects to string
         # primitives for the remote call.
@@ -695,7 +715,8 @@ class InstanceList(base.ObjectListBase, base.NovaObject):
         end = timeutils.isotime(end) if end else None
         return cls._get_active_by_window_joined(context, begin, end,
                                                 project_id, host,
-                                                expected_attrs)
+                                                expected_attrs,
+                                                use_slave=use_slave)
 
     @base.remotable_classmethod
     def get_by_security_group_id(cls, context, security_group_id):

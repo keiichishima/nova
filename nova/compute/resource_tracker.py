@@ -145,10 +145,10 @@ class ResourceTracker(object):
         :param instance: instance object to reserve resources for
         :param instance_type: new instance_type being resized to
         :param limits: Dict of oversubscription limits for memory, disk,
-                       and CPUs.
+        and CPUs
         :returns: A Claim ticket representing the reserved resources.  This
-                  should be turned into finalize  a resource claim or free
-                  resources after the compute operation is finished.
+        should be turned into finalize  a resource claim or free
+        resources after the compute operation is finished.
         """
         if self.disabled:
             # compute_driver doesn't support resource tracking, just
@@ -438,17 +438,22 @@ class ResourceTracker(object):
             LOG.debug("Hypervisor: no assignable PCI devices")
 
     def _report_final_resource_view(self, resources):
-        """Report final calculate of free memory, disk, CPUs, and PCI devices,
+        """Report final calculate of physical memory, used virtual memory,
+        disk, usable vCPUs, used virtual CPUs and PCI devices,
         including instance calculations and in-progress resource claims. These
         values will be exposed via the compute node table to the scheduler.
         """
-        LOG.audit(_("Free ram (MB): %s") % resources['free_ram_mb'])
+        LOG.audit(_("Total physical ram (MB): %(pram)s, "
+                    "total allocated virtual ram (MB): %(vram)s"),
+                    {'pram': resources['memory_mb'],
+                     'vram': resources['memory_mb_used']})
         LOG.audit(_("Free disk (GB): %s") % resources['free_disk_gb'])
 
         vcpus = resources['vcpus']
         if vcpus:
-            free_vcpus = vcpus - resources['vcpus_used']
-            LOG.audit(_("Free VCPUS: %s") % free_vcpus)
+            LOG.audit(_("Total usable vcpus: %(tcpu)s, "
+                        "total allocated vcpus: %(ucpu)s"),
+                        {'tcpu': vcpus, 'ucpu': resources['vcpus_used']})
         else:
             LOG.audit(_("Free VCPU information unavailable"))
 

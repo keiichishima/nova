@@ -25,6 +25,7 @@ import time
 
 from eventlet import event
 from oslo.config import cfg
+import suds
 
 from nova import exception
 from nova.i18n import _, _LC, _LW
@@ -118,6 +119,12 @@ class VMwareVCDriver(driver.ComputeDriver):
     def __init__(self, virtapi, scheme="https"):
         super(VMwareVCDriver, self).__init__(virtapi)
 
+        if (CONF.vmware.host_ip is None or
+            CONF.vmware.host_username is None or
+            CONF.vmware.host_password is None):
+            raise Exception(_("Must specify host_ip, host_username and "
+                              "host_password to use vmwareapi.VMwareVCDriver"))
+
         self._datastore_regex = None
         if CONF.vmware.datastore_regex:
             try:
@@ -164,6 +171,22 @@ class VMwareVCDriver(driver.ComputeDriver):
         self._volumeops = self._resources.get(first_cluster).get('volumeops')
         self._vc_state = self._resources.get(first_cluster).get('vcstate')
 
+    def init_host(self, host):
+        vim = self._session.vim
+        if vim is None:
+            self._session._create_session()
+
+    def cleanup_host(self, host):
+        # NOTE(hartsocks): we lean on the init_host to force the vim object
+        # to not be None.
+        vim = self._session.vim
+        service_content = vim.get_service_content()
+        session_manager = service_content.sessionManager
+        try:
+            vim.client.service.Logout(session_manager)
+        except suds.WebFault:
+            LOG.debug("No vSphere session was open during cleanup_host.")
+
     def cleanup(self, context, instance, network_info, block_device_info=None,
                 destroy_disks=True, migrate_data=None, destroy_vifs=True):
         """Cleanup after instance being destroyed by Hypervisor."""
@@ -207,10 +230,12 @@ class VMwareVCDriver(driver.ComputeDriver):
 
     def migrate_disk_and_power_off(self, context, instance, dest,
                                    flavor, network_info,
-                                   block_device_info=None):
+                                   block_device_info=None,
+                                   timeout=0, retry_interval=0):
         """Transfers the disk of a running instance in multiple phases, turning
         off the instance before the end.
         """
+        # TODO(PhilDay): Add support for timeout (clean shutdown)
         _vmops = self._get_vmops_for_compute_node(instance['node'])
         return _vmops.migrate_disk_and_power_off(context, instance,
                                                  dest, flavor)
@@ -252,6 +277,9 @@ class VMwareVCDriver(driver.ComputeDriver):
         """Clean up destination node after a failed live migration."""
         self.destroy(context, instance, network_info, block_device_info)
 
+    def get_instance_disk_info(self, instance_name, block_device_info=None):
+        pass
+
     def get_vnc_console(self, context, instance):
         """Return link to instance's VNC console using vCenter logic."""
         # vCenter does not actually run the VNC service
@@ -278,8 +306,7 @@ class VMwareVCDriver(driver.ComputeDriver):
         added_nodes = set(self.dict_mors.keys()) - set(self._resource_keys)
         for node in added_nodes:
             _volumeops = volumeops.VMwareVolumeOps(self._session,
-                                        self.dict_mors[node]['cluster_mor'],
-                                        vc_support=True)
+                                        self.dict_mors[node]['cluster_mor'])
             _vmops = vmops.VMwareVCVMOps(self._session, self._virtapi,
                                        _volumeops,
                                        self.dict_mors[node]['cluster_mor'],
@@ -439,6 +466,10 @@ class VMwareVCDriver(driver.ComputeDriver):
         _volumeops = self._get_volumeops_for_compute_node(instance['node'])
         return _volumeops.get_volume_connector(instance)
 
+    def get_host_ip_addr(self):
+        """Returns the IP address of the vCenter host."""
+        return CONF.vmware.host_ip
+
     def snapshot(self, context, instance, image_id, update_task_state):
         """Create snapshot from a running VM instance."""
         _vmops = self._get_vmops_for_compute_node(instance['node'])
@@ -494,8 +525,9 @@ class VMwareVCDriver(driver.ComputeDriver):
         _vmops = self._get_vmops_for_compute_node(instance.node)
         _vmops.unrescue(instance)
 
-    def power_off(self, instance):
+    def power_off(self, instance, timeout=0, retry_interval=0):
         """Power off the specified instance."""
+        # TODO(PhilDay): Add support for timeout (clean shutdown)
         _vmops = self._get_vmops_for_compute_node(instance['node'])
         _vmops.power_off(instance)
 

@@ -17,12 +17,14 @@
 import netaddr
 import netaddr.core as netexc
 from oslo.config import cfg
+import webob
 from webob import exc
 
 from nova.api.openstack import extensions
 from nova import context as nova_context
 from nova import exception
 from nova.i18n import _
+from nova.i18n import _LE
 from nova.i18n import _LI
 import nova.network
 from nova.openstack.common import log as logging
@@ -81,7 +83,7 @@ class NetworkController(object):
             try:
                 self._default_networks = self._get_default_networks()
             except Exception:
-                LOG.exception(_("Failed to get default networks"))
+                LOG.exception(_LE("Failed to get default networks"))
 
     def _get_default_networks(self):
         project_id = CONF.neutron_default_tenant_id
@@ -115,28 +117,37 @@ class NetworkController(object):
     def delete(self, req, id):
         context = req.environ['nova.context']
         authorize(context)
+        reservation = None
         try:
             if CONF.enable_network_quota:
                 reservation = QUOTAS.reserve(context, networks=-1)
         except Exception:
             reservation = None
-            LOG.exception(_("Failed to update usages deallocating "
-                            "network."))
+            LOG.exception(_LE("Failed to update usages deallocating "
+                              "network."))
 
         LOG.info(_LI("Deleting network with id %s"), id)
 
+        def _rollback_quota(reservation):
+            if CONF.enable_network_quota and reservation:
+                QUOTAS.rollback(context, reservation)
+
         try:
             self.network_api.delete(context, id)
-            if CONF.enable_network_quota and reservation:
-                QUOTAS.commit(context, reservation)
-            response = exc.HTTPAccepted()
         except exception.PolicyNotAuthorized as e:
+            _rollback_quota(reservation)
             raise exc.HTTPForbidden(explanation=str(e))
         except exception.NetworkInUse as e:
+            _rollback_quota(reservation)
             raise exc.HTTPConflict(explanation=e.format_message())
         except exception.NetworkNotFound:
+            _rollback_quota(reservation)
             msg = _("Network not found")
             raise exc.HTTPNotFound(explanation=msg)
+
+        if CONF.enable_network_quota and reservation:
+            QUOTAS.commit(context, reservation)
+        response = webob.Response(status_int=202)
 
         return response
 

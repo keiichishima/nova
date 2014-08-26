@@ -171,7 +171,8 @@ class FakeDriver(driver.ComputeDriver):
 
     def migrate_disk_and_power_off(self, context, instance, dest,
                                    flavor, network_info,
-                                   block_device_info=None):
+                                   block_device_info=None,
+                                   timeout=0, retry_interval=0):
         pass
 
     def finish_revert_migration(self, context, instance, network_info,
@@ -184,7 +185,7 @@ class FakeDriver(driver.ComputeDriver):
                                            block_device_info=None):
         pass
 
-    def power_off(self, instance):
+    def power_off(self, instance, shutdown_timeout=0, shutdown_attempts=0):
         pass
 
     def power_on(self, context, instance, network_info, block_device_info):
@@ -239,7 +240,7 @@ class FakeDriver(driver.ComputeDriver):
             pass
 
     def swap_volume(self, old_connection_info, new_connection_info,
-                    instance, mountpoint):
+                    instance, mountpoint, resize_to):
         """Replace the disk attached to the instance."""
         instance_name = instance['name']
         if instance_name not in self._mounts:
@@ -248,14 +249,16 @@ class FakeDriver(driver.ComputeDriver):
 
     def attach_interface(self, instance, image_meta, vif):
         if vif['id'] in self._interfaces:
-            raise exception.InterfaceAttachFailed('duplicate')
+            raise exception.InterfaceAttachFailed(
+                    instance_uuid=instance['uuid'])
         self._interfaces[vif['id']] = vif
 
     def detach_interface(self, instance, vif):
         try:
             del self._interfaces[vif['id']]
         except KeyError:
-            raise exception.InterfaceDetachFailed('not attached')
+            raise exception.InterfaceDetachFailed(
+                    instance_uuid=instance['uuid'])
 
     def get_info(self, instance):
         if instance['name'] not in self.instances:

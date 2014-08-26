@@ -24,9 +24,7 @@ from nova.api.openstack import wsgi
 from nova.api import validation
 from nova import compute
 from nova import exception
-from nova.openstack.common import log as logging
 
-LOG = logging.getLogger(__name__)
 ALIAS = "os-create-backup"
 authorize = extensions.extension_authorizer('compute', "v3:" + ALIAS)
 
@@ -36,7 +34,7 @@ class CreateBackupController(wsgi.Controller):
         super(CreateBackupController, self).__init__(*args, **kwargs)
         self.compute_api = compute.API()
 
-    @extensions.expected_errors((400, 404, 409, 413))
+    @extensions.expected_errors((400, 403, 404, 409))
     @wsgi.action('create_backup')
     @validation.schema(create_backup.create_backup)
     def _create_backup(self, req, id, body):

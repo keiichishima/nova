@@ -606,8 +606,7 @@ class Controller(wsgi.Controller):
             msg = _('marker [%s] not found') % marker
             raise exc.HTTPBadRequest(explanation=msg)
         except exception.FlavorNotFound:
-            log_msg = _("Flavor '%s' could not be found ")
-            LOG.debug(log_msg, search_opts['flavor'])
+            LOG.debug("Flavor '%s' could not be found", search_opts['flavor'])
             # TODO(mriedem): Move to ObjectListBase.__init__ for empty lists.
             instance_list = objects.InstanceList(objects=[])
 
@@ -958,7 +957,7 @@ class Controller(wsgi.Controller):
                             legacy_bdm=legacy_bdm)
         except (exception.QuotaError,
                 exception.PortLimitExceeded) as error:
-            raise exc.HTTPRequestEntityTooLarge(
+            raise exc.HTTPForbidden(
                 explanation=error.format_message(),
                 headers={'Retry-After': 0})
         except exception.InvalidMetadataSize as error:
@@ -986,23 +985,18 @@ class Controller(wsgi.Controller):
         except (exception.ImageNotActive,
                 exception.FlavorDiskTooSmall,
                 exception.FlavorMemoryTooSmall,
-                exception.InvalidMetadata,
-                exception.InvalidRequest,
-                exception.MultiplePortsNotApplicable,
-                exception.InvalidFixedIpAndMaxCountRequest,
                 exception.NetworkNotFound,
                 exception.PortNotFound,
                 exception.FixedIpAlreadyInUse,
                 exception.SecurityGroupNotFound,
-                exception.InvalidBDM,
-                exception.PortRequiresFixedIP,
-                exception.NetworkRequiresSubnet,
                 exception.InstanceUserDataTooLarge,
                 exception.InstanceUserDataMalformed) as error:
             raise exc.HTTPBadRequest(explanation=error.format_message())
         except (exception.PortInUse,
                 exception.NoUniqueMatch) as error:
             raise exc.HTTPConflict(explanation=error.format_message())
+        except exception.Invalid as error:
+            raise exc.HTTPBadRequest(explanation=error.format_message())
 
         # If the caller wanted a reservation_id, return it
         if ret_resv_id:
@@ -1167,7 +1161,7 @@ class Controller(wsgi.Controller):
         try:
             self.compute_api.resize(context, instance, flavor_id, **kwargs)
         except exception.QuotaError as error:
-            raise exc.HTTPRequestEntityTooLarge(
+            raise exc.HTTPForbidden(
                 explanation=error.format_message(),
                 headers={'Retry-After': 0})
         except exception.FlavorNotFound:
@@ -1194,7 +1188,8 @@ class Controller(wsgi.Controller):
         except exception.Invalid:
             msg = _("Invalid instance image.")
             raise exc.HTTPBadRequest(explanation=msg)
-        except exception.NoValidHost as e:
+        except (exception.NoValidHost,
+                exception.AutoDiskConfigDisabledByImage) as e:
             raise exc.HTTPBadRequest(explanation=e.format_message())
 
         return webob.Response(status_int=202)
@@ -1398,10 +1393,13 @@ class Controller(wsgi.Controller):
         except exception.ImageNotFound:
             msg = _("Cannot find image for rebuild")
             raise exc.HTTPBadRequest(explanation=msg)
+        except exception.QuotaError as error:
+            raise exc.HTTPForbidden(explanation=error.format_message())
         except (exception.ImageNotActive,
                 exception.FlavorDiskTooSmall,
                 exception.FlavorMemoryTooSmall,
-                exception.InvalidMetadata) as error:
+                exception.InvalidMetadata,
+                exception.AutoDiskConfigDisabledByImage) as error:
             raise exc.HTTPBadRequest(explanation=error.format_message())
 
         instance = self._get_server(context, req, id)

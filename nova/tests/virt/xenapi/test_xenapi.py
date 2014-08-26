@@ -974,7 +974,7 @@ iface eth0 inet6 static
             return '', ''
 
         def _umount_handler(cmd, *ignore_args, **ignore_kwargs):
-            # Umount would normall make files in the m,ounted filesystem
+            # Umount would normally make files in the mounted filesystem
             # disappear, so do that here
             LOG.debug('Removing simulated guest agent files in %s',
                       self._tmpdir)
@@ -3072,27 +3072,30 @@ class XenAPIAggregateTestCase(stubs.XenAPITestBase):
         aggregate is not ready.
         """
         aggregate = self._aggregate_setup(aggr_state=pool_states.CHANGING)
-        self.assertRaises(exception.InvalidAggregateAction,
-                          self.conn.add_to_aggregate, self.context,
-                          aggregate, 'host')
+        ex = self.assertRaises(exception.InvalidAggregateAction,
+                               self.conn.add_to_aggregate, self.context,
+                               aggregate, 'host')
+        self.assertIn('setup in progress', str(ex))
 
     def test_add_host_to_aggregate_invalid_dismissed_status(self):
         """Ensure InvalidAggregateAction is raised when aggregate is
         deleted.
         """
         aggregate = self._aggregate_setup(aggr_state=pool_states.DISMISSED)
-        self.assertRaises(exception.InvalidAggregateAction,
-                          self.conn.add_to_aggregate, self.context,
-                          aggregate, 'fake_host')
+        ex = self.assertRaises(exception.InvalidAggregateAction,
+                               self.conn.add_to_aggregate, self.context,
+                               aggregate, 'fake_host')
+        self.assertIn('aggregate deleted', str(ex))
 
     def test_add_host_to_aggregate_invalid_error_status(self):
         """Ensure InvalidAggregateAction is raised when aggregate is
         in error.
         """
         aggregate = self._aggregate_setup(aggr_state=pool_states.ERROR)
-        self.assertRaises(exception.InvalidAggregateAction,
-                          self.conn.add_to_aggregate, self.context,
-                          aggregate, 'fake_host')
+        ex = self.assertRaises(exception.InvalidAggregateAction,
+                               self.conn.add_to_aggregate, self.context,
+                               aggregate, 'fake_host')
+        self.assertIn('aggregate in error', str(ex))
 
     def test_remove_host_from_aggregate_error(self):
         # Ensure we can remove a host from an aggregate even if in error.

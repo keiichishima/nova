@@ -1491,7 +1491,8 @@ class CloudTestCase(test.TestCase):
 
         mappings2 = [{'device': '/dev/sda1', 'virtual': 'root'}]
         block_device_mapping2 = [{'device_name': '/dev/sdb1',
-                'snapshot_id': 'ccec42a2-c220-4806-b762-6b12fbb592e7'}]
+                'snapshot_id': 'ccec42a2-c220-4806-b762-6b12fbb592e7',
+                'volume_id': None}]
         image2 = {
             'id': '76fa36fc-c930-4bf3-8c8a-ea2a2420deb6',
             'name': 'fake_name',
@@ -2539,7 +2540,8 @@ class CloudTestCase(test.TestCase):
 
         self.stubs.Set(fake_virt.FakeDriver, 'power_on', fake_power_on)
 
-        def fake_power_off(self, instance):
+        def fake_power_off(self, instance,
+                           shutdown_timeout, shutdown_attempts):
             virt_driver['powered_off'] = True
 
         self.stubs.Set(fake_virt.FakeDriver, 'power_off', fake_power_off)

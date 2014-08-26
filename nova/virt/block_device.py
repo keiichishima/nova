@@ -17,6 +17,7 @@ import operator
 
 from nova import block_device
 from nova.i18n import _
+from nova.i18n import _LI
 from nova import objects
 from nova.objects import base as obj_base
 from nova.openstack.common import excutils
@@ -129,10 +130,14 @@ class DriverBlockDevice(dict):
         """
         raise NotImplementedError()
 
-    def save(self, context):
+    def save(self, context=None):
         for attr_name, key_name in self._update_on_save.iteritems():
             setattr(self._bdm_obj, attr_name, self[key_name or attr_name])
-        self._bdm_obj.save(context)
+
+        if context:
+            self._bdm_obj.save(context)
+        else:
+            self._bdm_obj.save()
 
 
 class DriverSwapBlockDevice(DriverBlockDevice):
@@ -208,6 +213,14 @@ class DriverVolumeBlockDevice(DriverBlockDevice):
         except TypeError:
             self['connection_info'] = None
 
+    def _preserve_multipath_id(self, connection_info):
+        if self['connection_info'] and 'data' in self['connection_info']:
+            if 'multipath_id' in self['connection_info']['data']:
+                connection_info['data']['multipath_id'] =\
+                    self['connection_info']['data']['multipath_id']
+                LOG.info(_LI('preserve multipath_id %s'),
+                         connection_info['data']['multipath_id'])
+
     @update_db
     def attach(self, context, instance, volume_api, virt_driver,
                do_check_attach=True, do_driver_attach=False):
@@ -224,6 +237,7 @@ class DriverVolumeBlockDevice(DriverBlockDevice):
                                                            connector)
         if 'serial' not in connection_info:
             connection_info['serial'] = self.volume_id
+        self._preserve_multipath_id(connection_info)
 
         # If do_driver_attach is False, we will attach a volume to an instance
         # at boot time. So actual attach is done by instance creation code.
@@ -267,9 +281,10 @@ class DriverVolumeBlockDevice(DriverBlockDevice):
                                                            connector)
         if 'serial' not in connection_info:
             connection_info['serial'] = self.volume_id
+        self._preserve_multipath_id(connection_info)
         self['connection_info'] = connection_info
 
-    def save(self, context):
+    def save(self, context=None):
         # NOTE(ndipanov): we might want to generalize this by adding it to the
         # _update_on_save and adding a transformation function.
         try:
@@ -324,6 +339,26 @@ class DriverImageBlockDevice(DriverVolumeBlockDevice):
             do_check_attach=do_check_attach)
 
 
+class DriverBlankBlockDevice(DriverVolumeBlockDevice):
+
+    _valid_source = 'blank'
+    _proxy_as_attr = set(['volume_size', 'volume_id', 'image_id'])
+
+    def attach(self, context, instance, volume_api,
+               virt_driver, wait_func=None, do_check_attach=True):
+        if not self.volume_id:
+            vol_name = instance.uuid + '-blank-vol'
+            vol = volume_api.create(context, self.volume_size, vol_name, '')
+            if wait_func:
+                wait_func(context, vol['id'])
+
+            self.volume_id = vol['id']
+
+        super(DriverBlankBlockDevice, self).attach(
+            context, instance, volume_api, virt_driver,
+            do_check_attach=do_check_attach)
+
+
 def _convert_block_devices(device_type, block_device_mapping):
     def _is_transformable(bdm):
         try:
@@ -354,6 +389,9 @@ convert_snapshots = functools.partial(_convert_block_devices,
 
 convert_images = functools.partial(_convert_block_devices,
                                      DriverImageBlockDevice)
+
+convert_blanks = functools.partial(_convert_block_devices,
+                                   DriverBlankBlockDevice)
 
 
 def attach_block_devices(block_device_mapping, *attach_args, **attach_kwargs):
@@ -417,7 +455,7 @@ def get_swap(transformed_list):
 
 _IMPLEMENTED_CLASSES = (DriverSwapBlockDevice, DriverEphemeralBlockDevice,
                         DriverVolumeBlockDevice, DriverSnapshotBlockDevice,
-                        DriverImageBlockDevice)
+                        DriverImageBlockDevice, DriverBlankBlockDevice)
 
 
 def is_implemented(bdm):
@@ -428,3 +466,9 @@ def is_implemented(bdm):
         except _NotTransformable:
             pass
     return False
+
+
+def is_block_device_mapping(bdm):
+    return (bdm.source_type in ('image', 'volume', 'snapshot', 'blank')
+            and bdm.destination_type == 'volume'
+            and is_implemented(bdm))

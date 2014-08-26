@@ -151,13 +151,15 @@ class FlavorsExtraSpecsTest(test.TestCase):
         self.stubs.Set(nova.db,
                        'flavor_extra_specs_update_or_create',
                        return_create_flavor_extra_specs)
-        body = {"extra_specs": {"key1": "value1"}}
+        body = {"extra_specs": {"key1": "value1", "key2": 0.5, "key3": 5}}
 
         req = fakes.HTTPRequest.blank('/v2/fake/flavors/1/os-extra_specs',
                                        use_admin_context=True)
         res_dict = self.controller.create(req, 1, body)
 
         self.assertEqual('value1', res_dict['extra_specs']['key1'])
+        self.assertEqual(0.5, res_dict['extra_specs']['key2'])
+        self.assertEqual(5, res_dict['extra_specs']['key3'])
 
     def test_create_no_admin(self):
         self.stubs.Set(nova.db,
@@ -211,6 +213,9 @@ class FlavorsExtraSpecsTest(test.TestCase):
     def test_create_non_dict_extra_specs(self):
         self._test_create_bad_request({"extra_specs": "non_dict"})
 
+    def test_create_non_string_key(self):
+        self._test_create_bad_request({"extra_specs": {None: "value1"}})
+
     def test_create_non_string_value(self):
         self._test_create_bad_request({"extra_specs": {"key1": None}})
 
@@ -223,6 +228,10 @@ class FlavorsExtraSpecsTest(test.TestCase):
 
     def test_create_long_value(self):
         value = "a" * 256
+        self._test_create_bad_request({"extra_specs": {"key1": value}})
+
+    def test_create_really_long_integer_value(self):
+        value = 10 ** 1000
         self._test_create_bad_request({"extra_specs": {"key1": value}})
 
     @mock.patch('nova.db.flavor_extra_specs_update_or_create')
@@ -291,6 +300,9 @@ class FlavorsExtraSpecsTest(test.TestCase):
 
     def test_update_item_non_dict_extra_specs(self):
         self._test_update_item_bad_request("non_dict")
+
+    def test_update_item_non_string_key(self):
+        self._test_update_item_bad_request({None: "value1"})
 
     def test_update_item_non_string_value(self):
         self._test_update_item_bad_request({"key1": None})

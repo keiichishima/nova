@@ -279,6 +279,12 @@ class DefaultDeviceNamesForInstanceTestCase(test.NoDBTestCase):
                   'source_type': 'snapshot',
                   'destination_type': 'volume',
                   'snapshot_id': 'fake-snapshot-id-1',
+                  'boot_index': -1}),
+                 fake_block_device.FakeDbBlockDeviceDict(
+                 {'id': 5, 'instance_uuid': 'fake-instance',
+                  'device_name': '/dev/vde',
+                  'source_type': 'blank',
+                  'destination_type': 'volume',
                   'boot_index': -1})])
         self.flavor = {'swap': 4}
         self.instance = {'uuid': 'fake_instance', 'ephemeral_gb': 2}
@@ -326,11 +332,14 @@ class DefaultDeviceNamesForInstanceTestCase(test.NoDBTestCase):
         for original, new in zip(original_bdm, self.block_device_mapping):
             self.assertEqual(original.device_name, new.device_name)
 
-        # Asser it defaults the missing one as expected
+        # Assert it defaults the missing one as expected
         self.block_device_mapping[1]['device_name'] = None
+        self.block_device_mapping[2]['device_name'] = None
         self._test_default_device_names([], [], self.block_device_mapping)
-        self.assertEqual(self.block_device_mapping[1]['device_name'],
-                         '/dev/vdb')
+        self.assertEqual('/dev/vdb',
+                         self.block_device_mapping[1]['device_name'])
+        self.assertEqual('/dev/vdc',
+                         self.block_device_mapping[2]['device_name'])
 
     def test_with_ephemerals(self):
         # Test ephemeral gets assigned
@@ -340,10 +349,13 @@ class DefaultDeviceNamesForInstanceTestCase(test.NoDBTestCase):
         self.assertEqual(self.ephemerals[0]['device_name'], '/dev/vdb')
 
         self.block_device_mapping[1]['device_name'] = None
+        self.block_device_mapping[2]['device_name'] = None
         self._test_default_device_names(self.ephemerals, [],
                                         self.block_device_mapping)
-        self.assertEqual(self.block_device_mapping[1]['device_name'],
-                         '/dev/vdc')
+        self.assertEqual('/dev/vdc',
+                         self.block_device_mapping[1]['device_name'])
+        self.assertEqual('/dev/vdd',
+                         self.block_device_mapping[2]['device_name'])
 
     def test_with_swap(self):
         # Test swap only
@@ -354,11 +366,14 @@ class DefaultDeviceNamesForInstanceTestCase(test.NoDBTestCase):
         # Test swap and block_device_mapping
         self.swap[0]['device_name'] = None
         self.block_device_mapping[1]['device_name'] = None
+        self.block_device_mapping[2]['device_name'] = None
         self._test_default_device_names([], self.swap,
                                         self.block_device_mapping)
         self.assertEqual(self.swap[0]['device_name'], '/dev/vdb')
-        self.assertEqual(self.block_device_mapping[1]['device_name'],
-                         '/dev/vdc')
+        self.assertEqual('/dev/vdc',
+                         self.block_device_mapping[1]['device_name'])
+        self.assertEqual('/dev/vdd',
+                         self.block_device_mapping[2]['device_name'])
 
     def test_all_together(self):
         # Test swap missing
@@ -379,12 +394,15 @@ class DefaultDeviceNamesForInstanceTestCase(test.NoDBTestCase):
         self.swap[0]['device_name'] = None
         self.ephemerals[0]['device_name'] = None
         self.block_device_mapping[1]['device_name'] = None
+        self.block_device_mapping[2]['device_name'] = None
         self._test_default_device_names(self.ephemerals,
                                         self.swap, self.block_device_mapping)
         self.assertEqual(self.ephemerals[0]['device_name'], '/dev/vdb')
         self.assertEqual(self.swap[0]['device_name'], '/dev/vdc')
-        self.assertEqual(self.block_device_mapping[1]['device_name'],
-                         '/dev/vdd')
+        self.assertEqual('/dev/vdd',
+                         self.block_device_mapping[1]['device_name'])
+        self.assertEqual('/dev/vde',
+                         self.block_device_mapping[2]['device_name'])
 
 
 class UsageInfoTestCase(test.TestCase):
@@ -722,6 +740,28 @@ class ComputeGetImageMetadataTestCase(test.TestCase):
 
         expected = {'properties': 'DONTCARE'}
         self.assertThat(expected, matchers.DictMatches(image_meta))
+
+
+class ComputeUtilsGetValFromSysMetadata(test.TestCase):
+
+    def test_get_value_from_system_metadata(self):
+        instance = fake_instance.fake_instance_obj('fake-context')
+        system_meta = {'int_val': 1,
+                       'int_string': '2',
+                       'not_int': 'Nope'}
+        instance.system_metadata = system_meta
+
+        result = compute_utils.get_value_from_system_metadata(
+                   instance, 'int_val', int, 0)
+        self.assertEqual(1, result)
+
+        result = compute_utils.get_value_from_system_metadata(
+                   instance, 'int_string', int, 0)
+        self.assertEqual(2, result)
+
+        result = compute_utils.get_value_from_system_metadata(
+                   instance, 'not_int', int, 0)
+        self.assertEqual(0, result)
 
 
 class ComputeUtilsGetNWInfo(test.TestCase):

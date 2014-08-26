@@ -333,8 +333,62 @@ class FlatNetworkTestCase(test.TestCase):
                                        256, None, None, None, None, None)
         self.assertEqual(1, len(nets))
         network = nets[0]
-        self.assertEqual(3, db.network_count_reserved_ips(context_admin,
+        self.assertEqual(4, db.network_count_reserved_ips(context_admin,
                         network['id']))
+
+    def test_validate_reserved_start_end(self):
+        context_admin = context.RequestContext('testuser', 'testproject',
+                                              is_admin=True)
+        nets = self.network.create_networks(context_admin, 'fake',
+                                       '192.168.0.0/24', False, 1,
+                                       256, dhcp_server='192.168.0.11',
+                                       allowed_start='192.168.0.10',
+                                       allowed_end='192.168.0.245')
+        self.assertEqual(1, len(nets))
+        network = nets[0]
+        # gateway defaults to beginning of allowed_start
+        self.assertEqual('192.168.0.10', network['gateway'])
+        # vpn_server doesn't conflict with dhcp_start
+        self.assertEqual('192.168.0.12', network['vpn_private_address'])
+        # dhcp_start doesn't conflict with dhcp_server
+        self.assertEqual('192.168.0.13', network['dhcp_start'])
+        # NOTE(vish): 10 from the beginning, 10 from the end, and
+        #             1 for the gateway, 1 for the dhcp server,
+        #             1 for the vpn server
+        self.assertEqual(23, db.network_count_reserved_ips(context_admin,
+                        network['id']))
+
+    def test_validate_reserved_start_out_of_range(self):
+        context_admin = context.RequestContext('testuser', 'testproject',
+                                              is_admin=True)
+        self.assertRaises(exception.AddressOutOfRange,
+                          self.network.create_networks,
+                          context_admin, 'fake', '192.168.0.0/24', False,
+                          1, 256, allowed_start='192.168.1.10')
+
+    def test_validate_reserved_end_invalid(self):
+        context_admin = context.RequestContext('testuser', 'testproject',
+                                              is_admin=True)
+        self.assertRaises(exception.InvalidAddress,
+                          self.network.create_networks,
+                          context_admin, 'fake', '192.168.0.0/24', False,
+                          1, 256, allowed_end='invalid')
+
+    def test_validate_cidr_invalid(self):
+        context_admin = context.RequestContext('testuser', 'testproject',
+                                              is_admin=True)
+        self.assertRaises(exception.InvalidCidr,
+                          self.network.create_networks,
+                          context_admin, 'fake', 'invalid', False,
+                          1, 256)
+
+    def test_validate_non_int_size(self):
+        context_admin = context.RequestContext('testuser', 'testproject',
+                                              is_admin=True)
+        self.assertRaises(exception.InvalidIntValue,
+                          self.network.create_networks,
+                          context_admin, 'fake', '192.168.0.0/24', False,
+                          1, 'invalid')
 
     def test_validate_networks_none_requested_networks(self):
         self.network.validate_networks(self.context, None)
@@ -1782,7 +1836,8 @@ class CommonNetworkTestCase(test.TestCase):
         self.assertTrue(res)
 
     def fake_create_fixed_ips(self, context, network_id, fixed_cidr=None,
-                              extra_reserved=None):
+                              extra_reserved=None, bottom_reserved=0,
+                              top_reserved=0):
         return None
 
     def test_get_instance_nw_info_client_exceptions(self):
@@ -3026,6 +3081,32 @@ class FloatingIPTestCase(test.TestCase):
     def test_associate_floating_ip_failure_interface_not_found(self):
         self._test_associate_floating_ip_failure('Cannot find device',
                 exception.NoFloatingIpInterface)
+
+    @mock.patch('nova.objects.FloatingIP.get_by_address')
+    def test_get_floating_ip_by_address(self, mock_get):
+        mock_get.return_value = mock.sentinel.floating
+        self.assertEqual(mock.sentinel.floating,
+                         self.network.get_floating_ip_by_address(
+                             self.context,
+                             mock.sentinel.address))
+        mock_get.assert_called_once_with(self.context, mock.sentinel.address)
+
+    @mock.patch('nova.objects.FloatingIPList.get_by_project')
+    def test_get_floating_ips_by_project(self, mock_get):
+        mock_get.return_value = mock.sentinel.floatings
+        self.assertEqual(mock.sentinel.floatings,
+                         self.network.get_floating_ips_by_project(
+                             self.context))
+        mock_get.assert_called_once_with(self.context, self.context.project_id)
+
+    @mock.patch('nova.objects.FloatingIPList.get_by_fixed_address')
+    def test_get_floating_ips_by_fixed_address(self, mock_get):
+        mock_get.return_value = [objects.FloatingIP(address='1.2.3.4'),
+                                 objects.FloatingIP(address='5.6.7.8')]
+        self.assertEqual(['1.2.3.4', '5.6.7.8'],
+                         self.network.get_floating_ips_by_fixed_address(
+                             self.context, mock.sentinel.address))
+        mock_get.assert_called_once_with(self.context, mock.sentinel.address)
 
 
 class InstanceDNSTestCase(test.TestCase):

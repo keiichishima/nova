@@ -120,9 +120,11 @@ class VersionsTest(test.NoDBTestCase):
         redirect_req = webob.Request.blank('/v2/')
         self.assertEqual(res.location, redirect_req.url)
 
-    def test_get_version_2_detail(self):
-        req = webob.Request.blank('/v2/')
-        req.accept = "application/json"
+    def _test_get_version_2_detail(self, url, accept=None):
+        if accept is None:
+            accept = "application/json"
+        req = webob.Request.blank(url)
+        req.accept = accept
         res = req.get_response(fakes.wsgi_app())
         self.assertEqual(res.status_int, 200)
         self.assertEqual(res.content_type, "application/json")
@@ -159,44 +161,18 @@ class VersionsTest(test.NoDBTestCase):
         }
         self.assertEqual(expected, version)
 
+    def test_get_version_2_detail(self):
+        self._test_get_version_2_detail('/v2/')
+
     def test_get_version_2_detail_content_type(self):
-        req = webob.Request.blank('/')
-        req.accept = "application/json;version=2"
+        accept = "application/json;version=2"
+        self._test_get_version_2_detail('/', accept=accept)
+
+    def test_get_version_2_versions_invalid(self):
+        req = webob.Request.blank('/v2/versions/1234')
+        req.accept = "application/json"
         res = req.get_response(fakes.wsgi_app())
-        self.assertEqual(res.status_int, 200)
-        self.assertEqual(res.content_type, "application/json")
-        version = jsonutils.loads(res.body)
-        expected = {
-            "version": {
-                "id": "v2.0",
-                "status": "CURRENT",
-                "updated": "2011-01-21T11:33:21Z",
-                "links": [
-                    {
-                        "rel": "self",
-                        "href": "http://localhost/v2/",
-                    },
-                    {
-                        "rel": "describedby",
-                        "type": "text/html",
-                        "href": EXP_LINKS['v2.0']['html'],
-                    },
-                ],
-                "media-types": [
-                    {
-                        "base": "application/xml",
-                        "type": "application/"
-                                "vnd.openstack.compute+xml;version=2",
-                    },
-                    {
-                        "base": "application/json",
-                        "type": "application/"
-                                "vnd.openstack.compute+json;version=2",
-                    },
-                ],
-            },
-        }
-        self.assertEqual(expected, version)
+        self.assertEqual(404, res.status_int)
 
     def test_get_version_2_detail_xml(self):
         req = webob.Request.blank('/v2/')
@@ -329,23 +305,6 @@ class VersionsTest(test.NoDBTestCase):
         expected = {
         "choices": [
             {
-                "id": "v3.0",
-                "status": "EXPERIMENTAL",
-                "links": [
-                    {
-                        "href": "http://localhost/v3/images/1",
-                        "rel": "self",
-                    },
-                ],
-                "media-types": [
-                    {
-                        "base": "application/json",
-                        "type":
-                        "application/vnd.openstack.compute+json;version=3",
-                    }
-                ],
-            },
-            {
                 "id": "v2.0",
                 "status": "CURRENT",
                 "links": [
@@ -367,6 +326,23 @@ class VersionsTest(test.NoDBTestCase):
                     },
                 ],
             },
+            {
+                "id": "v3.0",
+                "status": "EXPERIMENTAL",
+                "links": [
+                    {
+                        "href": "http://localhost/v3/images/1",
+                        "rel": "self",
+                    },
+                ],
+                "media-types": [
+                    {
+                        "base": "application/json",
+                        "type":
+                        "application/vnd.openstack.compute+json;version=3",
+                    }
+                ],
+            },
         ], }
 
         self.assertThat(jsonutils.loads(res.body),
@@ -384,7 +360,7 @@ class VersionsTest(test.NoDBTestCase):
         versions = root.xpath('ns:version', namespaces=NS)
         self.assertEqual(len(versions), 2)
 
-        version = versions[1]
+        version = versions[0]
         self.assertEqual(version.get('id'), 'v2.0')
         self.assertEqual(version.get('status'), 'CURRENT')
         media_types = version.xpath('ns:media-types/ns:media-type',
@@ -398,7 +374,7 @@ class VersionsTest(test.NoDBTestCase):
         self.assertTrue(common.compare_links(links,
             [{'rel': 'self', 'href': 'http://localhost/v2/images/1'}]))
 
-        version = versions[0]
+        version = versions[1]
         self.assertEqual(version.get('id'), 'v3.0')
         self.assertEqual(version.get('status'), 'EXPERIMENTAL')
         media_types = version.xpath('ns:media-types/ns:media-type',
@@ -433,23 +409,6 @@ class VersionsTest(test.NoDBTestCase):
         expected = {
         "choices": [
             {
-                "id": "v3.0",
-                "status": "EXPERIMENTAL",
-                "links": [
-                    {
-                        "href": "http://localhost/v3/servers/" + uuid,
-                        "rel": "self",
-                    },
-                ],
-                "media-types": [
-                    {
-                        "base": "application/json",
-                        "type":
-                        "application/vnd.openstack.compute+json;version=3",
-                    }
-                ],
-            },
-            {
                 "id": "v2.0",
                 "status": "CURRENT",
                 "links": [
@@ -469,6 +428,23 @@ class VersionsTest(test.NoDBTestCase):
                         "type": "application/vnd.openstack.compute+json"
                                 ";version=2"
                     },
+                ],
+            },
+            {
+                "id": "v3.0",
+                "status": "EXPERIMENTAL",
+                "links": [
+                    {
+                        "href": "http://localhost/v3/servers/" + uuid,
+                        "rel": "self",
+                    },
+                ],
+                "media-types": [
+                    {
+                        "base": "application/json",
+                        "type":
+                        "application/vnd.openstack.compute+json;version=3",
+                    }
                 ],
             },
         ], }

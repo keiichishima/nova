@@ -18,14 +18,14 @@
 Filter to add support for Trusted Computing Pools.
 
 Filter that only schedules tasks on a host if the integrity (trust)
-of that host matches the trust requested in the `extra_specs' for the
-flavor.  The `extra_specs' will contain a key/value pair where the
-key is `trust'.  The value of this pair (`trusted'/`untrusted') must
+of that host matches the trust requested in the ``extra_specs`` for the
+flavor.  The ``extra_specs`` will contain a key/value pair where the
+key is ``trust``.  The value of this pair (``trusted``/``untrusted``) must
 match the integrity of that host (obtained from the Attestation
 service) before the task can be scheduled on that host.
 
 Note that the parameters to control access to the Attestation Service
-are in the `nova.conf' file in a separate `trust' section.  For example,
+are in the ``nova.conf`` file in a separate ``trust`` section.  For example,
 the config file will look something like:
 
     [DEFAULT]
@@ -34,7 +34,8 @@ the config file will look something like:
     [trust]
     server=attester.mynetwork.com
 
-Details on the specific parameters can be found in the file `trust_attest.py'.
+Details on the specific parameters can be found in the file
+``trust_attest.py``.
 
 Details on setting up and using an Attestation Service can be found at
 the Open Attestation project at:
@@ -236,9 +237,16 @@ class ComputeAttestationCache(object):
             entry['vtime'] = timeutils.normalize_time(
                             timeutils.parse_isotime(state['vtime']))
         except ValueError:
-            # Mark the system as un-trusted if get invalid vtime.
-            entry['trust_lvl'] = 'unknown'
-            entry['vtime'] = timeutils.utcnow()
+            try:
+                # Mt. Wilson does not necessarily return an ISO8601 formatted
+                # `vtime`, so we should try to parse it as a string formatted
+                # datetime.
+                vtime = timeutils.parse_strtime(state['vtime'], fmt="%c")
+                entry['vtime'] = timeutils.normalize_time(vtime)
+            except ValueError:
+                # Mark the system as un-trusted if get invalid vtime.
+                entry['trust_lvl'] = 'unknown'
+                entry['vtime'] = timeutils.utcnow()
 
         self.compute_nodes[host] = entry
 

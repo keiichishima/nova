@@ -188,7 +188,13 @@ def remotable(fn):
             for key, value in updates.iteritems():
                 if key in self.fields:
                     field = self.fields[key]
-                    self[key] = field.from_primitive(self, key, value)
+                    # NOTE(ndipanov): Since NovaObjectSerializer will have
+                    # deserialized any object fields into objects already,
+                    # we do not try to deserialize them again here.
+                    if isinstance(value, NovaObject):
+                        self[key] = value
+                    else:
+                        self[key] = field.from_primitive(self, key, value)
             self.obj_reset_changes()
             self._changed_fields = set(updates.get('obj_what_changed', []))
             return result
@@ -335,13 +341,25 @@ class NovaObject(object):
         This is responsible for taking the primitive representation of
         an object and making it suitable for the given target_version.
         This may mean converting the format of object attributes, removing
-        attributes that have been added since the target version, etc.
+        attributes that have been added since the target version, etc. In
+        general:
+
+        - If a new version of an object adds a field, this routine
+          should remove it for older versions.
+        - If a new version changed or restricted the format of a field, this
+          should convert it back to something a client knowing only of the
+          older version will tolerate.
+        - If an object that this object depends on is bumped, then this
+          object should also take a version bump. Then, this routine should
+          backlevel the dependent object (by calling its obj_make_compatible())
+          if the requested version of this object is older than the version
+          where the new dependent object was added.
 
         :param:primitive: The result of self.obj_to_primitive()
         :param:target_version: The version string requested by the recipient
-                               of the object.
-        :param:raises: nova.exception.UnsupportedObjectError if conversion
-                       is not possible for some reason.
+        of the object
+        :raises: nova.exception.UnsupportedObjectError if conversion
+        is not possible for some reason
         """
         pass
 
@@ -616,15 +634,19 @@ class NovaObjectSerializer(messaging.NoOpSerializer):
                   items from values having had action applied.
         """
         iterable = values.__class__
-        if iterable == set:
+        if issubclass(iterable, dict):
+            return iterable(**dict((k, action_fn(context, v))
+                            for k, v in six.iteritems(values)))
+        else:
             # NOTE(danms): A set can't have an unhashable value inside, such as
             # a dict. Convert sets to tuples, which is fine, since we can't
             # send them over RPC anyway.
-            iterable = tuple
-        return iterable([action_fn(context, value) for value in values])
+            if iterable == set:
+                iterable = tuple
+            return iterable([action_fn(context, value) for value in values])
 
     def serialize_entity(self, context, entity):
-        if isinstance(entity, (tuple, list, set)):
+        if isinstance(entity, (tuple, list, set, dict)):
             entity = self._process_iterable(context, self.serialize_entity,
                                             entity)
         elif (hasattr(entity, 'obj_to_primitive') and
@@ -635,7 +657,7 @@ class NovaObjectSerializer(messaging.NoOpSerializer):
     def deserialize_entity(self, context, entity):
         if isinstance(entity, dict) and 'nova_object.name' in entity:
             entity = self._process_object(context, entity)
-        elif isinstance(entity, (tuple, list, set)):
+        elif isinstance(entity, (tuple, list, set, dict)):
             entity = self._process_iterable(context, self.deserialize_entity,
                                             entity)
         return entity

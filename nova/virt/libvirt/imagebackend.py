@@ -34,7 +34,7 @@ from nova.virt.disk import api as disk
 from nova.virt import images
 from nova.virt.libvirt import config as vconfig
 from nova.virt.libvirt import lvm
-from nova.virt.libvirt import rbd
+from nova.virt.libvirt import rbd_utils
 from nova.virt.libvirt import utils as libvirt_utils
 
 __imagebackend_opts = [
@@ -110,9 +110,10 @@ class Image(object):
         Contains specific behavior for each image type.
 
         :prepare_template: function, that creates template.
-        Should accept `target` argument.
+                           Should accept `target` argument.
         :base: Template name
         :size: Size of created image in bytes
+
         """
         pass
 
@@ -525,7 +526,7 @@ class Rbd(Image):
         self.rbd_user = CONF.libvirt.rbd_user
         self.ceph_conf = CONF.libvirt.images_rbd_ceph_conf
 
-        self.driver = rbd.RBDDriver(
+        self.driver = rbd_utils.RBDDriver(
             pool=self.pool,
             ceph_conf=self.ceph_conf,
             rbd_user=self.rbd_user)
@@ -656,7 +657,8 @@ class Backend(object):
         :instance: Instance name.
         :name: Image name.
         :image_type: Image type.
-        Optional, is CONF.libvirt.images_type by default.
+                     Optional, is CONF.libvirt.images_type by default.
+
         """
         backend = self.backend(image_type)
         return backend(instance=instance, disk_name=disk_name)

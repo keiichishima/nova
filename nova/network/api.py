@@ -112,26 +112,26 @@ class API(base_api.NetworkAPI):
     def get_floating_ip(self, context, id):
         if not utils.is_int_like(id):
             raise exception.InvalidID(id=id)
-        return self.db.floating_ip_get(context, id)
+        return objects.FloatingIP.get_by_id(context, id)
 
     @wrap_check_policy
     def get_floating_ip_pools(self, context):
-        return self.db.floating_ip_get_pools(context)
+        return objects.FloatingIP.get_pool_names(context)
 
     @wrap_check_policy
     def get_floating_ip_by_address(self, context, address):
-        return self.db.floating_ip_get_by_address(context, address)
+        return objects.FloatingIP.get_by_address(context, address)
 
     @wrap_check_policy
     def get_floating_ips_by_project(self, context):
-        return self.db.floating_ip_get_all_by_project(context,
-                                                      context.project_id)
+        return objects.FloatingIPList.get_by_project(context,
+                                                     context.project_id)
 
     @wrap_check_policy
     def get_floating_ips_by_fixed_address(self, context, fixed_address):
-        floating_ips = self.db.floating_ip_get_by_fixed_address(context,
-                                                                fixed_address)
-        return [floating_ip['address'] for floating_ip in floating_ips]
+        floating_ips = objects.FloatingIPList.get_by_fixed_address(
+            context, fixed_address)
+        return [str(floating_ip.address) for floating_ip in floating_ips]
 
     @wrap_check_policy
     def get_instance_id_by_floating_address(self, context, address):
@@ -143,23 +143,23 @@ class API(base_api.NetworkAPI):
 
     @wrap_check_policy
     def get_vifs_by_instance(self, context, instance):
-        vifs = self.db.virtual_interface_get_by_instance(context,
-                                                         instance['uuid'])
+        vifs = objects.VirtualInterfaceList.get_by_instance_uuid(context,
+                                                                 instance.uuid)
         for vif in vifs:
-            if vif.get('network_id') is not None:
-                network = objects.Network.get_by_id(context, vif['network_id'],
+            if vif.network_id is not None:
+                network = objects.Network.get_by_id(context, vif.network_id,
                                                     project_only='allow_none')
-                vif['net_uuid'] = network.uuid
+                vif.net_uuid = network.uuid
         return vifs
 
     @wrap_check_policy
     def get_vif_by_mac_address(self, context, mac_address):
-        vif = self.db.virtual_interface_get_by_address(context,
-                                                       mac_address)
-        if vif.get('network_id') is not None:
-            network = objects.Network.get_by_id(context, vif['network_id'],
+        vif = objects.VirtualInterface.get_by_address(context,
+                                                      mac_address)
+        if vif.network_id is not None:
+            network = objects.Network.get_by_id(context, vif.network_id,
                                                 project_only='allow_none')
-            vif['net_uuid'] = network.uuid
+            vif.net_uuid = network.uuid
         return vif
 
     @wrap_check_policy
@@ -195,7 +195,7 @@ class API(base_api.NetworkAPI):
                             instance_id=orig_instance_uuid)
             LOG.info(_('re-assign floating IP %(address)s from '
                        'instance %(instance_id)s') % msg_dict)
-            orig_instance = self.db.instance_get_by_uuid(context,
+            orig_instance = objects.Instance.get_by_uuid(context,
                                                          orig_instance_uuid)
 
             # purge cached nw info for the original instance
@@ -219,7 +219,7 @@ class API(base_api.NetworkAPI):
         """Allocates all network structures for an instance.
 
         :param context: The request context.
-        :param instance: An Instance dict.
+        :param instance: nova.objects.instance.Instance object.
         :param vpn: A boolean, if True, indicate a vpn to access the instance.
         :param requested_networks: A dictionary of requested_networks,
             Optional value containing network_id, fixed_ip, and port_id.
@@ -243,9 +243,9 @@ class API(base_api.NetworkAPI):
         args = {}
         args['vpn'] = vpn
         args['requested_networks'] = requested_networks
-        args['instance_id'] = instance['uuid']
-        args['project_id'] = instance['project_id']
-        args['host'] = instance['host']
+        args['instance_id'] = instance.uuid
+        args['project_id'] = instance.project_id
+        args['host'] = instance.host
         args['rxtx_factor'] = flavor['rxtx_factor']
         args['macs'] = macs
         args['dhcp_options'] = dhcp_options

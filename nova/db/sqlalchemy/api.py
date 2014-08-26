@@ -1844,32 +1844,33 @@ def instance_get_all_by_filters(context, filters, sort_key, sort_dir,
 
     Depending on the name of a filter, matching for that filter is
     performed using either exact matching or as regular expression
-    matching. Exact matching is applied for the following filters:
+    matching. Exact matching is applied for the following filters::
 
-        ['project_id', 'user_id', 'image_ref',
-         'vm_state', 'instance_type_id', 'uuid',
-         'metadata', 'host', 'system_metadata']
+    |   ['project_id', 'user_id', 'image_ref',
+    |    'vm_state', 'instance_type_id', 'uuid',
+    |    'metadata', 'host', 'system_metadata']
 
 
     A third type of filter (also using exact matching), filters
     based on instance metadata tags when supplied under a special
-    key named 'filter'.
+    key named 'filter'::
 
-        filters = {
-            'filter': [
-                {'name': 'tag-key', 'value': '<metakey>'},
-                {'name': 'tag-value', 'value': '<metaval>'},
-                {'name': 'tag:<metakey>', 'value': '<metaval>'}
-            ]
-        }
+    |   filters = {
+    |       'filter': [
+    |           {'name': 'tag-key', 'value': '<metakey>'},
+    |           {'name': 'tag-value', 'value': '<metaval>'},
+    |           {'name': 'tag:<metakey>', 'value': '<metaval>'}
+    |       ]
+    |   }
 
-    Special keys are used to tweek the query further:
+    Special keys are used to tweek the query further::
 
-        'changes-since' - only return instances updated after
-        'deleted' - only return (or exclude) deleted instances
-        'soft_deleted' - modify behavior of 'deleted' to either
-                         include or exclude instances whose
-                         vm_state is SOFT_DELETED.
+    |   'changes-since' - only return instances updated after
+    |   'deleted' - only return (or exclude) deleted instances
+    |   'soft_deleted' - modify behavior of 'deleted' to either
+    |                    include or exclude instances whose
+    |                    vm_state is SOFT_DELETED.
+
     """
     # NOTE(mriedem): If the limit is 0 there is no point in even going
     # to the database since nothing is going to be returned anyway.
@@ -2069,9 +2070,10 @@ def regex_filter(query, model, filters):
 
 @require_context
 def instance_get_active_by_window_joined(context, begin, end=None,
-                                         project_id=None, host=None):
+                                         project_id=None, host=None,
+                                         use_slave=False):
     """Return instances and joins that were active during window."""
-    session = get_session()
+    session = get_session(use_slave=use_slave)
     query = session.query(models.Instance)
 
     query = query.options(joinedload('info_cache')).\
@@ -3452,19 +3454,7 @@ def ec2_snapshot_create(context, snapshot_uuid, id=None):
 
 
 @require_context
-def get_ec2_snapshot_id_by_uuid(context, snapshot_id):
-    result = _ec2_snapshot_get_query(context).\
-                    filter_by(uuid=snapshot_id).\
-                    first()
-
-    if not result:
-        raise exception.SnapshotNotFound(snapshot_id=snapshot_id)
-
-    return result['id']
-
-
-@require_context
-def get_snapshot_uuid_by_ec2_id(context, ec2_id):
+def ec2_snapshot_get_by_ec2_id(context, ec2_id):
     result = _ec2_snapshot_get_query(context).\
                     filter_by(id=ec2_id).\
                     first()
@@ -3472,7 +3462,19 @@ def get_snapshot_uuid_by_ec2_id(context, ec2_id):
     if not result:
         raise exception.SnapshotNotFound(snapshot_id=ec2_id)
 
-    return result['uuid']
+    return result
+
+
+@require_context
+def ec2_snapshot_get_by_uuid(context, snapshot_uuid):
+    result = _ec2_snapshot_get_query(context).\
+                    filter_by(uuid=snapshot_uuid).\
+                    first()
+
+    if not result:
+        raise exception.SnapshotNotFound(snapshot_id=snapshot_uuid)
+
+    return result
 
 
 ###################
@@ -5683,8 +5685,7 @@ def archive_deleted_rows(context, max_rows=None):
 
 def _instance_group_get_query(context, model_class, id_field=None, id=None,
                               session=None, read_deleted=None):
-    columns_to_join = {models.InstanceGroup: ['_policies', '_metadata',
-                                              '_members']}
+    columns_to_join = {models.InstanceGroup: ['_policies', '_members']}
     query = model_query(context, model_class, session=session,
                         read_deleted=read_deleted)
 
@@ -5697,9 +5698,9 @@ def _instance_group_get_query(context, model_class, id_field=None, id=None,
     return query
 
 
-def instance_group_create(context, values, policies=None, metadata=None,
+def instance_group_create(context, values, policies=None,
                           members=None):
-    """Create a new group with metadata."""
+    """Create a new group."""
     uuid = values.get('uuid', None)
     if uuid is None:
         uuid = uuidutils.generate_uuid()
@@ -5716,13 +5717,9 @@ def instance_group_create(context, values, policies=None, metadata=None,
         # We don't want these to be lazy loaded later. We know there is
         # nothing here since we just created this instance group.
         group._policies = []
-        group._metadata = []
         group._members = []
         if policies:
             _instance_group_policies_add(context, group.id, policies,
-                                         session=session)
-        if metadata:
-            _instance_group_metadata_add(context, group.id, metadata,
                                          session=session)
         if members:
             _instance_group_members_add(context, group.id, members,
@@ -5765,13 +5762,6 @@ def instance_group_update(context, group_uuid, values):
                                          values.pop('policies'),
                                          set_delete=True,
                                          session=session)
-        metadata = values.get('metadata')
-        if metadata is not None:
-            _instance_group_metadata_add(context,
-                                         group.id,
-                                         values.pop('metadata'),
-                                         set_delete=True,
-                                         session=session)
         members = values.get('members')
         if members is not None:
             _instance_group_members_add(context,
@@ -5784,8 +5774,6 @@ def instance_group_update(context, group_uuid, values):
 
         if policies:
             values['policies'] = policies
-        if metadata:
-            values['metadata'] = metadata
         if members:
             values['members'] = members
 
@@ -5806,7 +5794,6 @@ def instance_group_delete(context, group_uuid):
 
         # Delete policies, metadata and members
         instance_models = [models.InstanceGroupPolicy,
-                           models.InstanceGroupMetadata,
                            models.InstanceGroupMember]
         for model in instance_models:
             model_query(context, model, session=session).\
@@ -5847,70 +5834,6 @@ def _instance_group_id(context, group_uuid, session=None):
     if not result:
         raise exception.InstanceGroupNotFound(group_uuid=group_uuid)
     return result.id
-
-
-def _instance_group_metadata_add(context, id, metadata, set_delete=False,
-                                 session=None):
-    if not session:
-        session = get_session()
-
-    with session.begin(subtransactions=True):
-        all_keys = metadata.keys()
-        query = _instance_group_model_get_query(context,
-                                                models.InstanceGroupMetadata,
-                                                id,
-                                                session=session)
-        if set_delete:
-            query.filter(~models.InstanceGroupMetadata.key.in_(all_keys)).\
-                         soft_delete(synchronize_session=False)
-
-        query = query.filter(models.InstanceGroupMetadata.key.in_(all_keys))
-        already_existing_keys = set()
-        for meta_ref in query.all():
-            key = meta_ref.key
-            meta_ref.update({'value': metadata[key]})
-            already_existing_keys.add(key)
-
-        for key, value in metadata.iteritems():
-            if key in already_existing_keys:
-                continue
-            meta_ref = models.InstanceGroupMetadata()
-            meta_ref.update({'key': key,
-                             'value': value,
-                             'group_id': id})
-            session.add(meta_ref)
-
-        return metadata
-
-
-def instance_group_metadata_add(context, group_uuid, metadata,
-                                set_delete=False):
-    id = _instance_group_id(context, group_uuid)
-    return _instance_group_metadata_add(context, id, metadata,
-                                        set_delete=set_delete)
-
-
-def instance_group_metadata_delete(context, group_uuid, key):
-    id = _instance_group_id(context, group_uuid)
-    count = _instance_group_get_query(context,
-                                      models.InstanceGroupMetadata,
-                                      models.InstanceGroupMetadata.group_id,
-                                      id).\
-                            filter_by(key=key).\
-                            soft_delete()
-    if count == 0:
-        raise exception.InstanceGroupMetadataNotFound(group_uuid=group_uuid,
-                                                      metadata_key=key)
-
-
-def instance_group_metadata_get(context, group_uuid):
-    id = _instance_group_id(context, group_uuid)
-    rows = model_query(context,
-                       models.InstanceGroupMetadata.key,
-                       models.InstanceGroupMetadata.value,
-                       base_model=models.InstanceGroupMetadata).\
-                filter_by(group_id=id).all()
-    return dict((r[0], r[1]) for r in rows)
 
 
 def _instance_group_members_add(context, id, members, set_delete=False,

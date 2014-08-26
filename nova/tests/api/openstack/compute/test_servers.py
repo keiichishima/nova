@@ -16,6 +16,7 @@
 #    under the License.
 
 import base64
+import contextlib
 import datetime
 import uuid
 
@@ -1660,6 +1661,24 @@ class ServersControllerRebuildInstanceTest(ControllerTest):
         self.assertRaises(webob.exc.HTTPBadRequest,
             self.controller._action_rebuild, self.req, FAKE_UUID, self.body)
 
+    def test_rebuild_instance_onset_file_limit_over_quota(self):
+        def fake_get_image(self, context, image_href, **kwargs):
+            return dict(id='76fa36fc-c930-4bf3-8c8a-ea2a2420deb6',
+                        name='public image', is_public=True, status='active')
+
+        with contextlib.nested(
+            mock.patch.object(fake._FakeImageService, 'show',
+                              side_effect=fake_get_image),
+            mock.patch.object(self.controller.compute_api, 'rebuild',
+                              side_effect=exception.OnsetFileLimitExceeded)
+        ) as (
+            show_mock, rebuild_mock
+        ):
+            self.req.body = jsonutils.dumps(self.body)
+            self.assertRaises(webob.exc.HTTPForbidden,
+                              self.controller._action_rebuild,
+                              self.req, FAKE_UUID, body=self.body)
+
     def test_rebuild_instance_with_access_ipv6_bad_format(self):
         # proper local hrefs must start with 'http://localhost/v2/'
         self.body['rebuild']['accessIPv4'] = '1.2.3.4'
@@ -2211,6 +2230,15 @@ class ServersControllerCreateTest(test.TestCase):
                           self.controller.create,
                           self.req, self.body)
 
+    @mock.patch.object(compute_api.API, 'create')
+    def test_create_instance_raise_auto_disk_config_exc(self, mock_create):
+        mock_create.side_effect = exception.AutoDiskConfigDisabledByImage(
+            image='dummy')
+
+        self.assertRaises(webob.exc.HTTPBadRequest,
+                          self.controller.create,
+                          self.req, self.body)
+
     def test_create_instance_with_network_with_no_subnet(self):
         self.flags(network_api_class='nova.network.neutronv2.api.API')
         network = 'eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee'
@@ -2317,7 +2345,7 @@ class ServersControllerCreateTest(test.TestCase):
         self.body['server']['imageRef'] = image_href
         self.body['server']['metadata']['vote'] = 'fiddletown'
         self.req.body = jsonutils.dumps(self.body)
-        self.assertRaises(webob.exc.HTTPRequestEntityTooLarge,
+        self.assertRaises(webob.exc.HTTPForbidden,
                           self.controller.create, self.req, self.body)
 
     def test_create_instance_metadata_key_too_long(self):
@@ -3263,7 +3291,7 @@ class ServersControllerCreateTest(test.TestCase):
         try:
             self.controller.create(self.req, self.body).obj['server']
             self.fail('expected quota to be exceeded')
-        except webob.exc.HTTPRequestEntityTooLarge as e:
+        except webob.exc.HTTPForbidden as e:
             self.assertEqual(e.explanation, expected_msg)
 
     def test_create_instance_above_quota_instances(self):
@@ -4838,14 +4866,14 @@ class ServersAllExtensionsTestCase(test.TestCase):
     an exception because of a malformed request before the core API
     gets a chance to validate the request and return a 422 response.
 
-    For example, ServerDiskConfigController extends servers.Controller:
+    For example, ServerDiskConfigController extends servers.Controller::
 
-      @wsgi.extends
-      def create(self, req, body):
-          if 'server' in body:
-                self._set_disk_config(body['server'])
-          resp_obj = (yield)
-          self._show(req, resp_obj)
+        |  @wsgi.extends
+        |  def create(self, req, body):
+        |      if 'server' in body:
+        |           self._set_disk_config(body['server'])
+        |     resp_obj = (yield)
+        |     self._show(req, resp_obj)
 
     we want to ensure that the extension isn't barfing on an invalid
     body.
@@ -4873,12 +4901,12 @@ class ServersAllExtensionsTestCase(test.TestCase):
         self.assertEqual(422, res.status_int)
 
     def test_update_missing_server(self):
-        # Test create with malformed body.
+        # Test update with malformed body.
 
         def fake_update(*args, **kwargs):
             raise test.TestingException("Should not reach the compute API.")
 
-        self.stubs.Set(compute_api.API, 'create', fake_update)
+        self.stubs.Set(compute_api.API, 'update', fake_update)
 
         req = fakes.HTTPRequest.blank('/fake/servers/1')
         req.method = 'PUT'

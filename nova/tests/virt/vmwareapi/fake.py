@@ -636,13 +636,15 @@ class ClusterComputeResource(ManagedObject):
 class Datastore(ManagedObject):
     """Datastore class."""
 
-    def __init__(self, name="fake-ds", capacity=1024, free=500):
+    def __init__(self, name="fake-ds", capacity=1024, free=500,
+                 accessible=True, maintenance_mode="normal"):
         super(Datastore, self).__init__("ds")
         self.set("summary.type", "VMFS")
         self.set("summary.name", name)
         self.set("summary.capacity", capacity * units.Gi)
         self.set("summary.freeSpace", free * units.Gi)
-        self.set("summary.accessible", True)
+        self.set("summary.accessible", accessible)
+        self.set("summary.maintenanceMode", maintenance_mode)
         self.set("browser", "")
 
 
@@ -972,13 +974,6 @@ def fake_upload_image(context, image, instance, **kwargs):
     pass
 
 
-def fake_get_vmdk_size_and_properties(context, image_id, instance):
-    """Fakes the file size and properties fetch for the image file."""
-    props = {"vmware_ostype": constants.DEFAULT_OS_TYPE,
-             "vmware_adaptertype": constants.DEFAULT_ADAPTER_TYPE}
-    return _FAKE_FILE_SIZE, props
-
-
 def _get_vm_mdo(vm_ref):
     """Gets the Virtual Machine with the ref from the db."""
     if _db_content.get("VirtualMachine", None) is None:
@@ -1008,6 +1003,21 @@ class FakeFactory(object):
     def create(self, obj_name):
         """Creates a namespace object."""
         return DataObject(obj_name)
+
+
+class FakeService(DataObject):
+    """Fake service class."""
+
+    def Logout(self, session_manager):
+        pass
+
+
+class FakeClient(DataObject):
+    """Fake client class."""
+
+    def __init__(self):
+        """Creates a namespace object."""
+        self.service = FakeService()
 
 
 class FakeSession(object):
@@ -1052,7 +1062,7 @@ class FakeVim(object):
         contents and the cookies for the session.
         """
         self._session = None
-        self.client = DataObject()
+        self.client = FakeClient()
         self.client.factory = FakeFactory()
 
         transport = DataObject()

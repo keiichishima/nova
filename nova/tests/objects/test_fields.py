@@ -222,6 +222,29 @@ class TestDictOfStringsNone(TestField):
                                                'key': 'val'}))
 
 
+class TestListOfDictOfNullableStringsField(TestField):
+    def setUp(self):
+        super(TestListOfDictOfNullableStringsField, self).setUp()
+        self.field = fields.ListOfDictOfNullableStringsField()
+        self.coerce_good_values = [([{'f': 'b', 'f1': 'b1'}, {'f2': 'b2'}],
+                                    [{'f': 'b', 'f1': 'b1'}, {'f2': 'b2'}]),
+                                   ([{'f': 1}, {'f1': 'b1'}],
+                                    [{'f': '1'}, {'f1': 'b1'}]),
+                                   ([{'foo': None}], [{'foo': None}])]
+        self.coerce_bad_values = [[{1: 'a'}], ['ham', 1], ['eggs']]
+        self.to_primitive_values = [([{'f': 'b'}, {'f1': 'b1'}, {'f2': None}],
+                                     [{'f': 'b'}, {'f1': 'b1'}, {'f2': None}])]
+        self.from_primitive_values = [([{'f': 'b'}, {'f1': 'b1'},
+                                        {'f2': None}],
+                                       [{'f': 'b'}, {'f1': 'b1'},
+                                        {'f2': None}])]
+
+    def test_stringify(self):
+        self.assertEqual("[{f=None,f1='b1'},{f2='b2'}]",
+                         self.field.stringify(
+                            [{'f': None, 'f1': 'b1'}, {'f2': 'b2'}]))
+
+
 class TestList(TestField):
     def setUp(self):
         super(TestList, self).setUp()
@@ -273,7 +296,8 @@ class TestObject(TestField):
         self.coerce_bad_values = [OtherTestableObject(), 1, 'foo']
         self.to_primitive_values = [(test_inst, test_inst.obj_to_primitive())]
         self.from_primitive_values = [(test_inst.obj_to_primitive(),
-                                       test_inst)]
+                                       test_inst),
+                                       (test_inst, test_inst)]
 
     def test_stringify(self):
         obj = self._test_cls(uuid='fake-uuid')

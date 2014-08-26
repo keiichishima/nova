@@ -1072,19 +1072,20 @@ class NetworkManager(manager.Manager):
                     continue
                 kwargs[key] = int(value)
             except ValueError:
-                raise ValueError(_("%s must be an integer") % key)
+                raise exception.InvalidIntValue(key=key)
 
     def create_networks(self, context,
                         label, cidr=None, multi_host=None, num_networks=None,
                         network_size=None, cidr_v6=None,
                         gateway=None, gateway_v6=None, bridge=None,
                         bridge_interface=None, dns1=None, dns2=None,
-                        fixed_cidr=None, **kwargs):
+                        fixed_cidr=None, allowed_start=None,
+                        allowed_end=None, **kwargs):
         arg_names = ("label", "cidr", "multi_host", "num_networks",
                      "network_size", "cidr_v6",
                      "gateway", "gateway_v6", "bridge",
                      "bridge_interface", "dns1", "dns2",
-                     "fixed_cidr")
+                     "fixed_cidr", "allowed_start", "allowed_end")
         if 'mtu' not in kwargs:
             kwargs['mtu'] = CONF.network_device_mtu
         if 'dhcp_server' not in kwargs:
@@ -1104,7 +1105,7 @@ class NetworkManager(manager.Manager):
 
         # Size of "label" column in nova.networks is 255, hence the restriction
         if len(label) > 255:
-            raise ValueError(_("Maximum allowed length for 'label' is 255."))
+            raise exception.LabelTooLong()
 
         if not (kwargs["cidr"] or kwargs["cidr_v6"]):
             raise exception.NetworkNotCreated(req="cidr or cidr_v6")
@@ -1117,10 +1118,22 @@ class NetworkManager(manager.Manager):
             if not kwargs[fld]:
                 raise exception.NetworkNotCreated(req=fld)
 
+        if kwargs["cidr_v6"]:
+            # NOTE(vish): just for validation
+            try:
+                netaddr.IPNetwork(kwargs["cidr_v6"])
+            except netaddr.AddrFormatError:
+                raise exception.InvalidCidr(cidr=kwargs["cidr_v6"])
+
+        if kwargs["cidr"]:
+            try:
+                fixnet = netaddr.IPNetwork(kwargs["cidr"])
+            except netaddr.AddrFormatError:
+                raise exception.InvalidCidr(cidr=kwargs["cidr"])
+
         kwargs["num_networks"] = kwargs["num_networks"] or CONF.num_networks
         if not kwargs["network_size"]:
             if kwargs["cidr"]:
-                fixnet = netaddr.IPNetwork(kwargs["cidr"])
                 each_subnet_size = fixnet.size / kwargs["num_networks"]
                 if each_subnet_size > CONF.network_size:
                     subnet = 32 - int(math.log(CONF.network_size, 2))
@@ -1144,17 +1157,32 @@ class NetworkManager(manager.Manager):
         kwargs["dns1"] = kwargs["dns1"] or CONF.flat_network_dns
 
         if kwargs["fixed_cidr"]:
-            kwargs["fixed_cidr"] = netaddr.IPNetwork(kwargs["fixed_cidr"])
+            try:
+                kwargs["fixed_cidr"] = netaddr.IPNetwork(kwargs["fixed_cidr"])
+            except netaddr.AddrFormatError:
+                raise exception.InvalidCidr(cidr=kwargs["fixed_cidr"])
 
         LOG.debug('Create network: |%s|', kwargs)
         return self._do_create_networks(context, **kwargs)
+
+    @staticmethod
+    def _index_of(subnet, ip):
+        try:
+            start = netaddr.IPAddress(ip)
+        except netaddr.AddrFormatError:
+            raise exception.InvalidAddress(address=ip)
+        index = start.value - subnet.value
+        if index < 0 or index >= subnet.size:
+            raise exception.AddressOutOfRange(address=ip, cidr=str(subnet))
+        return index
 
     def _do_create_networks(self, context,
                             label, cidr, multi_host, num_networks,
                             network_size, cidr_v6, gateway, gateway_v6, bridge,
                             bridge_interface, dns1=None, dns2=None,
                             fixed_cidr=None, mtu=None, dhcp_server=None,
-                            enable_dhcp=None, share_address=None, **kwargs):
+                            enable_dhcp=None, share_address=None,
+                            allowed_start=None, allowed_end=None, **kwargs):
         """Create networks based on parameters."""
         # NOTE(jkoelker): these are dummy values to make sure iter works
         # TODO(tr3buchet): disallow carving up networks
@@ -1209,13 +1237,12 @@ class NetworkManager(manager.Manager):
                         subnets_v4.append(next_subnet)
                         subnet = next_subnet
                     else:
-                        raise exception.CidrConflict(_('cidr already in use'))
+                        raise exception.CidrConflict(cidr=subnet,
+                                                     other=subnet)
                 for used_subnet in used_subnets:
                     if subnet in used_subnet:
-                        msg = _('requested cidr (%(cidr)s) conflicts with '
-                                'existing supernet (%(super)s)')
-                        raise exception.CidrConflict(
-                                  msg % {'cidr': subnet, 'super': used_subnet})
+                        raise exception.CidrConflict(cidr=subnet,
+                                                     other=used_subnet)
                     if used_subnet in subnet:
                         next_subnet = find_next(subnet)
                         if next_subnet:
@@ -1223,11 +1250,8 @@ class NetworkManager(manager.Manager):
                             subnets_v4.append(next_subnet)
                             subnet = next_subnet
                         else:
-                            msg = _('requested cidr (%(cidr)s) conflicts '
-                                    'with existing smaller cidr '
-                                    '(%(smaller)s)')
-                            raise exception.CidrConflict(
-                                msg % {'cidr': subnet, 'smaller': used_subnet})
+                            raise exception.CidrConflict(cidr=subnet,
+                                                         other=used_subnet)
 
         networks = objects.NetworkList(context=context, objects=[])
         subnets = itertools.izip_longest(subnets_v4, subnets_v6)
@@ -1250,17 +1274,32 @@ class NetworkManager(manager.Manager):
             else:
                 net.label = label
 
+            bottom_reserved = self._bottom_reserved_ips
+            top_reserved = self._top_reserved_ips
             extra_reserved = []
             if cidr and subnet_v4:
+                current = subnet_v4[1]
+                if allowed_start:
+                    val = self._index_of(subnet_v4, allowed_start)
+                    current = netaddr.IPAddress(allowed_start)
+                    bottom_reserved = val
+                if allowed_end:
+                    val = self._index_of(subnet_v4, allowed_end)
+                    top_reserved = subnet_v4.size - 1 - val
                 net.cidr = str(subnet_v4)
                 net.netmask = str(subnet_v4.netmask)
-                net.gateway = gateway or str(subnet_v4[1])
                 net.broadcast = str(subnet_v4.broadcast)
-                net.dhcp_start = str(subnet_v4[2])
+                if gateway:
+                    net.gateway = gateway
+                else:
+                    net.gateway = current
+                    current += 1
                 if not dhcp_server:
                     dhcp_server = net.gateway
-                if net.dhcp_start == dhcp_server:
-                    net.dhcp_start = str(subnet_v4[3])
+                net.dhcp_start = current
+                current += 1
+                if str(net.dhcp_start) == dhcp_server:
+                    net.dhcp_start = current
                 net.dhcp_server = dhcp_server
                 extra_reserved.append(str(net.dhcp_server))
                 extra_reserved.append(str(net.gateway))
@@ -1286,8 +1325,9 @@ class NetworkManager(manager.Manager):
                         used_vlans.sort()
                         vlan = used_vlans[-1] + 1
 
-                net.vpn_private_address = str(subnet_v4[2])
-                net.dhcp_start = str(subnet_v4[3])
+                net.vpn_private_address = net.dhcp_start
+                extra_reserved.append(str(net.vpn_private_address))
+                net.dhcp_start = net.dhcp_start + 1
                 net.vlan = vlan
                 net.bridge = 'br%s' % vlan
 
@@ -1301,7 +1341,8 @@ class NetworkManager(manager.Manager):
 
             if cidr and subnet_v4:
                 self._create_fixed_ips(context, net.id, fixed_cidr,
-                                       extra_reserved)
+                                       extra_reserved, bottom_reserved,
+                                       top_reserved)
         # NOTE(danms): Remove this in RPC API v2.0
         return obj_base.obj_to_primitive(networks)
 
@@ -1317,8 +1358,7 @@ class NetworkManager(manager.Manager):
         LOG.debug('Delete network %s', network['uuid'])
 
         if require_disassociated and network.project_id is not None:
-            raise ValueError(_('Network must be disassociated from project %s'
-                               ' before delete') % network.project_id)
+            raise exception.NetworkHasProject(project_id=network.project_id)
         network.destroy()
 
     @property
@@ -1332,16 +1372,12 @@ class NetworkManager(manager.Manager):
         return 1  # broadcast
 
     def _create_fixed_ips(self, context, network_id, fixed_cidr=None,
-                          extra_reserved=None):
+                          extra_reserved=None, bottom_reserved=0,
+                          top_reserved=0):
         """Create all fixed ips for network."""
         network = self._get_network_by_id(context, network_id)
-        # NOTE(vish): Should these be properties of the network as opposed
-        #             to properties of the manager class?
-        bottom_reserved = self._bottom_reserved_ips
-        top_reserved = self._top_reserved_ips
         if extra_reserved is None:
             extra_reserved = []
-
         if not fixed_cidr:
             fixed_cidr = netaddr.IPNetwork(network['cidr'])
         num_ips = len(fixed_cidr)

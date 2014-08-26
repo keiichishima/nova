@@ -109,7 +109,8 @@ class HyperVDriver(driver.ComputeDriver):
     def resume(self, context, instance, network_info, block_device_info=None):
         self._vmops.resume(instance)
 
-    def power_off(self, instance):
+    def power_off(self, instance, timeout=0, retry_interval=0):
+        # TODO(PhilDay): Add support for timeout (clean shutdown)
         self._vmops.power_off(instance)
 
     def power_on(self, context, instance, network_info,
@@ -164,6 +165,9 @@ class HyperVDriver(driver.ComputeDriver):
         return self._livemigrationops.check_can_live_migrate_source(
             context, instance, dest_check_data)
 
+    def get_instance_disk_info(self, instance_name, block_device_info=None):
+        pass
+
     def plug_vifs(self, instance, network_info):
         """Plug VIFs into networks."""
         msg = _("VIF plugging is not supported by the Hyper-V driver.")
@@ -183,7 +187,9 @@ class HyperVDriver(driver.ComputeDriver):
 
     def migrate_disk_and_power_off(self, context, instance, dest,
                                    flavor, network_info,
-                                   block_device_info=None):
+                                   block_device_info=None,
+                                   timeout=0, retry_interval=0):
+        # TODO(PhilDay): Add support for timeout (clean shutdown)
         return self._migrationops.migrate_disk_and_power_off(context,
                                                              instance, dest,
                                                              flavor,
@@ -209,6 +215,9 @@ class HyperVDriver(driver.ComputeDriver):
 
     def get_host_ip_addr(self):
         return self._hostops.get_host_ip_addr()
+
+    def get_host_uptime(self, host):
+        return self._hostops.get_host_uptime()
 
     def get_rdp_console(self, context, instance):
         return self._rdpconsoleops.get_rdp_console(instance)

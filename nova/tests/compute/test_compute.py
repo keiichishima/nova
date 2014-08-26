@@ -670,7 +670,8 @@ class ComputeVolumeTestCase(BaseTestCase):
         mock_get_by_host.assert_called_once_with('fake-context',
                                                  self.compute.host)
         mock_get_by_inst.assert_called_once_with('fake-context',
-                                                 'fake-instance-uuid')
+                                                 'fake-instance-uuid',
+                                                 use_slave=False)
         self.assertEqual(expected_host_bdms, got_host_bdms)
 
     def test_poll_volume_usage_disabled(self):
@@ -691,7 +692,7 @@ class ComputeVolumeTestCase(BaseTestCase):
         self.mox.StubOutWithMock(self.compute.driver, 'get_all_volume_usage')
         # Following methods are called.
         utils.last_completed_audit_period().AndReturn((0, 0))
-        self.compute._get_host_volume_bdms(ctxt).AndReturn([])
+        self.compute._get_host_volume_bdms(ctxt, use_slave=True).AndReturn([])
         self.mox.ReplayAll()
 
         self.flags(volume_usage_poll_interval=10)
@@ -707,7 +708,8 @@ class ComputeVolumeTestCase(BaseTestCase):
                        lambda x, y: [3, 4])
         # All the mocks are called
         utils.last_completed_audit_period().AndReturn((10, 20))
-        self.compute._get_host_volume_bdms(ctxt).AndReturn([1, 2])
+        self.compute._get_host_volume_bdms(ctxt,
+                                           use_slave=True).AndReturn([1, 2])
         self.compute._update_volume_usage_cache(ctxt, [3, 4])
         self.mox.ReplayAll()
         self.flags(volume_usage_poll_interval=10)
@@ -736,8 +738,9 @@ class ComputeVolumeTestCase(BaseTestCase):
             AndReturn(bdm)
         self.compute.driver.block_stats(instance['name'], 'vdb').\
             AndReturn([1L, 30L, 1L, 20L, None])
-        self.compute._get_host_volume_bdms(self.context).AndReturn(
-                host_volume_bdms)
+        self.compute._get_host_volume_bdms(self.context,
+                                           use_slave=True).AndReturn(
+                                               host_volume_bdms)
         self.compute.driver.get_all_volume_usage(
                 self.context, host_volume_bdms).AndReturn(
                         [{'volume': 1,
@@ -1093,6 +1096,80 @@ class ComputeVolumeTestCase(BaseTestCase):
                           compute_manager.ComputeManager()._prep_block_device,
                           self.context, instance, bdms)
         self.assertTrue(mock_create.called)
+
+    @mock.patch.object(nova.virt.block_device, 'get_swap')
+    @mock.patch.object(nova.virt.block_device, 'convert_blanks')
+    @mock.patch.object(nova.virt.block_device, 'convert_images')
+    @mock.patch.object(nova.virt.block_device, 'convert_snapshots')
+    @mock.patch.object(nova.virt.block_device, 'convert_volumes')
+    @mock.patch.object(nova.virt.block_device, 'convert_ephemerals')
+    @mock.patch.object(nova.virt.block_device, 'convert_swap')
+    @mock.patch.object(nova.virt.block_device, 'attach_block_devices')
+    def test_prep_block_device_with_blanks(self, attach_block_devices,
+                                           convert_swap, convert_ephemerals,
+                                           convert_volumes, convert_snapshots,
+                                           convert_images, convert_blanks,
+                                           get_swap):
+        instance = self._create_fake_instance()
+        instance['root_device_name'] = '/dev/vda'
+        root_volume = objects.BlockDeviceMapping(
+             **fake_block_device.FakeDbBlockDeviceDict({
+                'instance_uuid': 'fake-instance',
+                'source_type': 'image',
+                'destination_type': 'volume',
+                'image_id': 'fake-image-id-1',
+                'volume_size': 1,
+                'boot_index': 0}))
+        blank_volume1 = objects.BlockDeviceMapping(
+             **fake_block_device.FakeDbBlockDeviceDict({
+                'instance_uuid': 'fake-instance',
+                'source_type': 'blank',
+                'destination_type': 'volume',
+                'volume_size': 1,
+                'boot_index': 1}))
+        blank_volume2 = objects.BlockDeviceMapping(
+             **fake_block_device.FakeDbBlockDeviceDict({
+                'instance_uuid': 'fake-instance',
+                'source_type': 'blank',
+                'destination_type': 'volume',
+                'volume_size': 1,
+                'boot_index': 2}))
+        bdms = [blank_volume1, blank_volume2, root_volume]
+
+        def fake_attach_block_devices(bdm, *args, **kwargs):
+            return bdm
+
+        convert_swap.return_value = []
+        convert_ephemerals.return_value = []
+        convert_volumes.return_value = [blank_volume1, blank_volume2]
+        convert_snapshots.return_value = []
+        convert_images.return_value = [root_volume]
+        convert_blanks.return_value = []
+        attach_block_devices.side_effect = fake_attach_block_devices
+        get_swap.return_value = []
+
+        expected_block_device_info = {
+            'root_device_name': '/dev/vda',
+            'swap': [],
+            'ephemerals': [],
+            'block_device_mapping': bdms
+        }
+
+        manager = compute_manager.ComputeManager()
+        manager.use_legacy_block_device_info = False
+        block_device_info = manager._prep_block_device(self.context, instance,
+                                                       bdms)
+
+        convert_swap.assert_called_once_with(bdms)
+        convert_ephemerals.assert_called_once_with(bdms)
+        convert_volumes.assert_called_once_with(bdms)
+        convert_snapshots.assert_called_once_with(bdms)
+        convert_images.assert_called_once_with(bdms)
+        convert_blanks.assert_called_once_with(bdms)
+
+        self.assertEqual(expected_block_device_info, block_device_info)
+        self.assertEqual(4, attach_block_devices.call_count)
+        get_swap.assert_called_once_with([])
 
 
 class ComputeTestCase(BaseTestCase):
@@ -2134,7 +2211,8 @@ class ComputeTestCase(BaseTestCase):
 
         called = {'power_off': False}
 
-        def fake_driver_power_off(self, instance):
+        def fake_driver_power_off(self, instance,
+                                  shutdown_timeout, shutdown_attempts):
             called['power_off'] = True
 
         self.stubs.Set(nova.virt.fake.FakeDriver, 'power_off',
@@ -3679,7 +3757,7 @@ class ComputeTestCase(BaseTestCase):
 
     def _run_instance_reschedules_on_anti_affinity_violation(self, group,
                                                              hint):
-        instance = jsonutils.to_primitive(self._create_fake_instance())
+        instance = self._create_fake_instance_obj()
         filter_properties = {'scheduler_hints': {'group': hint}}
         self.assertRaises(exception.RescheduledException,
                           self.compute._build_instance,
@@ -4809,7 +4887,7 @@ class ComputeTestCase(BaseTestCase):
         self.compute.terminate_instance(self.context,
                 self._objectify(instance), [], [])
 
-    def test_resize_instance(self):
+    def _test_resize_instance(self, clean_shutdown=True):
         # Ensure instance can be migrated/resized.
         instance = self._create_fake_instance_obj()
         instance_type = flavors.get_default_flavor()
@@ -4843,19 +4921,30 @@ class ComputeTestCase(BaseTestCase):
             mock.patch.object(
                 self.compute, '_get_instance_block_device_info',
                 return_value='fake_bdinfo'),
-            mock.patch.object(self.compute, '_terminate_volume_connections')
+            mock.patch.object(self.compute, '_terminate_volume_connections'),
+            mock.patch.object(self.compute, '_get_power_off_values',
+                return_value=(1, 2))
         ) as (mock_get_by_inst_uuid, mock_get_instance_vol_bdinfo,
-                mock_terminate_vol_conn):
+                mock_terminate_vol_conn, mock_get_power_off_values):
             self.compute.resize_instance(self.context, instance=instance,
                     migration=migration, image={}, reservations=[],
-                    instance_type=jsonutils.to_primitive(instance_type))
+                    instance_type=jsonutils.to_primitive(instance_type),
+                    clean_shutdown=clean_shutdown)
             mock_get_instance_vol_bdinfo.assert_called_once_with(
                     self.context, instance, bdms='fake_bdms')
             mock_terminate_vol_conn.assert_called_once_with(self.context,
                     instance, 'fake_bdms')
+            mock_get_power_off_values.assert_caleld_once_with(self.context,
+                    instance, clean_shutdown)
             self.assertEqual(migration.dest_compute, instance.host)
             self.compute.terminate_instance(self.context,
                     self._objectify(instance), [], [])
+
+    def test_resize_instance(self):
+        self._test_resize_instance()
+
+    def test_resize_instance_forced_shutdown(self):
+        self._test_resize_instance(clean_shutdown=False)
 
     def _test_confirm_resize(self, power_on):
         # Common test case method for confirm_resize
@@ -5098,11 +5187,15 @@ class ComputeTestCase(BaseTestCase):
         if revert:
             flavors.extract_flavor(instance, 'old_').AndReturn(
                 {'instance_type_id': old})
+            flavors.extract_flavor(instance).AndReturn(
+                {'instance_type_id': new})
             flavors.save_flavor_info(
                 sys_meta, {'instance_type_id': old}).AndReturn(sys_meta)
         else:
             flavors.extract_flavor(instance).AndReturn(
                 {'instance_type_id': new})
+            flavors.extract_flavor(instance, 'old_').AndReturn(
+                {'instance_type_id': old})
         flavors.delete_flavor_info(
             sys_meta, 'old_').AndReturn(sys_meta)
         flavors.delete_flavor_info(
@@ -5113,7 +5206,8 @@ class ComputeTestCase(BaseTestCase):
                                                           revert)
         self.assertEqual(res,
                          (sys_meta,
-                          {'instance_type_id': revert and old or new}))
+                          {'instance_type_id': revert and old or new},
+                          {'instance_type_id': revert and new or old}))
 
     def test_cleanup_stored_instance_types_for_resize(self):
         self._test_cleanup_stored_instance_types('1', '2')
@@ -6120,16 +6214,24 @@ class ComputeTestCase(BaseTestCase):
             fake_instance.fake_db_instance(uuid='fake_uuid5',
                                            vm_state=vm_states.ACTIVE,
                                            task_state=None),
+            # The expceted migration result will be None instead of error
+            # since _poll_unconfirmed_resizes will not change it
+            # when the instance vm state is RESIZED and task state
+            # is deleting, see bug 1301696 for more detail
             fake_instance.fake_db_instance(uuid='fake_uuid6',
                                            vm_state=vm_states.RESIZED,
-                                           task_state='deleting')]
+                                           task_state='deleting'),
+            fake_instance.fake_db_instance(uuid='fake_uuid7',
+                                           vm_state=vm_states.RESIZED,
+                                           task_state='soft-deleting')]
         expected_migration_status = {'fake_uuid1': 'confirmed',
                                      'noexist': 'error',
                                      'fake_uuid2': 'error',
                                      'fake_uuid3': 'error',
                                      'fake_uuid4': None,
                                      'fake_uuid5': 'error',
-                                     'fake_uuid6': 'error'}
+                                     'fake_uuid6': None,
+                                     'fake_uuid7': None}
         migrations = []
         for i, instance in enumerate(instances, start=1):
             fake_mig = test_migration.fake_db_migration()
@@ -6731,7 +6833,7 @@ class ComputeTestCase(BaseTestCase):
         self.assertEqual(vm_states.ACTIVE, instance['vm_state'])
 
     def _get_instance_and_bdm_for_dev_defaults_tests(self):
-        instance = self._create_fake_instance(
+        instance = self._create_fake_instance_obj(
             params={'root_device_name': '/dev/vda'})
         block_device_mapping = block_device_obj.block_device_make_list(
                 self.context, [fake_block_device.FakeDbBlockDeviceDict(
@@ -6746,12 +6848,11 @@ class ComputeTestCase(BaseTestCase):
 
     def test_default_block_device_names_empty_instance_root_dev(self):
         instance, bdms = self._get_instance_and_bdm_for_dev_defaults_tests()
-        instance['root_device_name'] = None
-        self.mox.StubOutWithMock(self.compute, '_instance_update')
+        instance.root_device_name = None
+        self.mox.StubOutWithMock(objects.Instance, 'save')
         self.mox.StubOutWithMock(self.compute,
                                  '_default_device_names_for_instance')
-        self.compute._instance_update(self.context, instance['uuid'],
-                                      root_device_name='/dev/vda')
+        instance.save().AndReturn(None)
         self.compute._default_device_names_for_instance(instance,
                                                         '/dev/vda', [], [],
                                                         [bdm for bdm in bdms])
@@ -6759,11 +6860,11 @@ class ComputeTestCase(BaseTestCase):
         self.compute._default_block_device_names(self.context,
                                                  instance,
                                                  {}, bdms)
+        self.assertEqual('/dev/vda', instance.root_device_name)
 
     def test_default_block_device_names_empty_root_device(self):
         instance, bdms = self._get_instance_and_bdm_for_dev_defaults_tests()
         bdms[0]['device_name'] = None
-        self.mox.StubOutWithMock(self.compute, '_instance_update')
         self.mox.StubOutWithMock(self.compute,
                                  '_default_device_names_for_instance')
         self.mox.StubOutWithMock(objects.BlockDeviceMapping, 'save')
@@ -6778,9 +6879,9 @@ class ComputeTestCase(BaseTestCase):
 
     def test_default_block_device_names_no_root_device(self):
         instance, bdms = self._get_instance_and_bdm_for_dev_defaults_tests()
-        instance['root_device_name'] = None
+        instance.root_device_name = None
         bdms[0]['device_name'] = None
-        self.mox.StubOutWithMock(self.compute, '_instance_update')
+        self.mox.StubOutWithMock(objects.Instance, 'save')
         self.mox.StubOutWithMock(objects.BlockDeviceMapping, 'save')
         self.mox.StubOutWithMock(self.compute,
                                  '_default_root_device_name')
@@ -6789,8 +6890,7 @@ class ComputeTestCase(BaseTestCase):
 
         self.compute._default_root_device_name(instance, mox.IgnoreArg(),
                                                bdms[0]).AndReturn('/dev/vda')
-        self.compute._instance_update(self.context, instance['uuid'],
-                                      root_device_name='/dev/vda')
+        instance.save().AndReturn(None)
         bdms[0].save().AndReturn(None)
         self.compute._default_device_names_for_instance(instance,
                                                         '/dev/vda', [], [],
@@ -6799,6 +6899,65 @@ class ComputeTestCase(BaseTestCase):
         self.compute._default_block_device_names(self.context,
                                                  instance,
                                                  {}, bdms)
+        self.assertEqual('/dev/vda', instance.root_device_name)
+
+    def test_default_block_device_names_with_blank_volumes(self):
+        instance = self._create_fake_instance_obj()
+        image_meta = {}
+        root_volume = objects.BlockDeviceMapping(
+             **fake_block_device.FakeDbBlockDeviceDict({
+                'id': 1, 'instance_uuid': 'fake-instance',
+                'source_type': 'volume',
+                'destination_type': 'volume',
+                'image_id': 'fake-image-id-1',
+                'boot_index': 0}))
+        blank_volume1 = objects.BlockDeviceMapping(
+             **fake_block_device.FakeDbBlockDeviceDict({
+                'id': 2, 'instance_uuid': 'fake-instance',
+                'source_type': 'blank',
+                'destination_type': 'volume',
+                'boot_index': -1}))
+        blank_volume2 = objects.BlockDeviceMapping(
+             **fake_block_device.FakeDbBlockDeviceDict({
+                'id': 3, 'instance_uuid': 'fake-instance',
+                'source_type': 'blank',
+                'destination_type': 'volume',
+                'boot_index': -1}))
+        ephemeral = objects.BlockDeviceMapping(
+             **fake_block_device.FakeDbBlockDeviceDict({
+                'id': 4, 'instance_uuid': 'fake-instance',
+                'source_type': 'blank',
+                'destination_type': 'local'}))
+        swap = objects.BlockDeviceMapping(
+             **fake_block_device.FakeDbBlockDeviceDict({
+                'id': 5, 'instance_uuid': 'fake-instance',
+                'source_type': 'blank',
+                'destination_type': 'local',
+                'guest_format': 'swap'
+                }))
+        bdms = block_device_obj.block_device_make_list(
+            self.context, [root_volume, blank_volume1, blank_volume2,
+                           ephemeral, swap])
+
+        with contextlib.nested(
+            mock.patch.object(self.compute, '_default_root_device_name',
+                              return_value='/dev/vda'),
+            mock.patch.object(objects.Instance, 'save'),
+            mock.patch.object(objects.BlockDeviceMapping, 'save'),
+            mock.patch.object(self.compute,
+                              '_default_device_names_for_instance')
+        ) as (default_root_device, instance_update, object_save,
+              default_device_names):
+            self.compute._default_block_device_names(self.context, instance,
+                                                     image_meta, bdms)
+            default_root_device.assert_called_once_with(instance, image_meta,
+                                                        bdms[0])
+            instance_update.assert_called_once_with()
+            self.assertEqual('/dev/vda', instance.root_device_name)
+            self.assertTrue(object_save.called)
+            default_device_names.assert_called_once_with(instance,
+                '/dev/vda', [bdms[-2]], [bdms[-1]],
+                [bdm for bdm in bdms[:-2]])
 
     def test_reserve_block_device_name(self):
         instance = self._create_fake_instance_obj(

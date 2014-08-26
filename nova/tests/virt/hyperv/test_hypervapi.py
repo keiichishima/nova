@@ -17,6 +17,7 @@ Test suite for the Hyper-V driver and related APIs.
 """
 
 import contextlib
+import datetime
 import io
 import os
 import platform
@@ -50,6 +51,7 @@ from nova.virt import driver
 from nova.virt.hyperv import basevolumeutils
 from nova.virt.hyperv import constants
 from nova.virt.hyperv import driver as driver_hyperv
+from nova.virt.hyperv import hostops
 from nova.virt.hyperv import hostutils
 from nova.virt.hyperv import livemigrationutils
 from nova.virt.hyperv import networkutils
@@ -126,6 +128,8 @@ class HyperVAPIBaseTestCase(test.NoDBTestCase):
                        fake_get_remote_image_service)
 
         def fake_check_min_windows_version(fake_self, major, minor):
+            if [major, minor] >= [6, 3]:
+                return False
             return self._check_min_windows_version_satisfied
         self.stubs.Set(hostutils.HostUtils, 'check_min_windows_version',
                        fake_check_min_windows_version)
@@ -338,6 +342,13 @@ class HyperVAPITestCase(HyperVAPIBaseTestCase,
         self._mox.VerifyAll()
 
         self.assertEqual(instances, fake_instances)
+
+    def test_get_host_uptime(self):
+        fake_host = "fake_host"
+        with mock.patch.object(self._conn._hostops,
+                               "get_host_uptime") as mock_uptime:
+            self._conn._hostops.get_host_uptime(fake_host)
+            mock_uptime.assert_called_once_with(fake_host)
 
     def test_get_info(self):
         self._instance_data = self._get_instance_data()
@@ -762,6 +773,15 @@ class HyperVAPITestCase(HyperVAPIBaseTestCase,
             self.assertIsNotNone(self._fetched_image)
         else:
             self.assertIsNone(self._fetched_image)
+
+    def test_get_instance_disk_info_is_implemented(self):
+        # Ensure that the method has been implemented in the driver
+        try:
+            disk_info = self._conn.get_instance_disk_info('fake_instance_name')
+            self.assertIsNone(disk_info)
+        except NotImplementedError:
+            self.fail("test_get_instance_disk_info() should not raise "
+                      "NotImplementedError")
 
     def test_snapshot_with_update_failure(self):
         (snapshot_name, func_call_matcher) = self._setup_snapshot_mocks()
@@ -1502,13 +1522,45 @@ class HyperVAPITestCase(HyperVAPIBaseTestCase,
         (instance, fake_dest_ip, network_info, flavor) = args
 
         self._mox.ReplayAll()
-        self.assertRaises(vmutils.VHDResizeException,
+        self.assertRaises(exception.InstanceFaultRollback,
                           self._conn.migrate_disk_and_power_off,
                           self._context, instance, fake_dest_ip,
                           flavor, network_info)
         self._mox.VerifyAll()
 
-    def _test_finish_migration(self, power_on, ephemeral_storage=False):
+    def _mock_attach_config_drive(self, instance, config_drive_format):
+        instance['config_drive'] = True
+        self._mox.StubOutWithMock(fake.PathUtils, 'lookup_configdrive_path')
+        m = fake.PathUtils.lookup_configdrive_path(
+            mox.Func(self._check_instance_name))
+
+        if config_drive_format in constants.DISK_FORMAT_MAP:
+            m.AndReturn(self._test_instance_dir + '/configdrive.' +
+                        config_drive_format)
+        else:
+            m.AndReturn(None)
+
+        m = vmutils.VMUtils.attach_ide_drive(
+            mox.Func(self._check_instance_name),
+            mox.IsA(str),
+            mox.IsA(int),
+            mox.IsA(int),
+            mox.IsA(str))
+        m.WithSideEffects(self._add_ide_disk).InAnyOrder()
+
+    def _verify_attach_config_drive(self, config_drive_format):
+        if config_drive_format == constants.IDE_DISK_FORMAT.lower():
+            self.assertEqual(self._instance_ide_disks[1],
+                self._test_instance_dir + '/configdrive.' +
+                config_drive_format)
+        elif config_drive_format == constants.IDE_DVD_FORMAT.lower():
+            self.assertEqual(self._instance_ide_dvds[0],
+                self._test_instance_dir + '/configdrive.' +
+                config_drive_format)
+
+    def _test_finish_migration(self, power_on, ephemeral_storage=False,
+                               config_drive=False,
+                               config_drive_format='iso'):
         self._instance_data = self._get_instance_data()
         instance = db.instance_create(self._context, self._instance_data)
         instance['system_metadata'] = {}
@@ -1557,10 +1609,16 @@ class HyperVAPITestCase(HyperVAPIBaseTestCase,
             vmutils.VMUtils.set_vm_state(mox.Func(self._check_instance_name),
                                          constants.HYPERV_VM_STATE_ENABLED)
 
+        if config_drive:
+            self._mock_attach_config_drive(instance, config_drive_format)
+
         self._mox.ReplayAll()
         self._conn.finish_migration(self._context, None, instance, "",
                                     network_info, None, False, None, power_on)
         self._mox.VerifyAll()
+
+        if config_drive:
+            self._verify_attach_config_drive(config_drive_format)
 
     def test_finish_migration_power_on(self):
         self._test_finish_migration(True)
@@ -1570,6 +1628,14 @@ class HyperVAPITestCase(HyperVAPIBaseTestCase,
 
     def test_finish_migration_with_ephemeral_storage(self):
         self._test_finish_migration(False, ephemeral_storage=True)
+
+    def test_finish_migration_attach_config_drive_iso(self):
+        self._test_finish_migration(False, config_drive=True,
+            config_drive_format=constants.IDE_DVD_FORMAT.lower())
+
+    def test_finish_migration_attach_config_drive_vhd(self):
+        self._test_finish_migration(False, config_drive=True,
+            config_drive_format=constants.IDE_DISK_FORMAT.lower())
 
     def test_confirm_migration(self):
         self._instance_data = self._get_instance_data()
@@ -1582,7 +1648,9 @@ class HyperVAPITestCase(HyperVAPIBaseTestCase,
         self._conn.confirm_migration(None, instance, network_info)
         self._mox.VerifyAll()
 
-    def _test_finish_revert_migration(self, power_on, ephemeral_storage=False):
+    def _test_finish_revert_migration(self, power_on, ephemeral_storage=False,
+                                      config_drive=False,
+                                      config_drive_format='iso'):
         self._instance_data = self._get_instance_data()
         instance = db.instance_create(self._context, self._instance_data)
         network_info = fake_network.fake_get_instance_nw_info(self.stubs)
@@ -1620,11 +1688,17 @@ class HyperVAPITestCase(HyperVAPIBaseTestCase,
             vmutils.VMUtils.set_vm_state(mox.Func(self._check_instance_name),
                                          constants.HYPERV_VM_STATE_ENABLED)
 
+        if config_drive:
+            self._mock_attach_config_drive(instance, config_drive_format)
+
         self._mox.ReplayAll()
         self._conn.finish_revert_migration(self._context, instance,
                                            network_info, None,
                                            power_on)
         self._mox.VerifyAll()
+
+        if config_drive:
+            self._verify_attach_config_drive(config_drive_format)
 
     def test_finish_revert_migration_power_on(self):
         self._test_finish_revert_migration(True)
@@ -1640,6 +1714,14 @@ class HyperVAPITestCase(HyperVAPIBaseTestCase,
 
     def test_finish_revert_migration_with_ephemeral_storage(self):
         self._test_finish_revert_migration(False, ephemeral_storage=True)
+
+    def test_finish_revert_migration_attach_config_drive_iso(self):
+        self._test_finish_revert_migration(False, config_drive=True,
+            config_drive_format=constants.IDE_DVD_FORMAT.lower())
+
+    def test_finish_revert_migration_attach_config_drive_vhd(self):
+        self._test_finish_revert_migration(False, config_drive=True,
+            config_drive_format=constants.IDE_DISK_FORMAT.lower())
 
     def test_plug_vifs(self):
         # Check to make sure the method raises NotImplementedError.
@@ -1755,3 +1837,24 @@ class VolumeOpsTestCase(HyperVAPIBaseTestCase):
             self.assertRaises(vmutils.HyperVException,
                               self.volumeops._get_free_controller_slot,
                               fake_scsi_controller_path)
+
+
+class HostOpsTestCase(HyperVAPIBaseTestCase):
+    """Unit tests for the Hyper-V hostops class."""
+
+    def setUp(self):
+        self._hostops = hostops.HostOps()
+        self._hostops._hostutils = mock.MagicMock()
+        self._hostops.time = mock.MagicMock()
+        super(HostOpsTestCase, self).setUp()
+
+    @mock.patch('nova.virt.hyperv.hostops.time')
+    def test_host_uptime(self, mock_time):
+        self._hostops._hostutils.get_host_tick_count64.return_value = 100
+        mock_time.strftime.return_value = "01:01:01"
+
+        result_uptime = "01:01:01 up %s,  0 users,  load average: 0, 0, 0" % (
+                          str(datetime.timedelta(
+                                     milliseconds = long(100))))
+        actual_uptime = self._hostops.get_host_uptime()
+        self.assertEqual(result_uptime, actual_uptime)
