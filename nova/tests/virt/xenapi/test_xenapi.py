@@ -25,9 +25,13 @@ import re
 import mock
 import mox
 from oslo.config import cfg
+from oslo.serialization import jsonutils
+from oslo.utils import importutils
 
 from nova.compute import api as compute_api
+from nova.compute import arch
 from nova.compute import flavors
+from nova.compute import hvtype
 from nova.compute import power_state
 from nova.compute import task_states
 from nova.compute import utils as compute_utils
@@ -39,8 +43,6 @@ from nova import db
 from nova import exception
 from nova import objects
 from nova.objects import instance as instance_obj
-from nova.openstack.common import importutils
-from nova.openstack.common import jsonutils
 from nova.openstack.common import log as logging
 from nova import test
 from nova.tests.db import fakes as db_fakes
@@ -204,6 +206,7 @@ def get_create_system_metadata(context, instance_type_id):
 def create_instance_with_system_metadata(context, instance_values):
     instance_values['system_metadata'] = get_create_system_metadata(
         context, instance_values['instance_type_id'])
+    instance_values['pci_devices'] = []
     return db.instance_create(context, instance_values)
 
 
@@ -443,7 +446,7 @@ class XenAPIVMTestCase(stubs.XenAPITestBase):
 
         # Note(sulo): We don't care about session id in test
         # they will always differ so strip that out
-        actual_path = console['internal_access_path'].split('&')[0]
+        actual_path = console.internal_access_path.split('&')[0]
         expected_path = "/console?ref=%s" % str(vm_ref)
 
         self.assertEqual(expected_path, actual_path)
@@ -460,7 +463,7 @@ class XenAPIVMTestCase(stubs.XenAPITestBase):
 
         # Note(sulo): We don't care about session id in test
         # they will always differ so strip that out
-        actual_path = console['internal_access_path'].split('&')[0]
+        actual_path = console.internal_access_path.split('&')[0]
         expected_path = "/console?ref=%s" % str(rescue_vm)
 
         self.assertEqual(expected_path, actual_path)
@@ -528,8 +531,7 @@ class XenAPIVMTestCase(stubs.XenAPITestBase):
 
         self.fake_upload_called = False
 
-        def fake_image_upload(_self, ctx, session, inst, vdi_uuids,
-                              img_id):
+        def fake_image_upload(_self, ctx, session, inst, img_id, vdi_uuids):
             self.fake_upload_called = True
             self.assertEqual(ctx, self.context)
             self.assertEqual(inst, instance)
@@ -622,7 +624,7 @@ class XenAPIVMTestCase(stubs.XenAPITestBase):
                               'gateway': '192.168.1.1',
                               'gateway_v6': '2001:db8:0:1::1',
                               'ip6s': [{'enabled': '1',
-                                        'ip': '2001:db8:0:1::1',
+                                        'ip': '2001:db8:0:1:dcad:beff:feef:1',
                                         'netmask': 64,
                                         'gateway': '2001:db8:0:1::1'}],
                               'ips': [{'enabled': '1',
@@ -932,7 +934,7 @@ iface eth0 inet static
     gateway 192.168.1.1
     dns-nameservers 192.168.1.3 192.168.1.4
 iface eth0 inet6 static
-    address 2001:db8:0:1::1
+    address 2001:db8:0:1:dcad:beff:feef:1
     netmask 64
     gateway 2001:db8:0:1::1
 """
@@ -1231,9 +1233,16 @@ iface eth0 inet6 static
 
         swap_vdi_ref = xenapi_fake.create_vdi('swap', None)
         root_vdi_ref = xenapi_fake.create_vdi('root', None)
+        eph1_vdi_ref = xenapi_fake.create_vdi('eph', None)
+        eph2_vdi_ref = xenapi_fake.create_vdi('eph', None)
+        vol_vdi_ref = xenapi_fake.create_vdi('volume', None)
 
-        xenapi_fake.create_vbd(vm_ref, swap_vdi_ref, userdevice=1)
+        xenapi_fake.create_vbd(vm_ref, swap_vdi_ref, userdevice=2)
         xenapi_fake.create_vbd(vm_ref, root_vdi_ref, userdevice=0)
+        xenapi_fake.create_vbd(vm_ref, eph1_vdi_ref, userdevice=4)
+        xenapi_fake.create_vbd(vm_ref, eph2_vdi_ref, userdevice=5)
+        xenapi_fake.create_vbd(vm_ref, vol_vdi_ref, userdevice=6,
+                               other_config={'osvol': True})
 
         conn = xenapi_conn.XenAPIDriver(fake.FakeVirtAPI(), False)
         image_meta = {'id': IMAGE_VHD,
@@ -1245,11 +1254,16 @@ iface eth0 inet6 static
         rescue_ref = vm_utils.lookup(session, rescue_name)
         rescue_vm = xenapi_fake.get_record('VM', rescue_ref)
 
-        vdi_refs = []
+        vdi_refs = {}
         for vbd_ref in rescue_vm['VBDs']:
-            vdi_refs.append(xenapi_fake.get_record('VBD', vbd_ref)['VDI'])
-        self.assertNotIn(swap_vdi_ref, vdi_refs)
-        self.assertIn(root_vdi_ref, vdi_refs)
+            vbd = xenapi_fake.get_record('VBD', vbd_ref)
+            vdi_refs[vbd['VDI']] = vbd['userdevice']
+
+        self.assertEqual('1', vdi_refs[root_vdi_ref])
+        self.assertEqual('2', vdi_refs[swap_vdi_ref])
+        self.assertEqual('4', vdi_refs[eph1_vdi_ref])
+        self.assertEqual('5', vdi_refs[eph2_vdi_ref])
+        self.assertNotIn(vol_vdi_ref, vdi_refs)
 
     def test_rescue_preserve_disk_on_failure(self):
         # test that the original disk is preserved if rescue setup fails
@@ -2015,7 +2029,7 @@ class XenAPIHostTestCase(stubs.XenAPITestBase):
         self.instance = fake_instance.fake_db_instance(name='foo')
 
     def test_host_state(self):
-        stats = self.conn.get_host_stats()
+        stats = self.conn.host_state.get_host_stats(False)
         # Values from fake.create_local_srs (ext SR)
         self.assertEqual(stats['disk_total'], 40000)
         self.assertEqual(stats['disk_used'], 20000)
@@ -2031,31 +2045,36 @@ class XenAPIHostTestCase(stubs.XenAPITestBase):
         self.assertEqual(stats['vcpus_used'], 0)
 
     def test_host_state_vcpus_used(self):
-        stats = self.conn.get_host_stats(True)
+        stats = self.conn.host_state.get_host_stats(True)
         self.assertEqual(stats['vcpus_used'], 0)
         xenapi_fake.create_vm(self.instance['name'], 'Running')
-        stats = self.conn.get_host_stats(True)
+        stats = self.conn.host_state.get_host_stats(True)
         self.assertEqual(stats['vcpus_used'], 4)
 
     def test_pci_passthrough_devices_whitelist(self):
         # NOTE(guillaume-thouvenin): This pci whitelist will be used to
         # match with _plugin_xenhost_get_pci_device_details method in fake.py.
-        self.flags(pci_passthrough_whitelist=
-                   ['[{"vendor_id":"10de", "product_id":"11bf"}]'])
-        stats = self.conn.get_host_stats()
+        white_list = '{"vendor_id":"10de", "product_id":"11bf"}'
+        self.flags(pci_passthrough_whitelist=[white_list])
+        stats = self.conn.host_state.get_host_stats(False)
         self.assertEqual(len(stats['pci_passthrough_devices']), 1)
 
     def test_pci_passthrough_devices_no_whitelist(self):
-        stats = self.conn.get_host_stats()
+        stats = self.conn.host_state.get_host_stats(False)
         self.assertEqual(len(stats['pci_passthrough_devices']), 0)
 
     def test_host_state_missing_sr(self):
+        # Must trigger construction of 'host_state' property
+        # before introducing the stub which raises the error
+        hs = self.conn.host_state
+
         def fake_safe_find_sr(session):
             raise exception.StorageRepositoryNotFound('not there')
 
         self.stubs.Set(vm_utils, 'safe_find_sr', fake_safe_find_sr)
         self.assertRaises(exception.StorageRepositoryNotFound,
-                          self.conn.get_host_stats)
+                          hs.get_host_stats,
+                          refresh=True)
 
     def _test_host_action(self, method, action, expected=None):
         result = method('host', action)
@@ -2100,7 +2119,7 @@ class XenAPIHostTestCase(stubs.XenAPITestBase):
         self.assertEqual(result, 'fake uptime')
 
     def test_supported_instances_is_included_in_host_state(self):
-        stats = self.conn.get_host_stats()
+        stats = self.conn.host_state.get_host_stats(False)
         self.assertIn('supported_instances', stats)
 
     def test_supported_instances_is_calculated_by_to_supported_instances(self):
@@ -2110,7 +2129,7 @@ class XenAPIHostTestCase(stubs.XenAPITestBase):
             return "SOMERETURNVALUE"
         self.stubs.Set(host, 'to_supported_instances', to_supported_instances)
 
-        stats = self.conn.get_host_stats()
+        stats = self.conn.host_state.get_host_stats(False)
         self.assertEqual("SOMERETURNVALUE", stats['supported_instances'])
 
     def test_update_stats_caches_hostname(self):
@@ -2143,9 +2162,9 @@ class XenAPIHostTestCase(stubs.XenAPITestBase):
                 data = dict(data, host_hostname='bar')
 
         self.mox.ReplayAll()
-        stats = self.conn.get_host_stats(refresh=True)
+        stats = self.conn.host_state.get_host_stats(refresh=True)
         self.assertEqual('foo', stats['hypervisor_hostname'])
-        stats = self.conn.get_host_stats(refresh=True)
+        stats = self.conn.host_state.get_host_stats(refresh=True)
         self.assertEqual('foo', stats['hypervisor_hostname'])
 
 
@@ -2155,18 +2174,18 @@ class ToSupportedInstancesTestCase(test.NoDBTestCase):
             host.to_supported_instances(None))
 
     def test_return_value(self):
-        self.assertEqual([('x86_64', 'xapi', 'xen')],
+        self.assertEqual([(arch.X86_64, hvtype.XEN, 'xen')],
              host.to_supported_instances([u'xen-3.0-x86_64']))
 
     def test_invalid_values_do_not_break(self):
-        self.assertEqual([('x86_64', 'xapi', 'xen')],
+        self.assertEqual([(arch.X86_64, hvtype.XEN, 'xen')],
              host.to_supported_instances([u'xen-3.0-x86_64', 'spam']))
 
     def test_multiple_values(self):
         self.assertEqual(
             [
-                ('x86_64', 'xapi', 'xen'),
-                ('x86_32', 'xapi', 'hvm')
+                (arch.X86_64, hvtype.XEN, 'xen'),
+                (arch.I686, hvtype.XEN, 'hvm')
             ],
             host.to_supported_instances([u'xen-3.0-x86_64', 'hvm-3.0-x86_32'])
         )

@@ -22,15 +22,19 @@ import copy
 import datetime
 import functools
 import sys
+import threading
 import time
 import uuid
 
 from oslo.config import cfg
+from oslo.db import exception as db_exc
+from oslo.db.sqlalchemy import session as db_session
+from oslo.db.sqlalchemy import utils as sqlalchemyutils
+from oslo.utils import excutils
+from oslo.utils import timeutils
 import six
 from sqlalchemy import and_
 from sqlalchemy import Boolean
-from sqlalchemy.exc import DataError
-from sqlalchemy.exc import IntegrityError
 from sqlalchemy.exc import NoSuchTableError
 from sqlalchemy import Integer
 from sqlalchemy import MetaData
@@ -39,6 +43,7 @@ from sqlalchemy.orm import contains_eager
 from sqlalchemy.orm import joinedload
 from sqlalchemy.orm import joinedload_all
 from sqlalchemy.orm import noload
+from sqlalchemy.orm import undefer
 from sqlalchemy.schema import Table
 from sqlalchemy import sql
 from sqlalchemy.sql.expression import asc
@@ -55,13 +60,8 @@ from nova.compute import vm_states
 import nova.context
 from nova.db.sqlalchemy import models
 from nova import exception
-from nova.i18n import _
-from nova.openstack.common.db import exception as db_exc
-from nova.openstack.common.db.sqlalchemy import session as db_session
-from nova.openstack.common.db.sqlalchemy import utils as sqlalchemyutils
-from nova.openstack.common import excutils
+from nova.i18n import _, _LI
 from nova.openstack.common import log as logging
-from nova.openstack.common import timeutils
 from nova.openstack.common import uuidutils
 from nova import quota
 
@@ -73,57 +73,34 @@ db_opts = [
                     'Should be empty, "project" or "global".'),
 ]
 
-connection_opts = [
-    cfg.StrOpt('slave_connection',
-               secret=True,
-               help='The SQLAlchemy connection string used to connect to the '
-                    'slave database'),
-]
-
 CONF = cfg.CONF
 CONF.register_opts(db_opts)
-CONF.register_opts(connection_opts, group='database')
 CONF.import_opt('compute_topic', 'nova.compute.rpcapi')
-CONF.import_opt('connection',
-                'nova.openstack.common.db.options',
-                group='database')
 
 LOG = logging.getLogger(__name__)
 
 
-_MASTER_FACADE = None
-_SLAVE_FACADE = None
+_ENGINE_FACADE = None
+_LOCK = threading.Lock()
 
 
-def _create_facade_lazily(use_slave=False):
-    global _MASTER_FACADE
-    global _SLAVE_FACADE
-
-    return_slave = use_slave and CONF.database.slave_connection
-    if not return_slave:
-        if _MASTER_FACADE is None:
-            _MASTER_FACADE = db_session.EngineFacade(
-                CONF.database.connection,
-                **dict(CONF.database.iteritems())
-            )
-        return _MASTER_FACADE
-    else:
-        if _SLAVE_FACADE is None:
-            _SLAVE_FACADE = db_session.EngineFacade(
-                CONF.database.slave_connection,
-                **dict(CONF.database.iteritems())
-            )
-        return _SLAVE_FACADE
+def _create_facade_lazily():
+    global _LOCK, _ENGINE_FACADE
+    if _ENGINE_FACADE is None:
+        with _LOCK:
+            if _ENGINE_FACADE is None:
+                _ENGINE_FACADE = db_session.EngineFacade.from_config(CONF)
+    return _ENGINE_FACADE
 
 
 def get_engine(use_slave=False):
-    facade = _create_facade_lazily(use_slave)
-    return facade.get_engine()
+    facade = _create_facade_lazily()
+    return facade.get_engine(use_slave=use_slave)
 
 
 def get_session(use_slave=False, **kwargs):
-    facade = _create_facade_lazily(use_slave)
-    return facade.get_session(**kwargs)
+    facade = _create_facade_lazily()
+    return facade.get_session(use_slave=use_slave, **kwargs)
 
 
 _SHADOW_TABLE_PREFIX = 'shadow_'
@@ -357,11 +334,17 @@ def _sync_security_groups(context, project_id, user_id, session):
     return dict(security_groups=_security_group_count_by_project_and_user(
                 context, project_id, user_id, session))
 
+
+def _sync_server_groups(context, project_id, user_id, session):
+    return dict(server_groups=_instance_group_count_by_project_and_user(
+                context, project_id, user_id, session))
+
 QUOTA_SYNC_FUNCTIONS = {
     '_sync_instances': _sync_instances,
     '_sync_floating_ips': _sync_floating_ips,
     '_sync_fixed_ips': _sync_fixed_ips,
     '_sync_security_groups': _sync_security_groups,
+    '_sync_server_groups': _sync_server_groups,
 }
 
 ###################
@@ -430,8 +413,10 @@ def service_destroy(context, service_id):
                     soft_delete(synchronize_session=False)
 
 
-def _service_get(context, service_id, with_compute_node=True, session=None):
-    query = model_query(context, models.Service, session=session).\
+def _service_get(context, service_id, with_compute_node=True, session=None,
+                 use_slave=False):
+    query = model_query(context, models.Service, session=session,
+                        use_slave=use_slave).\
                      filter_by(id=service_id)
 
     if with_compute_node:
@@ -445,9 +430,11 @@ def _service_get(context, service_id, with_compute_node=True, session=None):
 
 
 @require_admin_context
-def service_get(context, service_id, with_compute_node=False):
+def service_get(context, service_id, with_compute_node=False,
+                use_slave=False):
     return _service_get(context, service_id,
-                        with_compute_node=with_compute_node)
+                        with_compute_node=with_compute_node,
+                        use_slave=use_slave)
 
 
 @require_admin_context
@@ -485,8 +472,9 @@ def service_get_all_by_host(context, host):
 
 
 @require_admin_context
-def service_get_by_compute_host(context, host):
-    result = model_query(context, models.Service, read_deleted="no").\
+def service_get_by_compute_host(context, host, use_slave=False):
+    result = model_query(context, models.Service, read_deleted="no",
+                         use_slave=use_slave).\
                 options(joinedload('compute_node')).\
                 filter_by(host=host).\
                 filter_by(topic=CONF.compute_topic).\
@@ -529,6 +517,7 @@ def service_create(context, values):
 
 
 @require_admin_context
+@_retry_on_deadlock
 def service_update(context, service_id, values):
     session = get_session()
     with session.begin():
@@ -749,7 +738,7 @@ def floating_ip_get(context, id):
 
         if not result:
             raise exception.FloatingIpNotFound(id=id)
-    except DataError:
+    except db_exc.DBError:
         msg = _("Invalid floating ip id %s in request") % id
         LOG.warn(msg)
         raise exception.InvalidID(id=id)
@@ -1003,7 +992,7 @@ def _floating_ip_get_by_address(context, address, session=None):
 
         if not result:
             raise exception.FloatingIpNotFoundForAddress(address=address)
-    except DataError:
+    except db_exc.DBError:
         msg = _("Invalid floating IP %s in request") % address
         LOG.warn(msg)
         raise exception.InvalidIpAddressError(msg)
@@ -1171,7 +1160,7 @@ def fixed_ip_associate_pool(context, network_id, instance_uuid=None,
         # NOTE(vish): if with_lockmode isn't supported, as in sqlite,
         #             then this has concurrency issues
         if not fixed_ip_ref:
-            raise exception.NoMoreFixedIps()
+            raise exception.NoMoreFixedIps(net=network_id)
 
         if fixed_ip_ref['network_id'] is None:
             fixed_ip_ref['network'] = network_id
@@ -1306,7 +1295,7 @@ def _fixed_ip_get_by_address(context, address, session=None,
             result = result.filter_by(address=address).first()
             if not result:
                 raise exception.FixedIpNotFoundForAddress(address=address)
-        except DataError:
+        except db_exc.DBError:
             msg = _("Invalid fixed IP Address %s in request") % address
             LOG.warn(msg)
             raise exception.FixedIpInvalid(msg)
@@ -1345,7 +1334,7 @@ def fixed_ip_get_by_address_detailed(context, address):
         if not result:
             raise exception.FixedIpNotFoundForAddress(address=address)
 
-    except DataError:
+    except db_exc.DBError:
         msg = _("Invalid fixed IP Address %s in request") % address
         LOG.warn(msg)
         raise exception.FixedIpInvalid(msg)
@@ -1369,8 +1358,17 @@ def fixed_ip_get_by_instance(context, instance_uuid):
     if not uuidutils.is_uuid_like(instance_uuid):
         raise exception.InvalidUUID(uuid=instance_uuid)
 
+    vif_and = and_(models.VirtualInterface.id ==
+                   models.FixedIp.virtual_interface_id,
+                   models.VirtualInterface.deleted == 0)
     result = model_query(context, models.FixedIp, read_deleted="no").\
                  filter_by(instance_uuid=instance_uuid).\
+                 outerjoin(models.VirtualInterface, vif_and).\
+                 options(contains_eager("virtual_interface")).\
+                 options(joinedload('network')).\
+                 options(joinedload('floating_ips')).\
+                 order_by(asc(models.VirtualInterface.created_at),
+                          asc(models.VirtualInterface.id)).\
                  all()
 
     if not result:
@@ -1410,6 +1408,8 @@ def fixed_ip_get_by_network_host(context, network_id, host):
 def fixed_ips_by_virtual_interface(context, vif_id):
     result = model_query(context, models.FixedIp, read_deleted="no").\
                  filter_by(virtual_interface_id=vif_id).\
+                 options(joinedload('network')).\
+                 options(joinedload('floating_ips')).\
                  all()
 
     return result
@@ -1480,7 +1480,7 @@ def virtual_interface_get_by_address(context, address):
         vif_ref = _virtual_interface_query(context).\
                           filter_by(address=address).\
                           first()
-    except DataError:
+    except db_exc.DBError:
         msg = _("Invalid virtual interface address %s in request") % address
         LOG.warn(msg)
         raise exception.InvalidIpAddressError(msg)
@@ -1608,6 +1608,13 @@ def instance_create(context, values):
     context - request context object
     values - dict containing column values.
     """
+
+    # NOTE(rpodolyaka): create the default security group, if it doesn't exist.
+    # This must be done in a separate transaction, so that this one is not
+    # aborted in case a concurrent one succeeds first and the unique constraint
+    # for security group names is violated by a concurrent INSERT
+    security_group_ensure_default(context)
+
     values = values.copy()
     values['metadata'] = _metadata_refs(
             values.get('metadata'), models.InstanceMetadata)
@@ -1628,7 +1635,7 @@ def instance_create(context, values):
 
     def _get_sec_group_models(session, security_groups):
         models = []
-        default_group = security_group_ensure_default(context)
+        default_group = _security_group_ensure_default(context, session)
         if 'default' in security_groups:
             models.append(default_group)
             # Generate a new list, so we don't modify the original
@@ -1648,6 +1655,8 @@ def instance_create(context, values):
 
     # create the instance uuid to ec2_id mapping entry for instance
     ec2_instance_create(context, instance_ref['uuid'])
+
+    _instance_extra_create(context, {'instance_uuid': instance_ref['uuid']})
 
     return instance_ref
 
@@ -1699,6 +1708,9 @@ def instance_destroy(context, instance_uuid, constraint=None):
         model_query(context, models.InstanceFault, session=session).\
                 filter_by(instance_uuid=instance_uuid).\
                 soft_delete()
+        model_query(context, models.InstanceExtra, session=session).\
+                filter_by(instance_uuid=instance_uuid).\
+                soft_delete()
     return instance_ref
 
 
@@ -1732,7 +1744,7 @@ def instance_get(context, instance_id, columns_to_join=None):
             raise exception.InstanceNotFound(instance_id=instance_id)
 
         return result
-    except DataError:
+    except db_exc.DBError:
         # NOTE(sdague): catch all in case the db engine chokes on the
         # id because it's too long of an int to store.
         msg = _("Invalid instance id %s in request") % instance_id
@@ -2068,17 +2080,87 @@ def regex_filter(query, model, filters):
     return query
 
 
+def process_sort_params(sort_keys, sort_dirs,
+                        default_keys=['created_at', 'id'],
+                        default_dir='asc'):
+    """Process the sort parameters to include default keys.
+
+    Creates a list of sort keys and a list of sort directions. Adds the default
+    keys to the end of the list if they are not already included.
+
+    When adding the default keys to the sort keys list, the associated
+    direction is:
+    1) The first element in the 'sort_dirs' list (if specified), else
+    2) 'default_dir' value (Note that 'asc' is the default value since this is
+    the default in sqlalchemy.utils.paginate_query)
+
+    :param sort_keys: List of sort keys to include in the processed list
+    :param sort_dirs: List of sort directions to include in the processed list
+    :param default_keys: List of sort keys that need to be included in the
+                         processed list, they are added at the end of the list
+                         if not already specified.
+    :param default_dir: Sort direction associated with each of the default
+                        keys that are not supplied, used when they are added
+                        to the processed list
+    :returns: list of sort keys, list of sort directions
+    :raise exception.InvalidInput: If more sort directions than sort keys
+                                   are specified
+    """
+    # Determine direction to use for when adding default keys
+    if sort_dirs and len(sort_dirs) != 0:
+        default_dir_value = sort_dirs[0]
+    else:
+        default_dir_value = default_dir
+
+    # Create list of keys (do not modify the input list)
+    if sort_keys:
+        result_keys = list(sort_keys)
+    else:
+        result_keys = []
+
+    # If a list of directions is not provided, use the default sort direction
+    # for all provided keys
+    if sort_dirs:
+        result_dirs = list(sort_dirs)
+    else:
+        result_dirs = [default_dir_value for _sort_key in result_keys]
+
+    # Ensure that the key and direction length match
+    while len(result_dirs) < len(result_keys):
+        result_dirs.append(default_dir_value)
+    # Unless more direction are specified, which is an error
+    if len(result_dirs) > len(result_keys):
+        msg = _("Sort direction size exceeds sort key size")
+        raise exception.InvalidInput(reason=msg)
+
+    # Ensure defaults are included
+    for key in default_keys:
+        if key not in result_keys:
+            result_keys.append(key)
+            result_dirs.append(default_dir_value)
+
+    return result_keys, result_dirs
+
+
 @require_context
 def instance_get_active_by_window_joined(context, begin, end=None,
                                          project_id=None, host=None,
-                                         use_slave=False):
+                                         use_slave=False,
+                                         columns_to_join=None):
     """Return instances and joins that were active during window."""
     session = get_session(use_slave=use_slave)
     query = session.query(models.Instance)
 
-    query = query.options(joinedload('info_cache')).\
-                  options(joinedload('security_groups')).\
-                  filter(or_(models.Instance.terminated_at == null(),
+    if columns_to_join is None:
+        columns_to_join = ['info_cache', 'security_groups']
+        manual_joins = ['metadata', 'system_metadata']
+    else:
+        manual_joins, columns_to_join = _manual_join_columns(columns_to_join)
+
+    for column in columns_to_join:
+        query = query.options(joinedload(column))
+
+    query = query.filter(or_(models.Instance.terminated_at == null(),
                              models.Instance.terminated_at > begin))
     if end:
         query = query.filter(models.Instance.launched_at < end)
@@ -2087,7 +2169,7 @@ def instance_get_active_by_window_joined(context, begin, end=None,
     if host:
         query = query.filter_by(host=host)
 
-    return _instances_fill_metadata(context, query.all())
+    return _instances_fill_metadata(context, query.all(), manual_joins)
 
 
 def _instance_get_all_query(context, project_only=False,
@@ -2172,19 +2254,12 @@ def instance_floating_address_get_all(context, instance_uuid):
     if not uuidutils.is_uuid_like(instance_uuid):
         raise exception.InvalidUUID(uuid=instance_uuid)
 
-    fixed_ip_ids = model_query(context, models.FixedIp.id,
-                               base_model=models.FixedIp).\
-                        filter_by(instance_uuid=instance_uuid).\
-                        all()
-    if not fixed_ip_ids:
-        raise exception.FixedIpNotFoundForInstance(instance_uuid=instance_uuid)
-
-    fixed_ip_ids = [fixed_ip_id.id for fixed_ip_id in fixed_ip_ids]
-
-    floating_ips = model_query(context, models.FloatingIp.address,
+    floating_ips = model_query(context,
+                               models.FloatingIp.address,
                                base_model=models.FloatingIp).\
-                    filter(models.FloatingIp.fixed_ip_id.in_(fixed_ip_ids)).\
-                    all()
+        join(models.FloatingIp.fixed_ip).\
+        filter_by(instance_uuid=instance_uuid)
+
     return [floating_ip.address for floating_ip in floating_ips]
 
 
@@ -2259,6 +2334,7 @@ def _instance_metadata_update_in_place(context, instance, metadata_type, model,
         instance[metadata_type].append(newitem)
 
 
+@_retry_on_deadlock
 def _instance_update(context, instance_uuid, values, copy_old_instance=False,
                      columns_to_join=None):
     session = get_session()
@@ -2403,6 +2479,39 @@ def instance_info_cache_delete(context, instance_uuid):
     model_query(context, models.InstanceInfoCache).\
                          filter_by(instance_uuid=instance_uuid).\
                          soft_delete()
+
+
+###################
+
+
+def _instance_extra_create(context, values):
+    inst_extra_ref = models.InstanceExtra()
+    inst_extra_ref.update(values)
+    inst_extra_ref.save()
+    return inst_extra_ref
+
+
+def instance_extra_update_by_uuid(context, instance_uuid, values):
+    return model_query(context, models.InstanceExtra).\
+        filter_by(instance_uuid=instance_uuid).\
+        update(values)
+
+
+def _instance_extra_get_by_instance_uuid_query(context, instance_uuid):
+    return (model_query(context, models.InstanceExtra)
+                         .filter_by(instance_uuid=instance_uuid))
+
+
+def instance_extra_get_by_instance_uuid(context, instance_uuid,
+                                        columns=None):
+    query = _instance_extra_get_by_instance_uuid_query(
+        context, instance_uuid)
+    if columns is None:
+        columns = ['numa_topology', 'pci_requests']
+    for column in columns:
+        query = query.options(undefer(column))
+    instance_extra = query.first()
+    return instance_extra
 
 
 ###################
@@ -2640,6 +2749,14 @@ def network_get_associated_fixed_ips(context, network_id, host=None):
     inst_and = and_(models.Instance.uuid == models.FixedIp.instance_uuid,
                     models.Instance.deleted == 0)
     session = get_session()
+    # NOTE(vish): This subquery left joins the minimum interface id for each
+    #             instance. If the join succeeds (i.e. the 11th column is not
+    #             null), then the fixed ip is on the first interface.
+    subq = session.query(func.min(models.VirtualInterface.id).label("id"),
+                         models.VirtualInterface.instance_uuid).\
+            group_by(models.VirtualInterface.instance_uuid).subquery()
+    subq_and = and_(subq.c.id == models.FixedIp.virtual_interface_id,
+            subq.c.instance_uuid == models.VirtualInterface.instance_uuid)
     query = session.query(models.FixedIp.address,
                           models.FixedIp.instance_uuid,
                           models.FixedIp.network_id,
@@ -2649,11 +2766,13 @@ def network_get_associated_fixed_ips(context, network_id, host=None):
                           models.Instance.updated_at,
                           models.Instance.created_at,
                           models.FixedIp.allocated,
-                          models.FixedIp.leased).\
+                          models.FixedIp.leased,
+                          subq.c.id).\
                           filter(models.FixedIp.deleted == 0).\
                           filter(models.FixedIp.network_id == network_id).\
                           join((models.VirtualInterface, vif_and)).\
                           join((models.Instance, inst_and)).\
+                          outerjoin((subq, subq_and)).\
                           filter(models.FixedIp.instance_uuid != null()).\
                           filter(models.FixedIp.virtual_interface_id != null())
     if host:
@@ -2672,6 +2791,9 @@ def network_get_associated_fixed_ips(context, network_id, host=None):
         cleaned['instance_created'] = datum[7]
         cleaned['allocated'] = datum[8]
         cleaned['leased'] = datum[9]
+        # NOTE(vish): default_route is True if this fixed ip is on the first
+        #             interface its instance.
+        cleaned['default_route'] = datum[10] is not None
         data.append(cleaned)
     return data
 
@@ -2713,16 +2835,14 @@ def network_get_by_cidr(context, cidr):
 def network_get_all_by_host(context, host):
     session = get_session()
     fixed_host_filter = or_(models.FixedIp.host == host,
-                            models.Instance.host == host)
+            and_(models.FixedIp.instance_uuid != null(),
+                 models.Instance.host == host))
     fixed_ip_query = model_query(context, models.FixedIp.network_id,
                                  base_model=models.FixedIp,
                                  session=session).\
-                     outerjoin((models.VirtualInterface,
-                           models.VirtualInterface.id ==
-                           models.FixedIp.virtual_interface_id)).\
                      outerjoin((models.Instance,
-                           models.Instance.uuid ==
-                               models.VirtualInterface.instance_uuid)).\
+                                models.Instance.uuid ==
+                                models.FixedIp.instance_uuid)).\
                      filter(fixed_host_filter)
     # NOTE(vish): return networks that have host set
     #             or that have a fixed ip with host set
@@ -2988,7 +3108,7 @@ def quota_usage_get_all_by_project(context, project_id):
     return _quota_usage_get_all(context, project_id)
 
 
-def _quota_usage_create(context, project_id, user_id, resource, in_use,
+def _quota_usage_create(project_id, user_id, resource, in_use,
                         reserved, until_refresh, session=None):
     quota_usage_ref = models.QuotaUsage()
     quota_usage_ref.project_id = project_id
@@ -3027,7 +3147,7 @@ def quota_usage_update(context, project_id, user_id, resource, **kwargs):
 ###################
 
 
-def _reservation_create(context, uuid, usage, project_id, user_id, resource,
+def _reservation_create(uuid, usage, project_id, user_id, resource,
                         delta, expire, session=None):
     reservation_ref = models.Reservation()
     reservation_ref.uuid = uuid
@@ -3071,6 +3191,160 @@ def _get_project_user_quota_usages(context, session, project_id,
     return proj_result, user_result
 
 
+def _create_quota_usage_if_missing(user_usages, resource, until_refresh,
+                                   project_id, user_id, session):
+    """Creates a QuotaUsage record and adds to user_usages if not present.
+
+    :param user_usages:   dict of resource keys to QuotaUsage records. This is
+                          updated if resource is not in user_usages yet or
+                          until_refresh is not None.
+    :param resource:      The resource being checked for quota usage.
+    :param until_refresh: Count of reservations until usage is refreshed,
+                          int or None
+    :param max_age:       Number of seconds between subsequent usage refreshes.
+    :param project_id:    The project being checked for quota usage.
+    :param user_id:       The user being checked for quota usage.
+    :param session:       DB session holding a transaction lock.
+    :return:              True if a new QuotaUsage record was created and added
+                          to user_usages, False otherwise.
+    """
+    new_usage = None
+    if resource not in user_usages:
+        user_id_to_use = user_id
+        if resource in PER_PROJECT_QUOTAS:
+            user_id_to_use = None
+        new_usage = _quota_usage_create(project_id, user_id_to_use, resource,
+                                        0, 0, until_refresh or None,
+                                        session=session)
+        user_usages[resource] = new_usage
+    return new_usage is not None
+
+
+def _is_quota_refresh_needed(quota_usage, max_age):
+    """Determines if a quota usage refresh is needed.
+
+    :param quota_usage:   A QuotaUsage object for a given resource.
+    :param max_age:       Number of seconds between subsequent usage refreshes.
+    :return:              True if a refresh is needed, False otherwise.
+    """
+    refresh = False
+    if quota_usage.in_use < 0:
+        # Negative in_use count indicates a desync, so try to
+        # heal from that...
+        refresh = True
+    elif quota_usage.until_refresh is not None:
+        quota_usage.until_refresh -= 1
+        if quota_usage.until_refresh <= 0:
+            refresh = True
+    elif max_age and (timeutils.utcnow() -
+            quota_usage.updated_at).seconds >= max_age:
+        refresh = True
+
+    return refresh
+
+
+def _refresh_quota_usages(quota_usage, until_refresh, in_use):
+    """Refreshes quota usage for the given resource.
+
+    :param quota_usage:   A QuotaUsage object for a given resource.
+    :param until_refresh: Count of reservations until usage is refreshed,
+                          int or None
+    :param in_use:        Actual quota usage for the resource.
+    """
+    if quota_usage.in_use != in_use:
+        LOG.info(_LI('quota_usages out of sync, updating. '
+                     'project_id: %(project_id)s, '
+                     'user_id: %(user_id)s, '
+                     'resource: %(res)s, '
+                     'tracked usage: %(tracked_use)s, '
+                     'actual usage: %(in_use)s'),
+            {'project_id': quota_usage.project_id,
+             'user_id': quota_usage.user_id,
+             'res': quota_usage.resource,
+             'tracked_use': quota_usage.in_use,
+             'in_use': in_use})
+
+    # Update the usage
+    quota_usage.in_use = in_use
+    quota_usage.until_refresh = until_refresh or None
+
+
+def _raise_overquota_exception(project_quotas, user_quotas, deltas, overs,
+                               project_usages, user_usages):
+    """Generates and raises an OverQuota exception.
+
+    :param project_quotas: dict of resource quotas (limits) for the project.
+    :param user_quotas:    dict of resource quotas (limits) for the user.
+    :param deltas:         dict of resource keys to positive/negative quota
+                           changes for the resources in a given operation.
+    :param overs:          list of resources that are over-quota for the
+                           operation.
+    :param project_usages: dict of resource keys to QuotaUsage records for the
+                           project.
+    :param user_usages:    dict of resource keys to QuotaUsage records for the
+                           user.
+    :raises:               nova.exception.OverQuota
+    """
+    if project_quotas == user_quotas:
+        usages = project_usages
+    else:
+        usages = user_usages
+    usages = dict((k, dict(in_use=v['in_use'], reserved=v['reserved']))
+                  for k, v in usages.items())
+    headroom = dict((res, user_quotas[res] -
+                         (usages[res]['in_use'] + usages[res]['reserved']))
+                    for res in user_quotas.keys())
+
+    # If quota_cores is unlimited [-1]:
+    # - set cores headroom based on instances headroom:
+    if user_quotas.get('cores') == -1:
+        if deltas['cores']:
+            hc = headroom['instances'] * deltas['cores']
+            headroom['cores'] = hc / deltas['instances']
+        else:
+            headroom['cores'] = headroom['instances']
+
+    # If quota_ram is unlimited [-1]:
+    # - set ram headroom based on instances headroom:
+    if user_quotas.get('ram') == -1:
+        if deltas['ram']:
+            hr = headroom['instances'] * deltas['ram']
+            headroom['ram'] = hr / deltas['instances']
+        else:
+            headroom['ram'] = headroom['instances']
+    raise exception.OverQuota(overs=sorted(overs), quotas=user_quotas,
+                              usages=usages, headroom=headroom)
+
+
+def _calculate_overquota(project_quotas, user_quotas, deltas,
+                         project_usages, user_usages):
+    """Checks if any resources will go over quota based on the request.
+
+    :param project_quotas: dict of resource quotas (limits) for the project.
+    :param user_quotas:    dict of resource quotas (limits) for the user.
+    :param deltas:         dict of resource keys to positive/negative quota
+                           changes for the resources in a given operation.
+    :param project_usages: dict of resource keys to QuotaUsage records for the
+                           project.
+    :param user_usages:    dict of resource keys to QuotaUsage records for the
+                           user.
+    :return:               list of resources that are over-quota for the
+                           operation.
+    """
+    overs = []
+    for res, delta in deltas.items():
+        # We can't go over-quota if we're not reserving anything or if
+        # we have unlimited quotas.
+        if user_quotas[res] >= 0 and delta >= 0:
+            # over if the project usage + delta is more than project quota
+            if project_quotas[res] < delta + project_usages[res]['total']:
+                overs.append(res)
+            # over if the user usage + delta is more than user quota
+            elif user_quotas[res] < delta + user_usages[res]['total']:
+                overs.append(res)
+    return overs
+
+
 @require_context
 @_retry_on_deadlock
 def quota_reserve(context, resources, project_quotas, user_quotas, deltas,
@@ -3095,38 +3369,11 @@ def quota_reserve(context, resources, project_quotas, user_quotas, deltas,
             resource = work.pop()
 
             # Do we need to refresh the usage?
-            refresh = False
-            if ((resource not in PER_PROJECT_QUOTAS) and
-                    (resource not in user_usages)):
-                user_usages[resource] = _quota_usage_create(elevated,
-                                                      project_id,
-                                                      user_id,
-                                                      resource,
-                                                      0, 0,
-                                                      until_refresh or None,
-                                                      session=session)
-                refresh = True
-            elif ((resource in PER_PROJECT_QUOTAS) and
-                    (resource not in user_usages)):
-                user_usages[resource] = _quota_usage_create(elevated,
-                                                      project_id,
-                                                      None,
-                                                      resource,
-                                                      0, 0,
-                                                      until_refresh or None,
-                                                      session=session)
-                refresh = True
-            elif user_usages[resource].in_use < 0:
-                # Negative in_use count indicates a desync, so try to
-                # heal from that...
-                refresh = True
-            elif user_usages[resource].until_refresh is not None:
-                user_usages[resource].until_refresh -= 1
-                if user_usages[resource].until_refresh <= 0:
-                    refresh = True
-            elif max_age and (user_usages[resource].updated_at -
-                              timeutils.utcnow()).seconds >= max_age:
-                refresh = True
+            created = _create_quota_usage_if_missing(user_usages, resource,
+                                                     until_refresh, project_id,
+                                                     user_id, session)
+            refresh = created or _is_quota_refresh_needed(
+                                        user_usages[resource], max_age)
 
             # OK, refresh the usage
             if refresh:
@@ -3136,41 +3383,11 @@ def quota_reserve(context, resources, project_quotas, user_quotas, deltas,
                 updates = sync(elevated, project_id, user_id, session)
                 for res, in_use in updates.items():
                     # Make sure we have a destination for the usage!
-                    if ((res not in PER_PROJECT_QUOTAS) and
-                            (res not in user_usages)):
-                        user_usages[res] = _quota_usage_create(elevated,
-                                                         project_id,
-                                                         user_id,
-                                                         res,
-                                                         0, 0,
-                                                         until_refresh or None,
-                                                         session=session)
-                    if ((res in PER_PROJECT_QUOTAS) and
-                            (res not in user_usages)):
-                        user_usages[res] = _quota_usage_create(elevated,
-                                                         project_id,
-                                                         None,
-                                                         res,
-                                                         0, 0,
-                                                         until_refresh or None,
-                                                         session=session)
-
-                    if user_usages[res].in_use != in_use:
-                        LOG.debug('quota_usages out of sync, updating. '
-                                  'project_id: %(project_id)s, '
-                                  'user_id: %(user_id)s, '
-                                  'resource: %(res)s, '
-                                  'tracked usage: %(tracked_use)s, '
-                                  'actual usage: %(in_use)s',
-                            {'project_id': project_id,
-                             'user_id': user_id,
-                             'res': res,
-                             'tracked_use': user_usages[res].in_use,
-                             'in_use': in_use})
-
-                    # Update the usage
-                    user_usages[res].in_use = in_use
-                    user_usages[res].until_refresh = until_refresh or None
+                    _create_quota_usage_if_missing(user_usages, res,
+                                                   until_refresh, project_id,
+                                                   user_id, session)
+                    _refresh_quota_usages(user_usages[res], until_refresh,
+                                          in_use)
 
                     # Because more than one resource may be refreshed
                     # by the call to the sync routine, and we don't
@@ -3197,12 +3414,9 @@ def quota_reserve(context, resources, project_quotas, user_quotas, deltas,
         for key, value in user_usages.items():
             if key not in project_usages:
                 project_usages[key] = value
-        overs = [res for res, delta in deltas.items()
-                 if user_quotas[res] >= 0 and delta >= 0 and
-                 (project_quotas[res] < delta +
-                  project_usages[res]['total'] or
-                  user_quotas[res] < delta +
-                  user_usages[res].total)]
+
+        overs = _calculate_overquota(project_quotas, user_quotas, deltas,
+                                     project_usages, user_usages)
 
         # NOTE(Vek): The quota check needs to be in the transaction,
         #            but the transaction doesn't fail just because
@@ -3215,7 +3429,7 @@ def quota_reserve(context, resources, project_quotas, user_quotas, deltas,
         if not overs:
             reservations = []
             for res, delta in deltas.items():
-                reservation = _reservation_create(elevated,
+                reservation = _reservation_create(
                                                  str(uuid.uuid4()),
                                                  user_usages[res],
                                                  project_id,
@@ -3246,36 +3460,10 @@ def quota_reserve(context, resources, project_quotas, user_quotas, deltas,
     if unders:
         LOG.warning(_("Change will make usage less than 0 for the following "
                       "resources: %s"), unders)
+
     if overs:
-        if project_quotas == user_quotas:
-            usages = project_usages
-        else:
-            usages = user_usages
-        usages = dict((k, dict(in_use=v['in_use'], reserved=v['reserved']))
-                      for k, v in usages.items())
-        headroom = dict((res, user_quotas[res] -
-                             (usages[res]['in_use'] + usages[res]['reserved']))
-                        for res in user_quotas.keys())
-
-        # If quota_cores is unlimited [-1]:
-        # - set cores headroom based on instances headroom:
-        if user_quotas.get('cores') == -1:
-            if deltas['cores']:
-                hc = headroom['instances'] * deltas['cores']
-                headroom['cores'] = hc / deltas['instances']
-            else:
-                headroom['cores'] = headroom['instances']
-
-        # If quota_ram is unlimited [-1]:
-        # - set ram headroom based on instances headroom:
-        if user_quotas.get('ram') == -1:
-            if deltas['ram']:
-                hr = headroom['instances'] * deltas['ram']
-                headroom['ram'] = hr / deltas['instances']
-            else:
-                headroom['ram'] = headroom['instances']
-        raise exception.OverQuota(overs=sorted(overs), quotas=user_quotas,
-                                  usages=usages, headroom=headroom)
+        _raise_overquota_exception(project_quotas, user_quotas, deltas, overs,
+                                   project_usages, user_usages)
 
     return reservations
 
@@ -3771,8 +3959,21 @@ def security_group_update(context, security_group_id, values,
 
 def security_group_ensure_default(context):
     """Ensure default security group exists for a project_id."""
-    session = get_session()
-    with session.begin():
+
+    try:
+        return _security_group_ensure_default(context)
+    except exception.SecurityGroupExists:
+        # NOTE(rpodolyaka): a concurrent transaction has succeeded first,
+        # suppress the error and proceed
+        return security_group_get_by_name(context, context.project_id,
+                                          'default')
+
+
+def _security_group_ensure_default(context, session=None):
+    if session is None:
+        session = get_session()
+
+    with session.begin(subtransactions=True):
         try:
             default_group = _security_group_get_by_names(context,
                                                          session,
@@ -3792,9 +3993,7 @@ def security_group_ensure_default(context):
                      filter_by(resource='security_groups')
             # Create quota usage for auto created default security group
             if not usage.first():
-                elevated = context.elevated()
-                _quota_usage_create(elevated,
-                                    context.project_id,
+                _quota_usage_create(context.project_id,
                                     context.user_id,
                                     'security_groups',
                                     1, 0,
@@ -4781,11 +4980,14 @@ def bw_usage_get(context, uuid, start_period, mac, use_slave=False):
 
 
 @require_context
-def bw_usage_get_by_uuids(context, uuids, start_period):
-    return model_query(context, models.BandwidthUsage, read_deleted="yes").\
-                   filter(models.BandwidthUsage.uuid.in_(uuids)).\
-                   filter_by(start_period=start_period).\
-                   all()
+def bw_usage_get_by_uuids(context, uuids, start_period, use_slave=False):
+    return (
+        model_query(context, models.BandwidthUsage, read_deleted="yes",
+                    use_slave=use_slave).
+        filter(models.BandwidthUsage.uuid.in_(uuids)).
+        filter_by(start_period=start_period).
+        all()
+    )
 
 
 @require_context
@@ -5243,14 +5445,17 @@ def aggregate_metadata_add(context, aggregate_id, metadata, set_delete=False,
                     meta_ref.update({"value": metadata[key]})
                     already_existing_keys.add(key)
 
+                new_entries = []
                 for key, value in metadata.iteritems():
                     if key in already_existing_keys:
                         continue
-                    meta_ref = models.AggregateMetadata()
-                    meta_ref.update({"key": key,
-                                     "value": value,
-                                     "aggregate_id": aggregate_id})
-                    session.add(meta_ref)
+                    new_entries.append({"key": key,
+                                        "value": value,
+                                        "aggregate_id": aggregate_id})
+                if new_entries:
+                    session.execute(
+                        models.AggregateMetadata.__table__.insert(),
+                        new_entries)
 
             return metadata
         except db_exc.DBDuplicateEntry:
@@ -5646,7 +5851,9 @@ def archive_deleted_rows_for_table(context, tablename, max_rows):
         with conn.begin():
             conn.execute(insert_statement)
             result_delete = conn.execute(delete_statement)
-    except IntegrityError:
+    except db_exc.DBError:
+        # TODO(ekudryashova): replace by DBReferenceError when db layer
+        # raise it.
         # A foreign key constraint keeps us from deleting some of
         # these rows until we clean up a dependent table.  Just
         # skip this table for now; we'll come back to it later.
@@ -5739,6 +5946,25 @@ def instance_group_get(context, group_uuid):
     return group
 
 
+def instance_group_get_by_instance(context, instance_uuid):
+    session = get_session()
+    with session.begin():
+        group_member = model_query(context, models.InstanceGroupMember,
+                                   session=session).\
+                                   filter_by(instance_id=instance_uuid).\
+                                   first()
+        if not group_member:
+            raise exception.InstanceGroupNotFound(group_uuid='')
+        group = _instance_group_get_query(context, models.InstanceGroup,
+                                          models.InstanceGroup.id,
+                                          group_member.group_id,
+                                          session=session).first()
+        if not group:
+            raise exception.InstanceGroupNotFound(
+                    group_uuid=group_member.group_id)
+        return group
+
+
 def instance_group_update(context, group_uuid, values):
     """Update the attributes of an group.
 
@@ -5811,6 +6037,15 @@ def instance_group_get_all_by_project_id(context, project_id):
     return _instance_group_get_query(context, models.InstanceGroup).\
                             filter_by(project_id=project_id).\
                             all()
+
+
+def _instance_group_count_by_project_and_user(context, project_id,
+                                              user_id, session=None):
+    return model_query(context, models.InstanceGroup, read_deleted="no",
+                       session=session).\
+                   filter_by(project_id=project_id).\
+                   filter_by(user_id=user_id).\
+                   count()
 
 
 def _instance_group_model_get_query(context, model_class, group_id,

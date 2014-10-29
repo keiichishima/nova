@@ -17,6 +17,7 @@
 import datetime
 
 from oslo.config import cfg
+from oslo.utils import timeutils
 
 from nova import compute
 from nova.compute import flavors
@@ -25,7 +26,6 @@ from nova import db
 from nova.db.sqlalchemy import api as sqa_api
 from nova.db.sqlalchemy import models as sqa_models
 from nova import exception
-from nova.openstack.common import timeutils
 from nova import quota
 from nova import test
 import nova.tests.image.fake
@@ -810,6 +810,8 @@ class DbQuotaDriverTestCase(test.TestCase):
                    quota_injected_file_path_length=255,
                    quota_security_groups=10,
                    quota_security_group_rules=20,
+                   quota_server_groups=10,
+                   quota_server_group_members=10,
                    reservation_expire=86400,
                    until_refresh=0,
                    max_age=0,
@@ -839,6 +841,8 @@ class DbQuotaDriverTestCase(test.TestCase):
                 security_groups=10,
                 security_group_rules=20,
                 key_pairs=100,
+                server_groups=10,
+                server_group_members=10,
                 ))
 
     def _stub_quota_class_get_default(self):
@@ -885,6 +889,8 @@ class DbQuotaDriverTestCase(test.TestCase):
                 security_groups=10,
                 security_group_rules=20,
                 key_pairs=100,
+                server_groups=10,
+                server_group_members=10,
                 ))
 
     def test_get_class_quotas_no_defaults(self):
@@ -1016,6 +1022,16 @@ class DbQuotaDriverTestCase(test.TestCase):
                     in_use=0,
                     reserved=0,
                     ),
+                server_groups=dict(
+                    limit=10,
+                    in_use=0,
+                    reserved=0,
+                    ),
+                server_group_members=dict(
+                    limit=10,
+                    in_use=0,
+                    reserved=0,
+                    ),
                 ))
 
     def _stub_get_by_project_and_user_specific(self):
@@ -1144,6 +1160,16 @@ class DbQuotaDriverTestCase(test.TestCase):
                     in_use=0,
                     reserved=0,
                     ),
+                server_groups=dict(
+                    limit=10,
+                    in_use=0,
+                    reserved=0,
+                    ),
+                server_group_members=dict(
+                    limit=10,
+                    in_use=0,
+                    reserved=0,
+                    ),
                 ))
 
     def test_get_user_quotas_alt_context_no_class(self):
@@ -1219,6 +1245,16 @@ class DbQuotaDriverTestCase(test.TestCase):
                     in_use=0,
                     reserved=0,
                     ),
+                server_groups=dict(
+                    limit=10,
+                    in_use=0,
+                    reserved=0,
+                    ),
+                server_group_members=dict(
+                    limit=10,
+                    in_use=0,
+                    reserved=0,
+                    ),
                 ))
 
     def test_get_project_quotas_alt_context_no_class(self):
@@ -1291,6 +1327,16 @@ class DbQuotaDriverTestCase(test.TestCase):
                     ),
                 key_pairs=dict(
                     limit=100,
+                    in_use=0,
+                    reserved=0,
+                    ),
+                server_groups=dict(
+                    limit=10,
+                    in_use=0,
+                    reserved=0,
+                    ),
+                server_group_members=dict(
+                    limit=10,
                     in_use=0,
                     reserved=0,
                     ),
@@ -1371,6 +1417,16 @@ class DbQuotaDriverTestCase(test.TestCase):
                     in_use=0,
                     reserved=0,
                     ),
+                server_groups=dict(
+                    limit=10,
+                    in_use=0,
+                    reserved=0,
+                    ),
+                server_group_members=dict(
+                    limit=10,
+                    in_use=0,
+                    reserved=0,
+                    ),
                 ))
 
     def test_get_project_quotas_alt_context_with_class(self):
@@ -1444,6 +1500,16 @@ class DbQuotaDriverTestCase(test.TestCase):
                     ),
                 key_pairs=dict(
                     limit=100,
+                    in_use=0,
+                    reserved=0,
+                    ),
+                server_groups=dict(
+                    limit=10,
+                    in_use=0,
+                    reserved=0,
+                    ),
+                server_group_members=dict(
+                    limit=10,
                     in_use=0,
                     reserved=0,
                     ),
@@ -1558,6 +1624,12 @@ class DbQuotaDriverTestCase(test.TestCase):
                 key_pairs=dict(
                     limit=100,
                     ),
+                server_groups=dict(
+                    limit=10,
+                    ),
+                server_group_members=dict(
+                    limit=10,
+                    ),
                 ))
 
     def test_get_project_quotas_no_usages(self):
@@ -1607,6 +1679,12 @@ class DbQuotaDriverTestCase(test.TestCase):
                     ),
                 key_pairs=dict(
                     limit=100,
+                    ),
+                server_groups=dict(
+                    limit=10,
+                    ),
+                server_group_members=dict(
+                    limit=10,
                     ),
                 ))
 
@@ -1724,6 +1802,14 @@ class DbQuotaDriverTestCase(test.TestCase):
                     'minimum': 0,
                     'maximum': 100,
                     },
+                'server_groups': {
+                    'minimum': 0,
+                    'maximum': 10,
+                    },
+                'server_group_members': {
+                    'minimum': 0,
+                    'maximum': 10,
+                    },
                 })
 
     def test_get_settable_quotas_without_user(self):
@@ -1781,6 +1867,14 @@ class DbQuotaDriverTestCase(test.TestCase):
                     'maximum': -1,
                     },
                 'key_pairs': {
+                    'minimum': 0,
+                    'maximum': -1,
+                    },
+                'server_groups': {
+                    'minimum': 0,
+                    'maximum': -1,
+                    },
+                'server_group_members': {
                     'minimum': 0,
                     'maximum': -1,
                     },
@@ -1846,6 +1940,14 @@ class DbQuotaDriverTestCase(test.TestCase):
                     'minimum': 0,
                     'maximum': 100,
                     },
+                'server_groups': {
+                    'minimum': 0,
+                    'maximum': 10,
+                    },
+                'server_group_members': {
+                    'minimum': 0,
+                    'maximum': 10,
+                    },
                 })
 
     def _stub_get_project_quotas(self):
@@ -1898,7 +2000,8 @@ class DbQuotaDriverTestCase(test.TestCase):
                                                      'test_class'),
                                          quota.QUOTAS._resources,
                                          ['instances', 'cores', 'ram',
-                                          'floating_ips', 'security_groups'],
+                                          'floating_ips', 'security_groups',
+                                          'server_groups'],
                                          True,
                                          project_id='test_project')
 
@@ -1909,6 +2012,7 @@ class DbQuotaDriverTestCase(test.TestCase):
                 ram=50 * 1024,
                 floating_ips=10,
                 security_groups=10,
+                server_groups=10,
                 ))
 
     def test_get_quotas_no_sync(self):
@@ -1919,7 +2023,8 @@ class DbQuotaDriverTestCase(test.TestCase):
                                          ['metadata_items', 'injected_files',
                                           'injected_file_content_bytes',
                                           'injected_file_path_bytes',
-                                          'security_group_rules'], False,
+                                          'security_group_rules',
+                                          'server_group_members'], False,
                                          project_id='test_project')
 
         self.assertEqual(self.calls, ['get_project_quotas'])
@@ -1929,6 +2034,7 @@ class DbQuotaDriverTestCase(test.TestCase):
                 injected_file_content_bytes=10 * 1024,
                 injected_file_path_bytes=255,
                 security_group_rules=20,
+                server_group_members=10,
                 ))
 
     def test_limit_check_under(self):
@@ -1946,6 +2052,15 @@ class DbQuotaDriverTestCase(test.TestCase):
                           FakeContext('test_project', 'test_class'),
                           quota.QUOTAS._resources,
                           dict(metadata_items=129))
+
+    def test_limit_check_project_overs(self):
+        self._stub_get_project_quotas()
+        self.assertRaises(exception.OverQuota,
+                          self.driver.limit_check,
+                          FakeContext('test_project', 'test_class'),
+                          quota.QUOTAS._resources,
+                          dict(injected_file_content_bytes=10241,
+                               injected_file_path_bytes=256))
 
     def test_limit_check_unlimited(self):
         self.flags(quota_metadata_items=-1)
@@ -2201,7 +2316,7 @@ class QuotaReserveSqlAlchemyTestCase(test.TestCase):
                                                user_id):
             return self.usages.copy(), self.usages.copy()
 
-        def fake_quota_usage_create(context, project_id, user_id, resource,
+        def fake_quota_usage_create(project_id, user_id, resource,
                                     in_use, reserved, until_refresh,
                                     session=None, save=True):
             quota_usage_ref = self._make_quota_usage(
@@ -2212,7 +2327,7 @@ class QuotaReserveSqlAlchemyTestCase(test.TestCase):
 
             return quota_usage_ref
 
-        def fake_reservation_create(context, uuid, usage_id, project_id,
+        def fake_reservation_create(uuid, usage_id, project_id,
                                     user_id, resource, delta, expire,
                                     session=None):
             reservation_ref = self._make_reservation(
@@ -2562,12 +2677,14 @@ class NoopQuotaDriverTestCase(test.TestCase):
         self.expected_with_usages = {}
         self.expected_without_usages = {}
         self.expected_without_dict = {}
+        self.expected_settable_quotas = {}
         for r in quota.QUOTAS._resources:
             self.expected_with_usages[r] = dict(limit=-1,
                                                 in_use=-1,
                                                 reserved=-1)
             self.expected_without_usages[r] = dict(limit=-1)
             self.expected_without_dict[r] = -1
+            self.expected_settable_quotas[r] = dict(minimum=0, maximum=-1)
 
         self.driver = quota.NoopQuotaDriver()
 
@@ -2631,3 +2748,16 @@ class NoopQuotaDriverTestCase(test.TestCase):
                                              'fake_user',
                                              usages=False)
         self.assertEqual(self.expected_without_usages, result)
+
+    def test_get_settable_quotas_with_user(self):
+        result = self.driver.get_settable_quotas(None,
+                                                 quota.QUOTAS._resources,
+                                                 'test_project',
+                                                 'fake_user')
+        self.assertEqual(self.expected_settable_quotas, result)
+
+    def test_get_settable_quotas_without_user(self):
+        result = self.driver.get_settable_quotas(None,
+                                                 quota.QUOTAS._resources,
+                                                 'test_project')
+        self.assertEqual(self.expected_settable_quotas, result)

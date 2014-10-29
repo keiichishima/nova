@@ -21,6 +21,9 @@ import string
 
 import mock
 from oslo.config import cfg
+from oslo.serialization import jsonutils
+from oslo.utils import importutils
+import six
 import testtools
 
 from nova.compute import flavors
@@ -35,8 +38,6 @@ from nova.network import api as network_api
 from nova import objects
 from nova.objects import block_device as block_device_obj
 from nova.objects import instance as instance_obj
-from nova.openstack.common import importutils
-from nova.openstack.common import jsonutils
 from nova.openstack.common import periodic_task
 from nova import rpc
 from nova import test
@@ -47,6 +48,7 @@ from nova.tests import fake_notifier
 from nova.tests import fake_server_actions
 import nova.tests.image.fake
 from nova.tests import matchers
+from nova import utils
 from nova.virt import driver
 
 CONF = cfg.CONF
@@ -168,11 +170,6 @@ class ComputeValidateDeviceTestCase(test.TestCase):
         device = self._validate_device('/dev/xvdc')
         self.assertEqual(device, '/dev/vdc')
 
-    def test_invalid_bdms(self):
-        self.instance['root_device_name'] = "baddata"
-        self.assertRaises(exception.InvalidDevicePath,
-                          self._validate_device)
-
     def test_invalid_device_prefix(self):
         self.assertRaises(exception.InvalidDevicePath,
                           self._validate_device, '/baddata/vdc')
@@ -180,7 +177,7 @@ class ComputeValidateDeviceTestCase(test.TestCase):
     def test_device_in_use(self):
         exc = self.assertRaises(exception.DevicePathInUse,
                           self._validate_device, '/dev/vda')
-        self.assertIn('/dev/vda', str(exc))
+        self.assertIn('/dev/vda', six.text_type(exc))
 
     def test_swap(self):
         self.instance['default_swap_device'] = "/dev/vdc"
@@ -235,6 +232,11 @@ class ComputeValidateDeviceTestCase(test.TestCase):
         self.data.append(self._fake_bdm(device))
         device = self._validate_device()
         self.assertEqual(device, '/dev/xvdd')
+
+    def test_no_dev_root_device_name_get_next_name(self):
+        self.instance['root_device_name'] = 'vda'
+        device = self._validate_device()
+        self.assertEqual('/dev/vdc', device)
 
 
 class DefaultDeviceNamesForInstanceTestCase(test.NoDBTestCase):
@@ -686,6 +688,29 @@ class ComputeGetImageMetadataTestCase(test.TestCase):
 
         self.image['properties'] = 'DONTCARE'
         self.assertThat(self.image, matchers.DictMatches(image_meta))
+
+    def test_get_image_meta_with_image_id_none(self):
+        self.image['properties'] = {'fake_property': 'fake_value'}
+
+        with mock.patch.object(flavors,
+                               "extract_flavor") as mock_extract_flavor:
+            with mock.patch.object(utils, "get_system_metadata_from_image"
+                                   ) as mock_get_sys_metadata:
+                image_meta = compute_utils.get_image_metadata(
+                    self.ctx, self.mock_image_api, None, self.instance_obj)
+
+                self.assertEqual(0, self.mock_image_api.get.call_count)
+                self.assertEqual(0, mock_extract_flavor.call_count)
+                self.assertEqual(0, mock_get_sys_metadata.call_count)
+                self.assertNotIn('fake_property', image_meta['properties'])
+
+        # Checking mock_image_api_get is called with 0 image_id
+        # as 0 is a valid image ID
+        image_meta = compute_utils.get_image_metadata(self.ctx,
+                                                      self.mock_image_api,
+                                                      0, self.instance_obj)
+        self.assertEqual(1, self.mock_image_api.get.call_count)
+        self.assertIn('fake_property', image_meta['properties'])
 
     def _test_get_image_meta_exception(self, error):
         self.mock_image_api.get.side_effect = error

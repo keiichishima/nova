@@ -24,18 +24,18 @@ import re
 
 import netaddr
 from oslo.config import cfg
+from oslo.serialization import jsonutils
+from oslo.utils import excutils
+from oslo.utils import importutils
+from oslo.utils import timeutils
 import six
 
 from nova import exception
-from nova.i18n import _
+from nova.i18n import _, _LE
 from nova import objects
-from nova.openstack.common import excutils
 from nova.openstack.common import fileutils
-from nova.openstack.common import importutils
-from nova.openstack.common import jsonutils
 from nova.openstack.common import log as logging
 from nova.openstack.common import processutils
-from nova.openstack.common import timeutils
 from nova import paths
 from nova import utils
 
@@ -905,16 +905,11 @@ def get_dhcp_leases(context, network_ref):
     return '\n'.join(hosts)
 
 
-def get_dhcp_hosts(context, network_ref):
+def get_dhcp_hosts(context, network_ref, fixedips):
     """Get network's hosts config in dhcp-host format."""
     hosts = []
-    host = None
-    if network_ref['multi_host']:
-        host = CONF.host
     macs = set()
-    for fixedip in objects.FixedIPList.get_by_network(context,
-                                                      network_ref,
-                                                      host=host):
+    for fixedip in fixedips:
         if fixedip.allocated:
             if fixedip.virtual_interface.address not in macs:
                 hosts.append(_host_dhcp(fixedip))
@@ -973,7 +968,7 @@ def _remove_dhcp_mangle_rule(dev):
     iptables_manager.apply()
 
 
-def get_dhcp_opts(context, network_ref):
+def get_dhcp_opts(context, network_ref, fixedips):
     """Get network's hosts config in dhcp-opts format."""
     gateway = network_ref['gateway']
     # NOTE(vish): if we are in multi-host mode and we are not sharing
@@ -984,52 +979,49 @@ def get_dhcp_opts(context, network_ref):
         gateway = network_ref['dhcp_server']
     hosts = []
     if CONF.use_single_default_gateway:
-        # NOTE(vish): this will have serious performance implications if we
-        #             are not in multi_host mode.
-        host = None
-        if network_ref['multi_host']:
-            host = CONF.host
-        fixedips = objects.FixedIPList.get_by_network(context, network_ref,
-                                                      host=host)
-        if fixedips:
-            instance_set = set([fixedip.instance_uuid for fixedip in fixedips])
-            default_gw_vif = {}
-            for instance_uuid in instance_set:
-                vifs = objects.VirtualInterfaceList.get_by_instance_uuid(
-                        context, instance_uuid)
-                if vifs:
-                    # offer a default gateway to the first virtual interface
-                    default_gw_vif[instance_uuid] = vifs[0].id
-
-            for fixedip in fixedips:
-                if fixedip.allocated:
-                    instance_uuid = fixedip.instance_uuid
-                    if instance_uuid in default_gw_vif:
-                        # we don't want default gateway for this fixed ip
-                        if (default_gw_vif[instance_uuid] !=
-                                fixedip.virtual_interface_id):
-                            hosts.append(_host_dhcp_opts(fixedip))
-                        else:
-                            hosts.append(_host_dhcp_opts(fixedip, gateway))
+        for fixedip in fixedips:
+            if fixedip.allocated:
+                vif_id = fixedip.virtual_interface_id
+                if fixedip.default_route:
+                    hosts.append(_host_dhcp_opts(vif_id, gateway))
+                else:
+                    hosts.append(_host_dhcp_opts(vif_id))
     else:
         hosts.append(_host_dhcp_opts(None, gateway))
     return '\n'.join(hosts)
 
 
 def release_dhcp(dev, address, mac_address):
-    utils.execute('dhcp_release', dev, address, mac_address, run_as_root=True)
+    try:
+        utils.execute('dhcp_release', dev, address, mac_address,
+                      run_as_root=True)
+    except processutils.ProcessExecutionError:
+        raise exception.NetworkDhcpReleaseFailed(address=address,
+                                                 mac_address=mac_address)
 
 
 def update_dhcp(context, dev, network_ref):
     conffile = _dhcp_file(dev, 'conf')
-    write_to_file(conffile, get_dhcp_hosts(context, network_ref))
-    restart_dhcp(context, dev, network_ref)
+    host = None
+    if network_ref['multi_host']:
+        host = CONF.host
+    fixedips = objects.FixedIPList.get_by_network(context,
+                                                  network_ref,
+                                                  host=host)
+    write_to_file(conffile, get_dhcp_hosts(context, network_ref, fixedips))
+    restart_dhcp(context, dev, network_ref, fixedips)
 
 
 def update_dns(context, dev, network_ref):
     hostsfile = _dhcp_file(dev, 'hosts')
+    host = None
+    if network_ref['multi_host']:
+        host = CONF.host
+    fixedips = objects.FixedIPList.get_by_network(context,
+                                                  network_ref,
+                                                  host=host)
     write_to_file(hostsfile, get_dns_hosts(context, network_ref))
-    restart_dhcp(context, dev, network_ref)
+    restart_dhcp(context, dev, network_ref, fixedips)
 
 
 def update_dhcp_hostfile_with_text(dev, hosts_text):
@@ -1056,7 +1048,7 @@ def kill_dhcp(dev):
 #           configuration options (like dchp-range, vlan, ...)
 #           aren't reloaded.
 @utils.synchronized('dnsmasq_start')
-def restart_dhcp(context, dev, network_ref):
+def restart_dhcp(context, dev, network_ref, fixedips):
     """(Re)starts a dnsmasq server for a given network.
 
     If a dnsmasq instance is already running then send a HUP
@@ -1066,7 +1058,7 @@ def restart_dhcp(context, dev, network_ref):
     conffile = _dhcp_file(dev, 'conf')
 
     optsfile = _dhcp_file(dev, 'opts')
-    write_to_file(optsfile, get_dhcp_opts(context, network_ref))
+    write_to_file(optsfile, get_dhcp_opts(context, network_ref, fixedips))
     os.chmod(optsfile, 0o644)
 
     _add_dhcp_mangle_rule(dev)
@@ -1088,7 +1080,7 @@ def restart_dhcp(context, dev, network_ref):
                 _add_dnsmasq_accept_rules(dev)
                 return
             except Exception as exc:  # pylint: disable=W0703
-                LOG.error(_('Hupping dnsmasq threw %s'), exc)
+                LOG.error(_LE('Hupping dnsmasq threw %s'), exc)
         else:
             LOG.debug('Pid %d is stale, relaunching dnsmasq', pid)
 
@@ -1111,6 +1103,7 @@ def restart_dhcp(context, dev, network_ref):
            '--dhcp-lease-max=%s' % len(netaddr.IPNetwork(network_ref['cidr'])),
            '--dhcp-hostsfile=%s' % _dhcp_file(dev, 'conf'),
            '--dhcp-script=%s' % CONF.dhcpbridge,
+           '--no-hosts',
            '--leasefile-ro']
 
     # dnsmasq currently gives an error for an empty domain,
@@ -1124,8 +1117,6 @@ def restart_dhcp(context, dev, network_ref):
             dns_servers.add(network_ref.get('dns1'))
         if network_ref.get('dns2'):
             dns_servers.add(network_ref.get('dns2'))
-    if network_ref['multi_host'] or dns_servers:
-        cmd.append('--no-hosts')
     if network_ref['multi_host']:
         cmd.append('--addn-hosts=%s' % _dhcp_file(dev, 'hosts'))
     if dns_servers:
@@ -1169,7 +1160,7 @@ interface %s
             try:
                 _execute('kill', pid, run_as_root=True)
             except Exception as exc:  # pylint: disable=W0703
-                LOG.error(_('killing radvd threw %s'), exc)
+                LOG.error(_LE('killing radvd threw %s'), exc)
         else:
             LOG.debug('Pid %d is stale, relaunching radvd', pid)
 
@@ -1190,18 +1181,19 @@ def _host_lease(fixedip):
                               fixedip.instance.hostname or '*')
 
 
-def _host_dhcp_network(data):
-    return 'NW-%s' % data.virtual_interface_id
+def _host_dhcp_network(vif_id):
+    return 'NW-%s' % vif_id
 
 
 def _host_dhcp(fixedip):
     """Return a host string for an address in dhcp-host format."""
     if CONF.use_single_default_gateway:
-        return '%s,%s.%s,%s,%s' % (fixedip.virtual_interface.address,
+        net = _host_dhcp_network(fixedip.virtual_interface_id)
+        return '%s,%s.%s,%s,net:%s' % (fixedip.virtual_interface.address,
                                fixedip.instance.hostname,
                                CONF.dhcp_domain,
                                fixedip.address,
-                               'net:' + _host_dhcp_network(fixedip))
+                               net)
     else:
         return '%s,%s.%s,%s' % (fixedip.virtual_interface.address,
                                fixedip.instance.hostname,
@@ -1215,11 +1207,11 @@ def _host_dns(fixedip):
                           CONF.dhcp_domain)
 
 
-def _host_dhcp_opts(fixedip=None, gateway=None):
+def _host_dhcp_opts(vif_id=None, gateway=None):
     """Return an empty gateway option."""
     values = []
-    if fixedip:
-        values.append(_host_dhcp_network(fixedip))
+    if vif_id is not None:
+        values.append(_host_dhcp_network(vif_id))
     # NOTE(vish): 3 is the dhcp option for gateway.
     values.append('3')
     if gateway:
@@ -1330,7 +1322,7 @@ def _ovs_vsctl(args):
     try:
         return utils.execute(*full_args, run_as_root=True)
     except Exception as e:
-        LOG.error(_("Unable to execute %(cmd)s. Exception: %(exception)s"),
+        LOG.error(_LE("Unable to execute %(cmd)s. Exception: %(exception)s"),
                   {'cmd': full_args, 'exception': e})
         raise exception.AgentError(method=full_args)
 
@@ -1388,7 +1380,7 @@ def delete_net_dev(dev):
             LOG.debug("Net device removed: '%s'", dev)
         except processutils.ProcessExecutionError:
             with excutils.save_and_reraise_exception():
-                LOG.error(_("Failed removing net device: '%s'"), dev)
+                LOG.error(_LE("Failed removing net device: '%s'"), dev)
 
 
 # Similar to compute virt layers, the Linux network node

@@ -26,6 +26,7 @@ eventlet.monkey_patch(os=False)
 
 import copy
 import gettext
+import inspect
 import logging
 import os
 import shutil
@@ -35,6 +36,7 @@ import uuid
 import fixtures
 from oslo.config import cfg
 from oslo.messaging import conffixture as messaging_conffixture
+from oslo.utils import timeutils
 import testtools
 
 from nova import context
@@ -47,7 +49,6 @@ from nova.objects import base as objects_base
 from nova.openstack.common.fixture import logging as log_fixture
 from nova.openstack.common.fixture import moxstubout
 from nova.openstack.common import log as nova_logging
-from nova.openstack.common import timeutils
 from nova import paths
 from nova import rpc
 from nova import service
@@ -64,11 +65,6 @@ test_opts = [
 
 CONF = cfg.CONF
 CONF.register_opts(test_opts)
-CONF.import_opt('connection',
-                'nova.openstack.common.db.options',
-                group='database')
-CONF.import_opt('sqlite_db', 'nova.openstack.common.db.options',
-                group='database')
 CONF.import_opt('enabled', 'nova.api.openstack', group='osapi_v3')
 CONF.set_override('use_stderr', False)
 
@@ -275,7 +271,7 @@ class TestCase(testtools.TestCase):
             level = logging.INFO
 
         # Collect logs
-        fs = '%(levelname)s [%(name)s] %(message)s'
+        fs = '%(asctime)s %(levelname)s [%(name)s] %(message)s'
         self.useFixture(fixtures.FakeLogger(format=fs, level=None))
         root.handlers[0].setLevel(level)
 
@@ -284,6 +280,9 @@ class TestCase(testtools.TestCase):
             handler = NullHandler()
             self.useFixture(fixtures.LogHandler(handler, nuke_handlers=False))
             handler.setLevel(logging.DEBUG)
+
+        # Don't log every single DB migration step
+        logging.getLogger('migrate.versioning.api').setLevel(logging.WARNING)
 
         self.useFixture(conf_fixture.ConfFixture(CONF))
 
@@ -346,6 +345,36 @@ class TestCase(testtools.TestCase):
     def start_service(self, name, host=None, **kwargs):
         svc = self.useFixture(ServiceFixture(name, host, **kwargs))
         return svc.service
+
+    def assertPublicAPISignatures(self, baseinst, inst):
+        def get_public_apis(inst):
+            methods = {}
+            for (name, value) in inspect.getmembers(inst, inspect.ismethod):
+                if name.startswith("_"):
+                    continue
+                methods[name] = value
+            return methods
+
+        baseclass = baseinst.__class__.__name__
+        basemethods = get_public_apis(baseinst)
+        implmethods = get_public_apis(inst)
+
+        extranames = []
+        for name in sorted(implmethods.keys()):
+            if name not in basemethods:
+                extranames.append(name)
+
+        self.assertEqual([], extranames,
+                         "public APIs not listed in base class %s" %
+                         baseclass)
+
+        for name in sorted(implmethods.keys()):
+            baseargs = inspect.getargspec(basemethods[name])
+            implargs = inspect.getargspec(implmethods[name])
+
+            self.assertEqual(baseargs, implargs,
+                             "%s args don't match base class %s" %
+                             (name, baseclass))
 
 
 class APICoverage(object):

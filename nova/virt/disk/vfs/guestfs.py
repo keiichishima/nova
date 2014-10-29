@@ -13,10 +13,13 @@
 # under the License.
 
 from eventlet import tpool
+from oslo.config import cfg
+from oslo.utils import importutils
+import six
 
 from nova import exception
-from nova.i18n import _, _LI
-from nova.openstack.common import importutils
+from nova.i18n import _
+from nova.i18n import _LW
 from nova.openstack.common import log as logging
 from nova.virt.disk.vfs import api as vfs
 
@@ -25,6 +28,15 @@ LOG = logging.getLogger(__name__)
 
 guestfs = None
 forceTCG = False
+
+guestfs_opts = [
+    cfg.BoolOpt('debug',
+                default=False,
+                help='Enable guestfs debug')
+]
+
+CONF = cfg.CONF
+CONF.register_opts(guestfs_opts, group='guestfs')
 
 
 def force_tcg(force=True):
@@ -50,9 +62,46 @@ class VFSGuestFS(vfs.VFS):
 
         global guestfs
         if guestfs is None:
-            guestfs = importutils.import_module('guestfs')
+            try:
+                guestfs = importutils.import_module('guestfs')
+            except Exception as e:
+                raise exception.NovaException(
+                    _("libguestfs is not installed (%s)") % e)
 
         self.handle = None
+
+    def inspect_capabilities(self):
+        """Determines whether guestfs is well configured."""
+        try:
+            g = guestfs.GuestFS()
+            g.add_drive("/dev/null")  # sic
+            g.launch()
+        except Exception as e:
+            raise exception.NovaException(
+                _("libguestfs installed but not usable (%s)") % e)
+
+        return self
+
+    def configure_debug(self):
+        """Configures guestfs to be verbose."""
+        if not self.handle:
+            LOG.warning(_LW("Please consider to execute setup before trying "
+                            "to configure debug log message."))
+        else:
+            def log_callback(ev, eh, buf, array):
+                if ev == guestfs.EVENT_APPLIANCE:
+                    buf = buf.rstrip()
+                LOG.debug("event=%(event)s eh=%(eh)d buf='%(buf)s' "
+                          "array=%(array)s", {
+                              "event": guestfs.event_to_string(ev),
+                              "eh": eh, "buf": buf, "array": array})
+
+            events = (guestfs.EVENT_APPLIANCE | guestfs.EVENT_LIBRARY
+                      | guestfs.EVENT_WARNING | guestfs.EVENT_TRACE)
+
+            self.handle.set_trace(True)  # just traces libguestfs API calls
+            self.handle.set_verbose(True)
+            self.handle.set_event_callback(log_callback, events)
 
     def setup_os(self):
         if self.partition == -1:
@@ -122,7 +171,8 @@ class VFSGuestFS(vfs.VFS):
                 guestfs.GuestFS(python_return_dict=False,
                                 close_on_exit=False))
         except TypeError as e:
-            if 'close_on_exit' in str(e) or 'python_return_dict' in str(e):
+            if ('close_on_exit' in six.text_type(e) or
+                'python_return_dict' in six.text_type(e)):
                 # NOTE(russellb) In case we're not using a version of
                 # libguestfs new enough to support parameters close_on_exit
                 # and python_return_dict which were added in libguestfs 1.20.
@@ -130,13 +180,16 @@ class VFSGuestFS(vfs.VFS):
             else:
                 raise
 
+        if CONF.guestfs.debug:
+            self.configure_debug()
+
         try:
             if forceTCG:
                 self.handle.set_backend_settings("force_tcg")
         except AttributeError as ex:
             # set_backend_settings method doesn't exist in older
             # libguestfs versions, so nothing we can do but ignore
-            LOG.info(_LI("Unable to force TCG mode, libguestfs too old?"),
+            LOG.warn(_LW("Unable to force TCG mode, libguestfs too old? %s"),
                      ex)
             pass
 

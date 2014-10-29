@@ -17,6 +17,7 @@ from lxml import etree
 import time
 import uuid
 
+from nova.compute import arch
 from nova.i18n import _
 
 # Allow passing None to the various connect methods
@@ -24,7 +25,7 @@ from nova.i18n import _
 allow_default_uri_connection = True
 
 # string indicating the CPU arch
-node_arch = 'x86_64'  # or 'i686' (or whatever else uname -m might return)
+node_arch = arch.X86_64  # or 'i686' (or whatever else uname -m might return)
 
 # memory size in kilobytes
 node_kB_mem = 4096
@@ -140,6 +141,7 @@ VIR_ERR_OPERATION_TIMEOUT = 68
 VIR_ERR_NO_NWFILTER = 620
 VIR_ERR_SYSTEM_ERROR = 900
 VIR_ERR_INTERNAL_ERROR = 950
+VIR_ERR_CONFIG_UNSUPPORTED = 951
 
 # Readonly
 VIR_CONNECT_RO = 1
@@ -537,6 +539,9 @@ class Domain(object):
       <source pty='/dev/pts/27'/>
       <target port='1'/>
     </serial>
+    <serial type='tcp'>
+      <source host="-1" service="-1" mode="bind"/>
+    </serial>
     <console type='file'>
       <source path='dummy.log'/>
       <target port='0'/>
@@ -860,7 +865,7 @@ class Connection(object):
 
   <guest>
     <os_type>hvm</os_type>
-    <arch name='arm'>
+    <arch name='armv7l'>
       <wordsize>32</wordsize>
       <emulator>/usr/bin/qemu-system-arm</emulator>
       <machine>integratorcp</machine>
@@ -988,7 +993,8 @@ class Connection(object):
 
         arch_node = tree.find('./arch')
         if arch_node is not None:
-            if arch_node.text not in ['x86_64', 'i686']:
+            if arch_node.text not in [arch.X86_64,
+                                      arch.I686]:
                 return VIR_CPU_COMPARE_INCOMPATIBLE
 
         model_node = tree.find('./model')

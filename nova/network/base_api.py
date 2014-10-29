@@ -16,12 +16,14 @@
 import functools
 import inspect
 
+from oslo.utils import excutils
+
 from nova.db import base
 from nova import hooks
 from nova.i18n import _
 from nova.network import model as network_model
 from nova import objects
-from nova.openstack.common import excutils
+from nova.openstack.common import lockutils
 from nova.openstack.common import log as logging
 
 
@@ -67,8 +69,9 @@ def refresh_cache(f):
             msg = _('instance is a required argument to use @refresh_cache')
             raise Exception(msg)
 
-        update_instance_cache_with_nw_info(self, context, instance,
-                                           nw_info=res)
+        with lockutils.lock('refresh_cache-%s' % instance['uuid']):
+            update_instance_cache_with_nw_info(self, context, instance,
+                                               nw_info=res)
         # return the original function's return value
         return res
     return wrapper
@@ -153,6 +156,11 @@ class NetworkAPI(base.Base):
         """Removes (deallocates) a floating ip with address from a project."""
         raise NotImplementedError()
 
+    def disassociate_and_release_floating_ip(self, context, instance,
+                                           floating_ip):
+        """Removes (deallocates) and deletes the floating ip."""
+        raise NotImplementedError()
+
     def associate_floating_ip(self, context, instance,
                               floating_address, fixed_address,
                               affect_auto_assigned=False):
@@ -230,6 +238,16 @@ class NetworkAPI(base.Base):
 
     def get_instance_nw_info(self, context, instance, **kwargs):
         """Returns all network info related to an instance."""
+        raise NotImplementedError()
+
+    def create_pci_requests_for_sriov_ports(self, context,
+                                            pci_requests,
+                                            requested_networks):
+        """Check requested networks for any SR-IOV port request.
+
+        Create a PCI request object for each SR-IOV port, and add it to the
+        pci_requests object that contains a list of PCI request object.
+        """
         raise NotImplementedError()
 
     def validate_networks(self, context, requested_networks, num_instances):

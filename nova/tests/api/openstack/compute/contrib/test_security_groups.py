@@ -17,9 +17,12 @@ from lxml import etree
 import mock
 import mox
 from oslo.config import cfg
+from oslo.serialization import jsonutils
 import webob
 
-from nova.api.openstack.compute.contrib import security_groups
+from nova.api.openstack.compute.contrib import security_groups as secgroups_v2
+from nova.api.openstack.compute.plugins.v3 import security_groups as \
+    secgroups_v21
 from nova.api.openstack import wsgi
 from nova.api.openstack import xmlutil
 from nova import compute
@@ -29,7 +32,6 @@ import nova.db
 from nova import exception
 from nova import objects
 from nova.objects import instance as instance_obj
-from nova.openstack.common import jsonutils
 from nova import quota
 from nova import test
 from nova.tests.api.openstack import fakes
@@ -121,14 +123,17 @@ def return_server_nonexistent(context, server_id, columns_to_join=None):
     raise exception.InstanceNotFound(instance_id=server_id)
 
 
-class TestSecurityGroups(test.TestCase):
-    def setUp(self):
-        super(TestSecurityGroups, self).setUp()
+class TestSecurityGroupsV21(test.TestCase):
+    secgrp_ctl_cls = secgroups_v21.SecurityGroupController
+    server_secgrp_ctl_cls = secgroups_v21.ServerSecurityGroupController
+    secgrp_act_ctl_cls = secgroups_v21.SecurityGroupActionController
 
-        self.controller = security_groups.SecurityGroupController()
-        self.server_controller = (
-            security_groups.ServerSecurityGroupController())
-        self.manager = security_groups.SecurityGroupActionController()
+    def setUp(self):
+        super(TestSecurityGroupsV21, self).setUp()
+
+        self.controller = self.secgrp_ctl_cls()
+        self.server_controller = self.server_secgrp_ctl_cls()
+        self.manager = self.secgrp_act_ctl_cls()
 
         # This needs to be done here to set fake_id because the derived
         # class needs to be called first if it wants to set
@@ -162,7 +167,7 @@ class TestSecurityGroups(test.TestCase):
         del sg['name']
 
         req = fakes.HTTPRequest.blank('/v2/fake/os-security-groups')
-        self.assertRaises(webob.exc.HTTPUnprocessableEntity,
+        self.assertRaises(webob.exc.HTTPBadRequest,
                           self.controller.create, req, sg)
 
         self._assert_no_security_groups_reserved(req.environ['nova.context'])
@@ -175,6 +180,21 @@ class TestSecurityGroups(test.TestCase):
         self.assertRaises(webob.exc.HTTPBadRequest, self.controller.create,
                           req, {'security_group': sg})
 
+        self._assert_no_security_groups_reserved(req.environ['nova.context'])
+
+    def test_create_security_group_with_empty_description(self):
+        sg = security_group_template()
+        sg['description'] = ""
+
+        req = fakes.HTTPRequest.blank('/v2/fake/os-security-groups')
+        try:
+            self.controller.create(req, {'security_group': sg})
+            self.fail('Should have raised BadRequest exception')
+        except webob.exc.HTTPBadRequest as exc:
+            self.assertEqual('description has a minimum character requirement'
+                             ' of 1.', exc.explanation)
+        except exception.InvalidInput as exc:
+            self.fail('Should have raised BadRequest exception instead of')
         self._assert_no_security_groups_reserved(req.environ['nova.context'])
 
     def test_create_security_group_with_blank_name(self):
@@ -228,7 +248,7 @@ class TestSecurityGroups(test.TestCase):
 
     def test_create_security_group_with_no_body(self):
         req = fakes.HTTPRequest.blank('/v2/fake/os-security-groups')
-        self.assertRaises(webob.exc.HTTPUnprocessableEntity,
+        self.assertRaises(webob.exc.HTTPBadRequest,
                           self.controller.create, req, None)
 
         self._assert_no_security_groups_reserved(req.environ['nova.context'])
@@ -237,7 +257,7 @@ class TestSecurityGroups(test.TestCase):
         body = {'no-securityGroup': None}
 
         req = fakes.HTTPRequest.blank('/v2/fake/os-security-groups')
-        self.assertRaises(webob.exc.HTTPUnprocessableEntity,
+        self.assertRaises(webob.exc.HTTPBadRequest,
                           self.controller.create, req, body)
 
         self._assert_no_security_groups_reserved(req.environ['nova.context'])
@@ -329,7 +349,7 @@ class TestSecurityGroups(test.TestCase):
         groups.append(sg)
         # An expected rule here needs to be created as the api returns
         # different attributes on the rule for a response than what was
-        # passed in. For exmaple:
+        # passed in. For example:
         #  "cidr": "0.0.0.0/0" ->"ip_range": {"cidr": "0.0.0.0/0"}
         expected_rule = security_group_rule_template(
             ip_range={'cidr': '10.2.3.124/24'}, parent_group_id=1,
@@ -789,11 +809,20 @@ class TestSecurityGroups(test.TestCase):
         self.manager._removeSecurityGroup(req, '1', body)
 
 
+class TestSecurityGroupsV2(TestSecurityGroupsV21):
+    secgrp_ctl_cls = secgroups_v2.SecurityGroupController
+    server_secgrp_ctl_cls = secgroups_v2.ServerSecurityGroupController
+    secgrp_act_ctl_cls = secgroups_v2.SecurityGroupActionController
+
+
+# NOTE(oomichi): v2.1 API does not support security group management (create/
+# update/delete a security group). We don't need to test this class against
+# v2.1 API.
 class TestSecurityGroupRules(test.TestCase):
     def setUp(self):
         super(TestSecurityGroupRules, self).setUp()
 
-        self.controller = security_groups.SecurityGroupController()
+        self.controller = secgroups_v2.SecurityGroupController()
         if self.controller.security_group_api.id_is_uuid:
             id1 = '11111111-1111-1111-1111-111111111111'
             id2 = '22222222-2222-2222-2222-222222222222'
@@ -823,7 +852,7 @@ class TestSecurityGroupRules(test.TestCase):
 
         self.parent_security_group = db2
 
-        self.controller = security_groups.SecurityGroupRulesController()
+        self.controller = secgroups_v2.SecurityGroupRulesController()
 
     def test_create_by_cidr(self):
         rule = security_group_rule_template(cidr='10.2.3.124/24',
@@ -965,13 +994,13 @@ class TestSecurityGroupRules(test.TestCase):
 
     def test_create_with_no_body(self):
         req = fakes.HTTPRequest.blank('/v2/fake/os-security-group-rules')
-        self.assertRaises(webob.exc.HTTPUnprocessableEntity,
+        self.assertRaises(webob.exc.HTTPBadRequest,
                           self.controller.create, req, None)
 
     def test_create_with_no_security_group_rule_in_body(self):
         rules = {'test': 'test'}
         req = fakes.HTTPRequest.blank('/v2/fake/os-security-group-rules')
-        self.assertRaises(webob.exc.HTTPUnprocessableEntity,
+        self.assertRaises(webob.exc.HTTPBadRequest,
                           self.controller.create, req, rules)
 
     def test_create_with_invalid_parent_group_id(self):
@@ -1298,7 +1327,7 @@ class TestSecurityGroupRulesXMLDeserializer(test.TestCase):
 
     def setUp(self):
         super(TestSecurityGroupRulesXMLDeserializer, self).setUp()
-        self.deserializer = security_groups.SecurityGroupRulesXMLDeserializer()
+        self.deserializer = secgroups_v2.SecurityGroupRulesXMLDeserializer()
 
     def test_create_request(self):
         serial_request = """
@@ -1356,7 +1385,7 @@ class TestSecurityGroupXMLDeserializer(test.TestCase):
 
     def setUp(self):
         super(TestSecurityGroupXMLDeserializer, self).setUp()
-        self.deserializer = security_groups.SecurityGroupXMLDeserializer()
+        self.deserializer = secgroups_v2.SecurityGroupXMLDeserializer()
 
     def test_create_request(self):
         serial_request = """
@@ -1409,9 +1438,9 @@ class TestSecurityGroupXMLSerializer(test.TestCase):
     def setUp(self):
         super(TestSecurityGroupXMLSerializer, self).setUp()
         self.namespace = wsgi.XMLNS_V11
-        self.rule_serializer = security_groups.SecurityGroupRuleTemplate()
-        self.index_serializer = security_groups.SecurityGroupsTemplate()
-        self.default_serializer = security_groups.SecurityGroupTemplate()
+        self.rule_serializer = secgroups_v2.SecurityGroupRuleTemplate()
+        self.index_serializer = secgroups_v2.SecurityGroupsTemplate()
+        self.default_serializer = secgroups_v2.SecurityGroupTemplate()
 
     def _tag(self, elem):
         tagname = elem.tag
@@ -1616,12 +1645,12 @@ def fake_get_instances_security_groups_bindings(inst, context, servers):
     return result
 
 
-class SecurityGroupsOutputTest(test.TestCase):
+class SecurityGroupsOutputTestV21(test.TestCase):
+    base_url = '/v2/fake/servers'
     content_type = 'application/json'
 
     def setUp(self):
-        super(SecurityGroupsOutputTest, self).setUp()
-        self.controller = security_groups.SecurityGroupController()
+        super(SecurityGroupsOutputTestV21, self).setUp()
         fakes.stub_out_nw_api(self.stubs)
         self.stubs.Set(compute.api.API, 'get', fake_compute_get)
         self.stubs.Set(compute.api.API, 'get_all', fake_compute_get_all)
@@ -1630,6 +1659,10 @@ class SecurityGroupsOutputTest(test.TestCase):
             osapi_compute_extension=[
                 'nova.api.openstack.compute.contrib.select_extensions'],
             osapi_compute_ext_list=['Security_groups'])
+        self.app = self._setup_app()
+
+    def _setup_app(self):
+        return fakes.wsgi_app_v21(init_only=('os-security-groups', 'servers'))
 
     def _make_request(self, url, body=None):
         req = webob.Request.blank(url)
@@ -1638,7 +1671,7 @@ class SecurityGroupsOutputTest(test.TestCase):
             req.body = self._encode_body(body)
         req.content_type = self.content_type
         req.headers['Accept'] = self.content_type
-        res = req.get_response(fakes.wsgi_app(init_only=('servers',)))
+        res = req.get_response(self.app)
         return res
 
     def _encode_body(self, body):
@@ -1654,10 +1687,9 @@ class SecurityGroupsOutputTest(test.TestCase):
         return server.get('security_groups')
 
     def test_create(self):
-        url = '/v2/fake/servers'
         image_uuid = 'c905cedb-7281-47e4-8a62-f26bc5fc4c77'
         server = dict(name='server_test', imageRef=image_uuid, flavorRef=2)
-        res = self._make_request(url, {'server': server})
+        res = self._make_request(self.base_url, {'server': server})
         self.assertEqual(res.status_int, 202)
         server = self._get_server(res.body)
         for i, group in enumerate(self._get_groups(server)):
@@ -1665,7 +1697,7 @@ class SecurityGroupsOutputTest(test.TestCase):
             self.assertEqual(group.get('name'), name)
 
     def test_show(self):
-        url = '/v2/fake/servers/%s' % UUID3
+        url = self.base_url + '/' + UUID3
         res = self._make_request(url)
 
         self.assertEqual(res.status_int, 200)
@@ -1675,7 +1707,7 @@ class SecurityGroupsOutputTest(test.TestCase):
             self.assertEqual(group.get('name'), name)
 
     def test_detail(self):
-        url = '/v2/fake/servers/detail'
+        url = self.base_url + '/detail'
         res = self._make_request(url)
 
         self.assertEqual(res.status_int, 200)
@@ -1690,13 +1722,19 @@ class SecurityGroupsOutputTest(test.TestCase):
             raise exception.InstanceNotFound(instance_id='fake')
 
         self.stubs.Set(compute.api.API, 'get', fake_compute_get)
-        url = '/v2/fake/servers/70f6db34-de8d-4fbd-aafb-4065bdfa6115'
+        url = self.base_url + '/70f6db34-de8d-4fbd-aafb-4065bdfa6115'
         res = self._make_request(url)
 
         self.assertEqual(res.status_int, 404)
 
 
-class SecurityGroupsOutputXmlTest(SecurityGroupsOutputTest):
+class SecurityGroupsOutputTestV2(SecurityGroupsOutputTestV21):
+
+    def _setup_app(self):
+        return fakes.wsgi_app(init_only=('servers',))
+
+
+class SecurityGroupsOutputXmlTest(SecurityGroupsOutputTestV2):
     content_type = 'application/xml'
 
     class MinimalCreateServerTemplate(xmlutil.TemplateBuilder):

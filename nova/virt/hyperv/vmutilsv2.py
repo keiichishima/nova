@@ -44,6 +44,7 @@ class VMUtilsV2(vmutils.VMUtils):
     _IDE_DVD_RES_SUB_TYPE = 'Microsoft:Hyper-V:Virtual CD/DVD Disk'
     _IDE_CTRL_RES_SUB_TYPE = 'Microsoft:Hyper-V:Emulated IDE Controller'
     _SCSI_CTRL_RES_SUB_TYPE = 'Microsoft:Hyper-V:Synthetic SCSI Controller'
+    _SERIAL_PORT_RES_SUB_TYPE = 'Microsoft:Hyper-V:Serial Port'
 
     _VIRTUAL_SYSTEM_TYPE_REALIZED = 'Microsoft:Hyper-V:System:Realized'
 
@@ -55,6 +56,8 @@ class VMUtilsV2(vmutils.VMUtils):
     _STORAGE_ALLOC_SETTING_DATA_CLASS = 'Msvm_StorageAllocationSettingData'
     _ETHERNET_PORT_ALLOCATION_SETTING_DATA_CLASS = \
     'Msvm_EthernetPortAllocationSettingData'
+
+    _AUTOMATIC_STARTUP_ACTION_NONE = 2
 
     _vm_power_states_map = {constants.HYPERV_VM_STATE_ENABLED: 2,
                             constants.HYPERV_VM_STATE_DISABLED: 3,
@@ -69,9 +72,33 @@ class VMUtilsV2(vmutils.VMUtils):
     def _init_hyperv_wmi_conn(self, host):
         self._conn = wmi.WMI(moniker='//%s/root/virtualization/v2' % host)
 
-    def _create_vm_obj(self, vs_man_svc, vm_name):
+    def list_instance_notes(self):
+        instance_notes = []
+
+        for vs in self._conn.Msvm_VirtualSystemSettingData(
+                ['ElementName', 'Notes'],
+                VirtualSystemType=self._VIRTUAL_SYSTEM_TYPE_REALIZED):
+            instance_notes.append((vs.ElementName, [v for v in vs.Notes if v]))
+
+        return instance_notes
+
+    def list_instances(self):
+        """Return the names of all the instances known to Hyper-V."""
+        return [v.ElementName for v in
+                self._conn.Msvm_VirtualSystemSettingData(
+                    ['ElementName'],
+                    VirtualSystemType=self._VIRTUAL_SYSTEM_TYPE_REALIZED)]
+
+    def _create_vm_obj(self, vs_man_svc, vm_name, notes, dynamic_memory_ratio):
         vs_data = self._conn.Msvm_VirtualSystemSettingData.new()
         vs_data.ElementName = vm_name
+        vs_data.Notes = notes
+        # Don't start automatically on host boot
+        vs_data.AutomaticStartupAction = self._AUTOMATIC_STARTUP_ACTION_NONE
+
+        # vNUMA and dynamic memory are mutually exclusive
+        if dynamic_memory_ratio > 1:
+            vs_data.VirtualNumaEnabled = False
 
         (job_path,
          vm_path,
@@ -140,6 +167,9 @@ class VMUtilsV2(vmutils.VMUtils):
         diskdrive.HostResource = [mounted_disk_path]
 
         self._add_virt_resource(diskdrive, vm.path_())
+
+    def _get_disk_resource_address(self, disk_resource):
+        return disk_resource.AddressOnParent
 
     def create_scsi_controller(self, vm_name):
         """Create an iscsi controller ready to mount volumes."""

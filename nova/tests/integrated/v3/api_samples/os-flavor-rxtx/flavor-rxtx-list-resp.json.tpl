@@ -1,9 +1,9 @@
 {
     "flavors": [
         {
-            "disabled": false,
+            "OS-FLV-DISABLED:disabled": false,
             "disk": 1,
-            "ephemeral": 0,
+            "OS-FLV-EXT-DATA:ephemeral": 0,
             "id": "1",
             "links": [
                 {
@@ -16,16 +16,16 @@
                 }
             ],
             "name": "m1.tiny",
-            "flavor-access:is_public": true,
+            "os-flavor-access:is_public": true,
             "ram": 512,
-            "os-flavor-rxtx:rxtx_factor": 1.0,
-            "swap": 0,
+            "rxtx_factor": 1.0,
+            "swap": "",
             "vcpus": 1
         },
         {
-            "disabled": false,
+            "OS-FLV-DISABLED:disabled": false,
             "disk": 20,
-            "ephemeral": 0,
+            "OS-FLV-EXT-DATA:ephemeral": 0,
             "id": "2",
             "links": [
                 {
@@ -38,16 +38,16 @@
                 }
             ],
             "name": "m1.small",
-            "flavor-access:is_public": true,
+            "os-flavor-access:is_public": true,
             "ram": 2048,
-            "os-flavor-rxtx:rxtx_factor": 1.0,
-            "swap": 0,
+            "rxtx_factor": 1.0,
+            "swap": "",
             "vcpus": 1
         },
         {
-            "disabled": false,
+            "OS-FLV-DISABLED:disabled": false,
             "disk": 40,
-            "ephemeral": 0,
+            "OS-FLV-EXT-DATA:ephemeral": 0,
             "id": "3",
             "links": [
                 {
@@ -60,16 +60,16 @@
                 }
             ],
             "name": "m1.medium",
-            "flavor-access:is_public": true,
+            "os-flavor-access:is_public": true,
             "ram": 4096,
-            "os-flavor-rxtx:rxtx_factor": 1.0,
-            "swap": 0,
+            "rxtx_factor": 1.0,
+            "swap": "",
             "vcpus": 2
         },
         {
-            "disabled": false,
+            "OS-FLV-DISABLED:disabled": false,
             "disk": 80,
-            "ephemeral": 0,
+            "OS-FLV-EXT-DATA:ephemeral": 0,
             "id": "4",
             "links": [
                 {
@@ -82,16 +82,16 @@
                 }
             ],
             "name": "m1.large",
-            "flavor-access:is_public": true,
+            "os-flavor-access:is_public": true,
             "ram": 8192,
-            "os-flavor-rxtx:rxtx_factor": 1.0,
-            "swap": 0,
+            "rxtx_factor": 1.0,
+            "swap": "",
             "vcpus": 4
         },
         {
-            "disabled": false,
+            "OS-FLV-DISABLED:disabled": false,
             "disk": 160,
-            "ephemeral": 0,
+            "OS-FLV-EXT-DATA:ephemeral": 0,
             "id": "5",
             "links": [
                 {
@@ -104,10 +104,10 @@
                 }
             ],
             "name": "m1.xlarge",
-            "flavor-access:is_public": true,
+            "os-flavor-access:is_public": true,
             "ram": 16384,
-            "os-flavor-rxtx:rxtx_factor": 1.0,
-            "swap": 0,
+            "rxtx_factor": 1.0,
+            "swap": "",
             "vcpus": 8
         }
     ]

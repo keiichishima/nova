@@ -17,15 +17,15 @@
 import sys
 
 from oslo.config import cfg
+from oslo.serialization import jsonutils
 
 from nova.compute import flavors
 from nova.compute import utils as compute_utils
 from nova import db
 from nova import exception
-from nova.i18n import _
+from nova.i18n import _, _LE, _LW
 from nova import notifications
 from nova.objects import base as obj_base
-from nova.openstack.common import jsonutils
 from nova.openstack.common import log as logging
 from nova import rpc
 
@@ -72,7 +72,7 @@ def build_request_spec(ctxt, image, instances, instance_type=None):
 def set_vm_state_and_notify(context, service, method, updates, ex,
                             request_spec, db):
     """changes VM state and notifies."""
-    LOG.warning(_("Failed to %(service)s_%(method)s: %(ex)s"),
+    LOG.warning(_LW("Failed to %(service)s_%(method)s: %(ex)s"),
                 {'service': service, 'method': method, 'ex': ex})
 
     vm_state = updates['vm_state']
@@ -88,7 +88,7 @@ def set_vm_state_and_notify(context, service, method, updates, ex,
     for instance_uuid in request_spec.get('instance_uuids') or uuids:
         if instance_uuid:
             state = vm_state.upper()
-            LOG.warning(_('Setting instance to %s state.'), state,
+            LOG.warning(_LW('Setting instance to %s state.'), state,
                         instance_uuid=instance_uuid)
 
             # update instance state and notify on the transition
@@ -149,12 +149,12 @@ def populate_retry(filter_properties, instance_uuid):
     retry['num_attempts'] += 1
 
     _log_compute_error(instance_uuid, retry)
+    exc = retry.pop('exc', None)
 
     if retry['num_attempts'] > max_attempts:
-        exc = retry.pop('exc', None)
         msg = (_('Exceeded max scheduling attempts %(max_attempts)d '
                  'for instance %(instance_uuid)s. '
-                 'Last exception: %(exc)s.')
+                 'Last exception: %(exc)s')
                % {'max_attempts': max_attempts,
                   'instance_uuid': instance_uuid,
                   'exc': exc})
@@ -165,7 +165,7 @@ def _log_compute_error(instance_uuid, retry):
     """If the request contained an exception from a previous compute
     build/resize operation, log it to aid debugging
     """
-    exc = retry.pop('exc', None)  # string-ified exception from compute
+    exc = retry.get('exc')  # string-ified exception from compute
     if not exc:
         return  # no exception info from a previous attempt, skip
 
@@ -174,8 +174,8 @@ def _log_compute_error(instance_uuid, retry):
         return  # no previously attempted hosts, skip
 
     last_host, last_node = hosts[-1]
-    LOG.error(_('Error from last host: %(last_host)s (node %(last_node)s):'
-                ' %(exc)s'),
+    LOG.error(_LE('Error from last host: %(last_host)s (node %(last_node)s):'
+                  ' %(exc)s'),
               {'last_host': last_host,
                'last_node': last_node,
                'exc': exc},
@@ -228,10 +228,10 @@ def parse_options(opts, sep='=', converter=str, name=""):
         else:
             bad.append(opt)
     if bad:
-        LOG.warn(_("Ignoring the invalid elements of the option "
-                   "%(name)s: %(options)s"),
-                {'name': name,
-                 'options': ", ".join(bad)})
+        LOG.warn(_LW("Ignoring the invalid elements of the option "
+                     "%(name)s: %(options)s"),
+                 {'name': name,
+                  'options': ", ".join(bad)})
     return good
 
 

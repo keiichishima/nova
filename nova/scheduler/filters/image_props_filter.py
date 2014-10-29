@@ -16,6 +16,8 @@
 #    under the License.
 from distutils import versionpredicate
 
+from nova.compute import arch
+from nova.compute import hvtype
 from nova.compute import vm_mode
 from nova.openstack.common import log as logging
 from nova.scheduler import filters
@@ -43,8 +45,11 @@ class ImagePropertiesFilter(filters.BaseHostFilter):
         img_arch = image_props.get('architecture', None)
         img_h_type = image_props.get('hypervisor_type', None)
         img_vm_mode = image_props.get('vm_mode', None)
-        img_vm_mode = vm_mode.name(img_vm_mode)  # get canonical name
-        checked_img_props = (img_arch, img_h_type, img_vm_mode)
+        checked_img_props = (
+            arch.canonicalize(img_arch),
+            hvtype.canonicalize(img_h_type),
+            vm_mode.canonicalize(img_vm_mode)
+        )
 
         # Supported if no compute-related instance properties are specified
         if not any(checked_img_props):

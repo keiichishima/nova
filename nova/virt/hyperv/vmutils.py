@@ -28,7 +28,7 @@ if sys.platform == 'win32':
 from oslo.config import cfg
 
 from nova import exception
-from nova.i18n import _
+from nova.i18n import _, _LW
 from nova.openstack.common import log as logging
 from nova.virt.hyperv import constants
 
@@ -69,6 +69,7 @@ class VMUtils(object):
     _IDE_DVD_RES_SUB_TYPE = 'Microsoft Virtual CD/DVD Disk'
     _IDE_CTRL_RES_SUB_TYPE = 'Microsoft Emulated IDE Controller'
     _SCSI_CTRL_RES_SUB_TYPE = 'Microsoft Synthetic SCSI Controller'
+    _SERIAL_PORT_RES_SUB_TYPE = 'Microsoft Serial Port'
 
     _SETTINGS_DEFINE_STATE_CLASS = 'Msvm_SettingsDefineState'
     _VIRTUAL_SYSTEM_SETTING_DATA_CLASS = 'Msvm_VirtualSystemSettingData'
@@ -81,6 +82,8 @@ class VMUtils(object):
     _AFFECTED_JOB_ELEMENT_CLASS = "Msvm_AffectedJobElement"
 
     _SHUTDOWN_COMPONENT = "Msvm_ShutdownComponent"
+    _VIRTUAL_SYSTEM_CURRENT_SETTINGS = 3
+    _AUTOMATIC_STARTUP_ACTION_NONE = 0
 
     _vm_power_states_map = {constants.HYPERV_VM_STATE_ENABLED: 2,
                             constants.HYPERV_VM_STATE_DISABLED: 3,
@@ -99,12 +102,23 @@ class VMUtils(object):
     def _init_hyperv_wmi_conn(self, host):
         self._conn = wmi.WMI(moniker='//%s/root/virtualization' % host)
 
+    def list_instance_notes(self):
+        instance_notes = []
+
+        for vs in self._conn.Msvm_VirtualSystemSettingData(
+                ['ElementName', 'Notes'],
+                SettingType=self._VIRTUAL_SYSTEM_CURRENT_SETTINGS):
+            instance_notes.append((vs.ElementName,
+                                  [v for v in vs.Notes.split('\n') if v]))
+
+        return instance_notes
+
     def list_instances(self):
         """Return the names of all the instances known to Hyper-V."""
-        vm_names = [v.ElementName for v in
-                    self._conn.Msvm_ComputerSystem(['ElementName'],
-                                                   Caption="Virtual Machine")]
-        return vm_names
+        return [v.ElementName for v in
+                self._conn.Msvm_VirtualSystemSettingData(
+                    ['ElementName'],
+                    SettingType=self._VIRTUAL_SYSTEM_CURRENT_SETTINGS)]
 
     def get_vm_summary_info(self, vm_name):
         vm = self._lookup_vm_check(vm_name)
@@ -225,12 +239,13 @@ class VMUtils(object):
             raise HyperVAuthorizationException(msg)
 
     def create_vm(self, vm_name, memory_mb, vcpus_num, limit_cpu_features,
-                  dynamic_memory_ratio):
+                  dynamic_memory_ratio, notes=None):
         """Creates a VM."""
         vs_man_svc = self._conn.Msvm_VirtualSystemManagementService()[0]
 
         LOG.debug('Creating VM %s', vm_name)
-        vm = self._create_vm_obj(vs_man_svc, vm_name)
+        vm = self._create_vm_obj(vs_man_svc, vm_name, notes,
+                                 dynamic_memory_ratio)
 
         vmsetting = self._get_vm_setting_data(vm)
 
@@ -240,16 +255,32 @@ class VMUtils(object):
         LOG.debug('Set vCPUs for vm %s', vm_name)
         self._set_vm_vcpus(vm, vmsetting, vcpus_num, limit_cpu_features)
 
-    def _create_vm_obj(self, vs_man_svc, vm_name):
+    def _create_vm_obj(self, vs_man_svc, vm_name, notes, dynamic_memory_ratio):
         vs_gs_data = self._conn.Msvm_VirtualSystemGlobalSettingData.new()
         vs_gs_data.ElementName = vm_name
+        # Don't start automatically on host boot
+        vs_gs_data.AutomaticStartupAction = self._AUTOMATIC_STARTUP_ACTION_NONE
 
-        (job_path,
+        (vm_path,
+         job_path,
          ret_val) = vs_man_svc.DefineVirtualSystem([], None,
-                                                   vs_gs_data.GetText_(1))[1:]
+                                                   vs_gs_data.GetText_(1))
         self.check_ret_val(ret_val, job_path)
 
-        return self._lookup_vm_check(vm_name)
+        vm = self._get_wmi_obj(vm_path)
+
+        if notes:
+            vmsetting = self._get_vm_setting_data(vm)
+            vmsetting.Notes = '\n'.join(notes)
+            self._modify_virtual_system(vs_man_svc, vm_path, vmsetting)
+
+        return self._get_wmi_obj(vm_path)
+
+    def _modify_virtual_system(self, vs_man_svc, vm_path, vmsetting):
+        (job_path, ret_val) = vs_man_svc.ModifyVirtualSystem(
+            ComputerSystem=vm_path,
+            SystemSettingData=vmsetting.GetText_(1))[1:]
+        self.check_ret_val(ret_val, job_path)
 
     def get_vm_scsi_controller(self, vm_name):
         vm = self._lookup_vm_check(vm_name)
@@ -362,6 +393,33 @@ class VMUtils(object):
         diskdrive.HostResource = [mounted_disk_path]
         self._add_virt_resource(diskdrive, vm.path_())
 
+    def _get_disk_resource_address(self, disk_resource):
+        return disk_resource.Address
+
+    def set_disk_host_resource(self, vm_name, controller_path, address,
+                               mounted_disk_path):
+        disk_found = False
+        vm = self._lookup_vm_check(vm_name)
+        (disk_resources, volume_resources) = self._get_vm_disks(vm)
+        for disk_resource in disk_resources + volume_resources:
+            if (disk_resource.Parent == controller_path and
+                    self._get_disk_resource_address(disk_resource) ==
+                    str(address)):
+                if (disk_resource.HostResource and
+                        disk_resource.HostResource[0] != mounted_disk_path):
+                    LOG.debug('Updating disk host resource "%(old)s" to '
+                                '"%(new)s"' %
+                              {'old': disk_resource.HostResource[0],
+                               'new': mounted_disk_path})
+                    disk_resource.HostResource = [mounted_disk_path]
+                    self._modify_virt_resource(disk_resource, vm.path_())
+                disk_found = True
+                break
+        if not disk_found:
+            LOG.warn(_LW('Disk not found on controller "%(controller_path)s" '
+                         'with address "%(address)s"'),
+                     {'controller_path': controller_path, 'address': address})
+
     def set_nic_connection(self, vm_name, nic_name, vswitch_conn_data):
         nic_data = self._get_nic_data_by_name(nic_name)
         nic_data.Connection = [vswitch_conn_data]
@@ -445,6 +503,12 @@ class VMUtils(object):
                           r.ResourceSubType in
                           [self._IDE_DISK_RES_SUB_TYPE,
                            self._IDE_DVD_RES_SUB_TYPE]]
+
+        if (self._RESOURCE_ALLOC_SETTING_DATA_CLASS !=
+                self._STORAGE_ALLOC_SETTING_DATA_CLASS):
+            rasds = vmsettings[0].associators(
+                wmi_result_class=self._RESOURCE_ALLOC_SETTING_DATA_CLASS)
+
         volume_resources = [r for r in rasds if
                             r.ResourceSubType == self._PHYS_DISK_RES_SUB_TYPE]
 
@@ -600,3 +664,30 @@ class VMUtils(object):
     def enable_vm_metrics_collection(self, vm_name):
         raise NotImplementedError(_("Metrics collection is not supported on "
                                     "this version of Hyper-V"))
+
+    def get_vm_serial_port_connection(self, vm_name, update_connection=None):
+        vm = self._lookup_vm_check(vm_name)
+
+        vmsettings = vm.associators(
+            wmi_result_class=self._VIRTUAL_SYSTEM_SETTING_DATA_CLASS)
+        rasds = vmsettings[0].associators(
+            wmi_result_class=self._RESOURCE_ALLOC_SETTING_DATA_CLASS)
+        serial_port = (
+            [r for r in rasds if
+             r.ResourceSubType == self._SERIAL_PORT_RES_SUB_TYPE][0])
+
+        if update_connection:
+            serial_port.Connection = [update_connection]
+            self._modify_virt_resource(serial_port, vm.path_())
+
+        if len(serial_port.Connection) > 0:
+            return serial_port.Connection[0]
+
+    def get_active_instances(self):
+        """Return the names of all the active instances known to Hyper-V."""
+        vm_names = self.list_instances()
+        vms = [self._lookup_vm(vm_name) for vm_name in vm_names]
+        active_vm_names = [v.ElementName for v in vms
+            if v.EnabledState == constants.HYPERV_VM_STATE_ENABLED]
+
+        return active_vm_names

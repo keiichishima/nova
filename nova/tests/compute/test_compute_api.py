@@ -20,9 +20,12 @@ import datetime
 import iso8601
 import mock
 import mox
+from oslo.utils import timeutils
 
 from nova.compute import api as compute_api
+from nova.compute import arch
 from nova.compute import cells_api as compute_cells_api
+from nova.compute import delete_types
 from nova.compute import flavors
 from nova.compute import instance_actions
 from nova.compute import task_states
@@ -35,7 +38,6 @@ from nova import exception
 from nova import objects
 from nova.objects import base as obj_base
 from nova.objects import quotas as quotas_obj
-from nova.openstack.common import timeutils
 from nova.openstack.common import uuidutils
 from nova import quota
 from nova import test
@@ -133,7 +135,7 @@ class _ComputeAPIUnitTestMixIn(object):
         instance.vcpus = 0
         instance.root_gb = 0
         instance.ephemeral_gb = 0
-        instance.architecture = 'x86_64'
+        instance.architecture = arch.X86_64
         instance.os_type = 'Linux'
         instance.locked = False
         instance.created_at = now
@@ -197,7 +199,9 @@ class _ComputeAPIUnitTestMixIn(object):
         address = '10.0.0.1'
         min_count = 1
         max_count = 2
-        requested_networks = [(None, address, port)]
+        requested_networks = objects.NetworkRequestList(
+            objects=[objects.NetworkRequest(address=address,
+                                            port_id=port)])
 
         self.assertRaises(exception.MultiplePortsNotApplicable,
             self.compute_api.create, self.context, 'fake_flavor', 'image_id',
@@ -218,7 +222,9 @@ class _ComputeAPIUnitTestMixIn(object):
     def test_specified_ip_and_multiple_instances(self):
         network = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa'
         address = '10.0.0.1'
-        requested_networks = [(network, address)]
+        requested_networks = objects.NetworkRequestList(
+            objects=[objects.NetworkRequest(network_id=network,
+                                            address=address)])
         self._test_specified_ip_and_multiple_instances_helper(
             requested_networks)
 
@@ -226,7 +232,9 @@ class _ComputeAPIUnitTestMixIn(object):
         self.flags(network_api_class='nova.network.neutronv2.api.API')
         network = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa'
         address = '10.0.0.1'
-        requested_networks = [(network, address, None)]
+        requested_networks = objects.NetworkRequestList(
+            objects=[objects.NetworkRequest(network_id=network,
+                                            address=address)])
         self._test_specified_ip_and_multiple_instances_helper(
             requested_networks)
 
@@ -413,7 +421,9 @@ class _ComputeAPIUnitTestMixIn(object):
         self.mox.StubOutWithMock(self.compute_api, '_record_action_start')
         self.mox.StubOutWithMock(self.compute_api, 'update')
         self.mox.StubOutWithMock(inst, 'save')
-        inst.save(expected_task_state=[None, task_states.REBOOTING])
+        inst.save(expected_task_state=[None, task_states.REBOOTING,
+                                       task_states.REBOOT_PENDING,
+                                       task_states.REBOOT_STARTED])
         self.compute_api._record_action_start(self.context, inst,
                                               instance_actions.REBOOT)
 
@@ -448,6 +458,14 @@ class _ComputeAPIUnitTestMixIn(object):
         self._test_reboot_type(vm_states.ACTIVE, 'HARD',
                                task_state=task_states.REBOOTING)
 
+    def test_reboot_hard_reboot_started(self):
+        self._test_reboot_type(vm_states.ACTIVE, 'HARD',
+                               task_state=task_states.REBOOT_STARTED)
+
+    def test_reboot_hard_reboot_pending(self):
+        self._test_reboot_type(vm_states.ACTIVE, 'HARD',
+                               task_state=task_states.REBOOT_PENDING)
+
     def test_reboot_hard_rescued(self):
         self._test_reboot_type_fails('HARD', vm_state=vm_states.RESCUED)
 
@@ -476,6 +494,14 @@ class _ComputeAPIUnitTestMixIn(object):
     def test_reboot_soft_rebooting_hard(self):
         self._test_reboot_type_fails('SOFT',
                                      task_state=task_states.REBOOTING_HARD)
+
+    def test_reboot_soft_reboot_started(self):
+        self._test_reboot_type_fails('SOFT',
+                                     task_state=task_states.REBOOT_STARTED)
+
+    def test_reboot_soft_reboot_pending(self):
+        self._test_reboot_type_fails('SOFT',
+                                     task_state=task_states.REBOOT_PENDING)
 
     def test_reboot_soft_rescued(self):
         self._test_reboot_type_fails('SOFT', vm_state=vm_states.RESCUED)
@@ -553,8 +579,9 @@ class _ComputeAPIUnitTestMixIn(object):
         self.context.elevated().AndReturn(self.context)
         self.compute_api.network_api.deallocate_for_instance(
                 self.context, inst)
-        state = ('soft' in delete_type and vm_states.SOFT_DELETED or
-                vm_states.DELETED)
+        state = (delete_types.SOFT_DELETE in delete_type and
+                 vm_states.SOFT_DELETED or
+                 vm_states.DELETED)
         updates.update({'vm_state': state,
                         'task_state': None,
                         'terminated_at': delete_time})
@@ -581,10 +608,10 @@ class _ComputeAPIUnitTestMixIn(object):
         delete_time = datetime.datetime(1955, 11, 5, 9, 30,
                                         tzinfo=iso8601.iso8601.Utc())
         timeutils.set_time_override(delete_time)
-        task_state = (delete_type == 'soft_delete' and
+        task_state = (delete_type == delete_types.SOFT_DELETE and
                       task_states.SOFT_DELETING or task_states.DELETING)
         updates = {'progress': 0, 'task_state': task_state}
-        if delete_type == 'soft_delete':
+        if delete_type == delete_types.SOFT_DELETE:
             updates['deleted_at'] = delete_time
         self.mox.StubOutWithMock(inst, 'save')
         self.mox.StubOutWithMock(objects.BlockDeviceMappingList,
@@ -673,10 +700,11 @@ class _ComputeAPIUnitTestMixIn(object):
                 cast_reservations = None
             else:
                 cast_reservations = reservations
-            if delete_type == 'soft_delete':
+            if delete_type == delete_types.SOFT_DELETE:
                 rpcapi.soft_delete_instance(self.context, inst,
                                             reservations=cast_reservations)
-            elif delete_type in ['delete', 'force_delete']:
+            elif delete_type in [delete_types.DELETE,
+                                 delete_types.FORCE_DELETE]:
                 rpcapi.terminate_instance(self.context, inst, [],
                                           reservations=cast_reservations)
 
@@ -692,59 +720,183 @@ class _ComputeAPIUnitTestMixIn(object):
         for k, v in updates.items():
             self.assertEqual(inst[k], v)
 
+        self.mox.UnsetStubs()
+
     def test_delete(self):
-        self._test_delete('delete')
+        self._test_delete(delete_types.DELETE)
 
     def test_delete_if_not_launched(self):
-        self._test_delete('delete', launched_at=None)
+        self._test_delete(delete_types.DELETE, launched_at=None)
 
     def test_delete_in_resizing(self):
-        self._test_delete('delete', task_state=task_states.RESIZE_FINISH)
+        self._test_delete(delete_types.DELETE,
+                          task_state=task_states.RESIZE_FINISH)
 
     def test_delete_in_resized(self):
-        self._test_delete('delete', vm_state=vm_states.RESIZED)
+        self._test_delete(delete_types.DELETE, vm_state=vm_states.RESIZED)
 
     def test_delete_shelved(self):
         fake_sys_meta = {'shelved_image_id': SHELVED_IMAGE}
-        self._test_delete('delete',
+        self._test_delete(delete_types.DELETE,
                           vm_state=vm_states.SHELVED,
                           system_metadata=fake_sys_meta)
 
     def test_delete_shelved_offloaded(self):
         fake_sys_meta = {'shelved_image_id': SHELVED_IMAGE}
-        self._test_delete('delete',
+        self._test_delete(delete_types.DELETE,
                           vm_state=vm_states.SHELVED_OFFLOADED,
                           system_metadata=fake_sys_meta)
 
     def test_delete_shelved_image_not_found(self):
         fake_sys_meta = {'shelved_image_id': SHELVED_IMAGE_NOT_FOUND}
-        self._test_delete('delete',
+        self._test_delete(delete_types.DELETE,
                           vm_state=vm_states.SHELVED_OFFLOADED,
                           system_metadata=fake_sys_meta)
 
     def test_delete_shelved_image_not_authorized(self):
         fake_sys_meta = {'shelved_image_id': SHELVED_IMAGE_NOT_AUTHORIZED}
-        self._test_delete('delete',
+        self._test_delete(delete_types.DELETE,
                           vm_state=vm_states.SHELVED_OFFLOADED,
                           system_metadata=fake_sys_meta)
 
     def test_delete_shelved_exception(self):
         fake_sys_meta = {'shelved_image_id': SHELVED_IMAGE_EXCEPTION}
-        self._test_delete('delete',
+        self._test_delete(delete_types.DELETE,
                           vm_state=vm_states.SHELVED,
                           system_metadata=fake_sys_meta)
 
     def test_delete_with_down_host(self):
-        self._test_delete('delete', host='down-host')
+        self._test_delete(delete_types.DELETE, host='down-host')
 
     def test_delete_soft_with_down_host(self):
-        self._test_delete('soft_delete', host='down-host')
+        self._test_delete(delete_types.SOFT_DELETE, host='down-host')
 
     def test_delete_soft(self):
-        self._test_delete('soft_delete')
+        self._test_delete(delete_types.SOFT_DELETE)
 
     def test_delete_forced(self):
-        self._test_delete('force_delete', vm_state=vm_states.SOFT_DELETED)
+        for vm_state in self._get_vm_states():
+            self._test_delete(delete_types.FORCE_DELETE, vm_state=vm_state)
+
+    def test_delete_forced_when_task_state_deleting(self):
+        for vm_state in self._get_vm_states():
+            self._test_delete(delete_types.FORCE_DELETE, vm_state=vm_state,
+                              task_state=task_states.DELETING)
+
+    def test_no_delete_when_task_state_deleting(self):
+        if self.cell_type == 'api':
+            # In 'api' cell, the callback terminate_instance will
+            # get called, and quota will be committed before returning.
+            # It doesn't check for below condition, hence skipping the test.
+            """
+            if original_task_state in (task_states.DELETING,
+                                        task_states.SOFT_DELETING):
+                LOG.info(_('Instance is already in deleting state, '
+                            'ignoring this request'), instance=instance)
+                quotas.rollback()
+                return
+            """
+            self.skipTest("API cell doesn't delete instance directly.")
+
+        attrs = {}
+        fake_sys_meta = {'shelved_image_id': SHELVED_IMAGE}
+
+        for vm_state in self._get_vm_states():
+            if vm_state in (vm_states.SHELVED, vm_states.SHELVED_OFFLOADED):
+                attrs.update({'system_metadata': fake_sys_meta})
+
+            attrs.update({'vm_state': vm_state, 'task_state': 'deleting'})
+            reservations = ['fake-resv']
+            inst = self._create_instance_obj()
+            inst.update(attrs)
+            inst._context = self.context
+            deltas = {'instances': -1,
+                      'cores': -inst.vcpus,
+                      'ram': -inst.memory_mb}
+            delete_time = datetime.datetime(1955, 11, 5, 9, 30,
+                                            tzinfo=iso8601.iso8601.Utc())
+            timeutils.set_time_override(delete_time)
+            bdms = []
+            migration = objects.Migration._from_db_object(
+                self.context, objects.Migration(),
+                test_migration.fake_db_migration())
+
+            fake_quotas = objects.Quotas.from_reservations(self.context,
+                                                           ['rsvs'])
+
+            image_api = self.compute_api.image_api
+            rpcapi = self.compute_api.compute_rpcapi
+
+            with contextlib.nested(
+                mock.patch.object(image_api, 'delete'),
+                mock.patch.object(inst, 'save'),
+                mock.patch.object(objects.BlockDeviceMappingList,
+                                  'get_by_instance_uuid',
+                                  return_value=bdms),
+                mock.patch.object(objects.Migration,
+                                  'get_by_instance_and_status'),
+                mock.patch.object(quota.QUOTAS, 'reserve',
+                                  return_value=reservations),
+                mock.patch.object(self.context, 'elevated',
+                                  return_value=self.context),
+                mock.patch.object(db, 'service_get_by_compute_host',
+                                  return_value=test_service.fake_service),
+                mock.patch.object(self.compute_api.servicegroup_api,
+                                  'service_is_up',
+                                  return_value=inst.host != 'down-host'),
+                mock.patch.object(self.compute_api,
+                                  '_downsize_quota_delta',
+                                  return_value=fake_quotas),
+                mock.patch.object(self.compute_api,
+                                  '_reserve_quota_delta'),
+                mock.patch.object(self.compute_api,
+                                  '_record_action_start'),
+                mock.patch.object(db, 'instance_update_and_get_original'),
+                mock.patch.object(inst.info_cache, 'delete'),
+                mock.patch.object(self.compute_api.network_api,
+                                  'deallocate_for_instance'),
+                mock.patch.object(db, 'instance_system_metadata_get'),
+                mock.patch.object(db, 'instance_destroy'),
+                mock.patch.object(compute_utils,
+                                  'notify_about_instance_usage'),
+                mock.patch.object(quota.QUOTAS, 'commit'),
+                mock.patch.object(quota.QUOTAS, 'rollback'),
+                mock.patch.object(rpcapi, 'confirm_resize'),
+                mock.patch.object(rpcapi, 'terminate_instance')
+            ) as (
+                image_delete,
+                save,
+                get_by_instance_uuid,
+                get_by_instance_and_status,
+                reserve,
+                elevated,
+                service_get_by_compute_host,
+                service_is_up,
+                _downsize_quota_delta,
+                _reserve_quota_delta,
+                _record_action_start,
+                instance_update_and_get_original,
+                delete,
+                deallocate_for_instance,
+                instance_system_metadata_get,
+                instance_destroy,
+                notify_about_instance_usage,
+                commit,
+                rollback,
+                confirm_resize,
+                terminate_instance
+            ):
+                if (inst.vm_state in (vm_states.SHELVED,
+                                      vm_states.SHELVED_OFFLOADED)):
+                    image_delete.return_value = True
+
+                if inst.vm_state == vm_states.RESIZED:
+                    get_by_instance_and_status.return_value = migration
+                    _downsize_quota_delta.return_value = deltas
+
+                self.compute_api.delete(self.context, inst)
+                self.assertEqual(1, rollback.call_count)
+                self.assertEqual(0, terminate_instance.call_count)
 
     def test_delete_fast_if_host_not_set(self):
         inst = self._create_instance_obj()
@@ -852,7 +1004,7 @@ class _ComputeAPIUnitTestMixIn(object):
 
         self.mox.ReplayAll()
         self.compute_api._local_delete(self.context, inst, bdms,
-                                       'delete',
+                                       delete_types.DELETE,
                                        _fake_do_delete)
 
     def test_delete_disabled(self):
@@ -1473,7 +1625,8 @@ class _ComputeAPIUnitTestMixIn(object):
     def _test_snapshot_and_backup(self, is_snapshot=True,
                                   with_base_ref=False, min_ram=None,
                                   min_disk=None,
-                                  create_fails=False):
+                                  create_fails=False,
+                                  instance_vm_state=vm_states.ACTIVE):
         # 'cache_in_nova' is for testing non-inheritable properties
         # 'user_id' should also not be carried from sys_meta into
         # image property...since it should be set explicitly by
@@ -1486,6 +1639,7 @@ class _ComputeAPIUnitTestMixIn(object):
             fake_sys_meta['image_base_image_ref'] = 'fake-base-ref'
         params = dict(system_metadata=fake_sys_meta, locked=True)
         instance = self._create_instance_obj(params=params)
+        instance.vm_state = instance_vm_state
         fake_sys_meta.update(instance.system_metadata)
         extra_props = dict(cow='moo', cat='meow')
 
@@ -1572,6 +1726,7 @@ class _ComputeAPIUnitTestMixIn(object):
         except test.TestingException:
             got_exc = True
         self.assertEqual(create_fails, got_exc)
+        self.mox.UnsetStubs()
 
     def test_snapshot(self):
         self._test_snapshot_and_backup()
@@ -1607,7 +1762,10 @@ class _ComputeAPIUnitTestMixIn(object):
         self._test_snapshot_and_backup(min_disk=42)
 
     def test_backup(self):
-        self._test_snapshot_and_backup(is_snapshot=False)
+        for state in [vm_states.ACTIVE, vm_states.STOPPED,
+                      vm_states.PAUSED, vm_states.SUSPENDED]:
+            self._test_snapshot_and_backup(is_snapshot=False,
+                                           instance_vm_state=state)
 
     def test_backup_fails(self):
         self._test_snapshot_and_backup(is_snapshot=False, create_fails=True)
@@ -1617,7 +1775,7 @@ class _ComputeAPIUnitTestMixIn(object):
         instance.vm_state = vm_states.ACTIVE
         instance.task_state = task_states.IMAGE_SNAPSHOT
         self.assertRaises(exception.InstanceInvalidState,
-                          self.compute_api.snapshot,
+                          self.compute_api.backup,
                           self.context, instance, 'fake-name',
                           'fake', 'fake')
         instance.vm_state = vm_states.ACTIVE
@@ -1629,7 +1787,7 @@ class _ComputeAPIUnitTestMixIn(object):
         instance.vm_state = vm_states.BUILDING
         instance.task_state = None
         self.assertRaises(exception.InstanceInvalidState,
-                          self.compute_api.snapshot,
+                          self.compute_api.backup,
                           self.context, instance, 'fake-name',
                           'fake', 'fake')
 
@@ -1805,6 +1963,9 @@ class _ComputeAPIUnitTestMixIn(object):
             'delete_on_termination': False,
         }]
 
+        expected_meta = {'min_disk': 0, 'min_ram': 0, 'properties': {},
+                         'size': 0, 'status': 'active'}
+
         with mock.patch.object(self.compute_api.volume_api, 'get',
                                side_effect=get_vol_data):
             if not is_bootable:
@@ -1814,13 +1975,64 @@ class _ComputeAPIUnitTestMixIn(object):
             else:
                 meta = self.compute_api._get_bdm_image_metadata(self.context,
                                     block_device_mapping)
-                self.assertEqual({}, meta)
+                self.assertEqual(expected_meta, meta)
 
     def test_boot_volume_non_bootable(self):
         self._test_boot_volume_bootable(False)
 
     def test_boot_volume_bootable(self):
         self._test_boot_volume_bootable(True)
+
+    def test_boot_volume_basic_property(self):
+        block_device_mapping = [{
+            'id': 1,
+            'device_name': 'vda',
+            'no_device': None,
+            'virtual_name': None,
+            'snapshot_id': None,
+            'volume_id': '1',
+            'delete_on_termination': False,
+        }]
+        fake_volume = {"volume_image_metadata":
+                       {"min_ram": 256, "min_disk": 128, "foo": "bar"}}
+        with mock.patch.object(self.compute_api.volume_api, 'get',
+                               return_value=fake_volume):
+            meta = self.compute_api._get_bdm_image_metadata(
+                self.context, block_device_mapping)
+            self.assertEqual(256, meta['min_ram'])
+            self.assertEqual(128, meta['min_disk'])
+            self.assertEqual('active', meta['status'])
+            self.assertEqual('bar', meta['properties']['foo'])
+
+    def test_boot_volume_snapshot_basic_property(self):
+        block_device_mapping = [{
+            'id': 1,
+            'device_name': 'vda',
+            'no_device': None,
+            'virtual_name': None,
+            'snapshot_id': '2',
+            'volume_id': None,
+            'delete_on_termination': False,
+        }]
+        fake_volume = {"volume_image_metadata":
+                       {"min_ram": 256, "min_disk": 128, "foo": "bar"}}
+        fake_snapshot = {"volume_id": "1"}
+        with contextlib.nested(
+                mock.patch.object(self.compute_api.volume_api, 'get',
+                    return_value=fake_volume),
+                mock.patch.object(self.compute_api.volume_api, 'get_snapshot',
+                    return_value=fake_snapshot)) as (
+                            volume_get, volume_get_snapshot):
+            meta = self.compute_api._get_bdm_image_metadata(
+                self.context, block_device_mapping)
+            self.assertEqual(256, meta['min_ram'])
+            self.assertEqual(128, meta['min_disk'])
+            self.assertEqual('active', meta['status'])
+            self.assertEqual('bar', meta['properties']['foo'])
+            volume_get_snapshot.assert_called_once_with(self.context,
+                    block_device_mapping[0]['snapshot_id'])
+            volume_get.assert_called_once_with(self.context,
+                    fake_snapshot['volume_id'])
 
     def _create_instance_with_disabled_disk_config(self, object=False):
         sys_meta = {"image_auto_disk_config": "Disabled"}
@@ -1891,7 +2103,7 @@ class _ComputeAPIUnitTestMixIn(object):
         flavor = instance.get_flavor()
         image_href = ''
         image = {"min_ram": 10, "min_disk": 1,
-                 "properties": {'architecture': 'x86_64'}}
+                 "properties": {'architecture': arch.X86_64}}
         admin_pass = ''
         files_to_inject = []
         bdms = []
@@ -1930,11 +2142,11 @@ class _ComputeAPIUnitTestMixIn(object):
         get_flavor.return_value = test_flavor.fake_flavor
         orig_image_href = 'orig_image'
         orig_image = {"min_ram": 10, "min_disk": 1,
-                      "properties": {'architecture': 'x86_64',
+                      "properties": {'architecture': arch.X86_64,
                                      'vm_mode': 'hvm'}}
         new_image_href = 'new_image'
         new_image = {"min_ram": 10, "min_disk": 1,
-                     "properties": {'architecture': 'x86_64',
+                     "properties": {'architecture': arch.X86_64,
                                     'vm_mode': 'xen'}}
         admin_pass = ''
         files_to_inject = []
@@ -2082,6 +2294,39 @@ class _ComputeAPIUnitTestMixIn(object):
                           self.context,
                           bdms, legacy_bdm=True)
 
+    @mock.patch.object(cinder.API, 'get')
+    @mock.patch.object(cinder.API, 'check_attach',
+                       side_effect=exception.InvalidVolume(reason='error'))
+    def test_validate_bdm_with_error_volume(self, mock_check_attach, mock_get):
+        # Tests that an InvalidVolume exception raised from
+        # volume_api.check_attach due to the volume status not being
+        # 'available' results in _validate_bdm re-raising InvalidVolume.
+        instance = self._create_instance_obj()
+        instance_type = self._create_flavor()
+        volume_id = 'e856840e-9f5b-4894-8bde-58c6e29ac1e8'
+        volume_info = {'status': 'error',
+                       'attach_status': 'detached',
+                       'id': volume_id}
+        mock_get.return_value = volume_info
+        bdms = [objects.BlockDeviceMapping(
+                **fake_block_device.FakeDbBlockDeviceDict(
+                {
+                 'boot_index': 0,
+                 'volume_id': volume_id,
+                 'source_type': 'volume',
+                 'destination_type': 'volume',
+                 'device_name': 'vda',
+                }))]
+
+        self.assertRaises(exception.InvalidVolume,
+                          self.compute_api._validate_bdm,
+                          self.context,
+                          instance, instance_type, bdms)
+
+        mock_get.assert_called_once_with(self.context, volume_id)
+        mock_check_attach.assert_called_once_with(
+            self.context, volume_info, instance=instance)
+
     @mock.patch.object(cinder.API, 'get_snapshot',
              side_effect=exception.CinderConnectionFailed(reason='error'))
     @mock.patch.object(cinder.API, 'get',
@@ -2118,51 +2363,66 @@ class _ComputeAPIUnitTestMixIn(object):
                           self.context,
                           instance, instance_type, bdms)
 
-    @mock.patch.object(objects.Instance, 'create')
-    @mock.patch.object(compute_api.SecurityGroupAPI, 'ensure_default')
-    @mock.patch.object(compute_api.API, '_populate_instance_names')
-    @mock.patch.object(compute_api.API, '_populate_instance_for_create')
+    def _test_create_db_entry_for_new_instance_with_cinder_error(self,
+                                                        expected_exception):
+
+        @mock.patch.object(objects.Instance, 'create')
+        @mock.patch.object(compute_api.SecurityGroupAPI, 'ensure_default')
+        @mock.patch.object(compute_api.API, '_populate_instance_names')
+        @mock.patch.object(compute_api.API, '_populate_instance_for_create')
+        def do_test(self, mock_create, mock_names, mock_ensure,
+                    mock_inst_create):
+            instance = self._create_instance_obj()
+            instance['display_name'] = 'FAKE_DISPLAY_NAME'
+            instance['shutdown_terminate'] = False
+            instance_type = self._create_flavor()
+            fake_image = {
+                'id': 'fake-image-id',
+                'properties': {'mappings': []},
+                'status': 'fake-status',
+                'location': 'far-away'}
+            fake_security_group = None
+            fake_num_instances = 1
+            fake_index = 1
+            bdm = [objects.BlockDeviceMapping(
+                    **fake_block_device.FakeDbBlockDeviceDict(
+                    {
+                     'id': 1,
+                     'volume_id': 1,
+                     'source_type': 'volume',
+                     'destination_type': 'volume',
+                     'device_name': 'vda',
+                     'boot_index': 0,
+                     }))]
+            with mock.patch.object(instance, "destroy") as destroy:
+                self.assertRaises(expected_exception,
+                                  self.compute_api.
+                                  create_db_entry_for_new_instance,
+                                  self.context,
+                                  instance_type,
+                                  fake_image,
+                                  instance,
+                                  fake_security_group,
+                                  bdm,
+                                  fake_num_instances,
+                                  fake_index)
+                destroy.assert_called_once_with(self.context)
+
+        # We use a nested method so we can decorate with the mocks.
+        do_test(self)
+
     @mock.patch.object(cinder.API, 'get',
              side_effect=exception.CinderConnectionFailed(reason='error'))
-    def test_create_db_entry_for_new_instancewith_cinder_down(self, mock_get,
-                                                            mock_create,
-                                                            mock_names,
-                                                            mock_ensure,
-                                                            mock_inst_create):
-        instance = self._create_instance_obj()
-        instance['display_name'] = 'FAKE_DISPLAY_NAME'
-        instance['shutdown_terminate'] = False
-        instance_type = self._create_flavor()
-        fake_image = {
-            'id': 'fake-image-id',
-            'properties': {'mappings': []},
-            'status': 'fake-status',
-            'location': 'far-away'}
-        fake_security_group = None
-        fake_num_instances = 1
-        fake_index = 1
-        bdm = [objects.BlockDeviceMapping(
-                **fake_block_device.FakeDbBlockDeviceDict(
-                {
-                 'id': 1,
-                 'volume_id': 1,
-                 'source_type': 'volume',
-                 'destination_type': 'volume',
-                 'device_name': 'vda',
-                 'boot_index': 0,
-                 }))]
-        with mock.patch.object(instance, "destroy") as destroy:
-            self.assertRaises(exception.CinderConnectionFailed,
-                            self.compute_api.create_db_entry_for_new_instance,
-                            self.context,
-                            instance_type,
-                            fake_image,
-                            instance,
-                            fake_security_group,
-                            bdm,
-                            fake_num_instances,
-                            fake_index)
-            destroy.assert_called_once_with(self.context)
+    def test_create_db_entry_for_new_instancewith_cinder_down(self, mock_get):
+        self._test_create_db_entry_for_new_instance_with_cinder_error(
+            expected_exception=exception.CinderConnectionFailed)
+
+    @mock.patch.object(cinder.API, 'get',
+                       return_value={'id': 1, 'status': 'error',
+                                     'attach_status': 'detached'})
+    def test_create_db_entry_for_new_instancewith_error_volume(self, mock_get):
+        self._test_create_db_entry_for_new_instance_with_cinder_error(
+            expected_exception=exception.InvalidVolume)
 
     def _test_rescue(self, vm_state):
         instance = self._create_instance_obj(params={'vm_state': vm_state})

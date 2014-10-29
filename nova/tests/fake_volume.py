@@ -15,18 +15,18 @@
 import uuid
 
 from oslo.config import cfg
+from oslo.utils import timeutils
 
 from nova import exception
 from nova.i18n import _
 from nova.openstack.common import log as logging
-from nova.openstack.common import timeutils
 
 
 LOG = logging.getLogger(__name__)
 
 CONF = cfg.CONF
-CONF.import_opt('cinder_cross_az_attach',
-                'nova.volume.cinder')
+CONF.import_opt('cross_az_attach',
+                'nova.volume.cinder', group='cinder')
 
 
 class fake_volume():
@@ -190,7 +190,7 @@ class API(object):
         if volume['attach_status'] == 'attached':
             msg = _("already attached")
             raise exception.InvalidVolume(reason=msg)
-        if instance and not CONF.cinder_cross_az_attach:
+        if instance and not CONF.cinder.cross_az_attach:
             if instance['availability_zone'] != volume['availability_zone']:
                 msg = _("Instance and volume not in same availability_zone")
                 raise exception.InvalidVolume(reason=msg)

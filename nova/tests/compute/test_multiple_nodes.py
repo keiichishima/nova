@@ -15,11 +15,11 @@
 """Tests for compute service with multiple compute nodes."""
 
 from oslo.config import cfg
+from oslo.utils import importutils
 
 from nova import context
 from nova import db
 from nova import objects
-from nova.openstack.common import importutils
 from nova import test
 from nova.virt import fake
 
@@ -41,11 +41,6 @@ class FakeDriverSingleNodeTestCase(BaseTestCase):
         self.driver = fake.FakeDriver(virtapi=None)
         fake.set_nodes(['xyz'])
 
-    def test_get_host_stats(self):
-        stats = self.driver.get_host_stats()
-        self.assertIsInstance(stats, dict)
-        self.assertEqual(stats['hypervisor_hostname'], 'xyz')
-
     def test_get_available_resource(self):
         res = self.driver.get_available_resource('xyz')
         self.assertEqual(res['hypervisor_hostname'], 'xyz')
@@ -56,13 +51,6 @@ class FakeDriverMultiNodeTestCase(BaseTestCase):
         super(FakeDriverMultiNodeTestCase, self).setUp()
         self.driver = fake.FakeDriver(virtapi=None)
         fake.set_nodes(['aaa', 'bbb'])
-
-    def test_get_host_stats(self):
-        stats = self.driver.get_host_stats()
-        self.assertIsInstance(stats, list)
-        self.assertEqual(len(stats), 2)
-        self.assertEqual(stats[0]['hypervisor_hostname'], 'aaa')
-        self.assertEqual(stats[1]['hypervisor_hostname'], 'bbb')
 
     def test_get_available_resource(self):
         res_a = self.driver.get_available_resource('aaa')
@@ -84,7 +72,7 @@ class MultiNodeComputeTestCase(BaseTestCase):
         self.conductor = self.start_service('conductor',
                                             manager=CONF.conductor.manager)
 
-        def fake_get_compute_nodes_in_db(context):
+        def fake_get_compute_nodes_in_db(context, use_slave=False):
             fake_compute_nodes = [{'local_gb': 259,
                                    'vcpus_used': 0,
                                    'deleted': 0,
@@ -106,6 +94,7 @@ class MultiNodeComputeTestCase(BaseTestCase):
                                    'deleted_at': None,
                                    'free_ram_mb': 130560,
                                    'metrics': '',
+                                   'numa_topology': '',
                                    'stats': '',
                                    'id': 2,
                                    'host_ip': '127.0.0.1'}]
@@ -149,7 +138,7 @@ class MultiNodeComputeTestCase(BaseTestCase):
                 context=ctx, hypervisor_hostname='B', id=3),
             ]
 
-        def fake_get_compute_nodes_in_db(context):
+        def fake_get_compute_nodes_in_db(context, use_slave=False):
             return fake_compute_nodes
 
         def fake_compute_node_delete(context, compute_node_id):

@@ -17,6 +17,7 @@
 
 import copy
 
+import mock
 from oslo.config import cfg
 
 from nova.compute import flavors
@@ -285,6 +286,34 @@ class NotificationsTestCase(test.TestCase):
         self.assertEqual(self.net_info[0]['address'],
                          info["fixed_ips"][0]["vif_mac"])
 
+    def test_payload_has_cell_name_empty(self):
+        info = notifications.info_from_instance(self.context, self.instance,
+                                                  self.net_info, None)
+        self.assertIn("cell_name", info)
+        self.assertIsNone(self.instance['cell_name'])
+        self.assertEqual("", info["cell_name"])
+
+    def test_payload_has_cell_name(self):
+        self.instance['cell_name'] = "cell1"
+        info = notifications.info_from_instance(self.context, self.instance,
+                                                  self.net_info, None)
+        self.assertIn("cell_name", info)
+        self.assertEqual("cell1", info["cell_name"])
+
+    def test_payload_has_progress_empty(self):
+        info = notifications.info_from_instance(self.context, self.instance,
+                                                  self.net_info, None)
+        self.assertIn("progress", info)
+        self.assertIsNone(self.instance['progress'])
+        self.assertEqual("", info["progress"])
+
+    def test_payload_has_progress(self):
+        self.instance['progress'] = 50
+        info = notifications.info_from_instance(self.context, self.instance,
+                                                  self.net_info, None)
+        self.assertIn("progress", info)
+        self.assertEqual(50, info["progress"])
+
     def test_send_access_ip_update(self):
         notifications.send_update(self.context, self.instance, self.instance)
         self.assertEqual(1, len(fake_notifier.NOTIFICATIONS))
@@ -327,3 +356,39 @@ class NotificationsTestCase(test.TestCase):
 
         notifications.send_update(self.context, self.instance, self.instance)
         self.assertEqual(0, len(fake_notifier.NOTIFICATIONS))
+
+
+class NotificationsFormatTestCase(test.NoDBTestCase):
+
+    def test_state_computation(self):
+        instance = {'vm_state': mock.sentinel.vm_state,
+                    'task_state': mock.sentinel.task_state}
+        states = notifications._compute_states_payload(instance)
+        self.assertEqual(mock.sentinel.vm_state, states['state'])
+        self.assertEqual(mock.sentinel.vm_state, states['old_state'])
+        self.assertEqual(mock.sentinel.task_state, states['old_task_state'])
+        self.assertEqual(mock.sentinel.task_state, states['new_task_state'])
+
+        states = notifications._compute_states_payload(
+            instance,
+            old_vm_state=mock.sentinel.old_vm_state,
+        )
+        self.assertEqual(mock.sentinel.vm_state, states['state'])
+        self.assertEqual(mock.sentinel.old_vm_state, states['old_state'])
+        self.assertEqual(mock.sentinel.task_state, states['old_task_state'])
+        self.assertEqual(mock.sentinel.task_state, states['new_task_state'])
+
+        states = notifications._compute_states_payload(
+            instance,
+            old_vm_state=mock.sentinel.old_vm_state,
+            old_task_state=mock.sentinel.old_task_state,
+            new_vm_state=mock.sentinel.new_vm_state,
+            new_task_state=mock.sentinel.new_task_state,
+        )
+
+        self.assertEqual(mock.sentinel.new_vm_state, states['state'])
+        self.assertEqual(mock.sentinel.old_vm_state, states['old_state'])
+        self.assertEqual(mock.sentinel.old_task_state,
+                         states['old_task_state'])
+        self.assertEqual(mock.sentinel.new_task_state,
+                         states['new_task_state'])

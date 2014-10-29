@@ -77,7 +77,7 @@ class Flavor(base.NovaPersistentObject, base.NovaObject):
         self.projects = [x['project_id'] for x in
                          db.flavor_access_get_by_flavor_id(context,
                                                            self.flavorid)]
-        self.obj_reset_changes('projects')
+        self.obj_reset_changes(['projects'])
 
     def obj_load_attr(self, attrname):
         # NOTE(danms): Only projects could be lazy-loaded right now
@@ -97,6 +97,15 @@ class Flavor(base.NovaPersistentObject, base.NovaObject):
             self._orig_projects = (list(self.projects)
                                    if self.obj_attr_is_set('projects')
                                    else [])
+
+    def obj_what_changed(self):
+        changes = super(Flavor, self).obj_what_changed()
+        if ('extra_specs' in self and
+            self.extra_specs != self._orig_extra_specs):
+            changes.add('extra_specs')
+        if 'projects' in self and self.projects != self._orig_projects:
+            changes.add('projects')
+        return changes
 
     @classmethod
     def _obj_from_primitive(cls, context, objver, primitive):
@@ -193,8 +202,10 @@ class Flavor(base.NovaPersistentObject, base.NovaObject):
         to_add = to_add if to_add is not None else []
         to_delete = to_delete if to_delete is not None else []
 
-        db.flavor_extra_specs_update_or_create(context, self.flavorid,
-                                               to_add)
+        if to_add:
+            db.flavor_extra_specs_update_or_create(context, self.flavorid,
+                                                   to_add)
+
         for key in to_delete:
             db.flavor_extra_specs_delete(context, self.flavorid, key)
         self.obj_reset_changes(['extra_specs'])

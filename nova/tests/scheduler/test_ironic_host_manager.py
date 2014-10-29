@@ -18,10 +18,10 @@ Tests For IronicHostManager
 """
 
 import mock
+from oslo.serialization import jsonutils
 
 from nova import db
 from nova import exception
-from nova.openstack.common import jsonutils
 from nova.scheduler import filters
 from nova.scheduler import host_manager
 from nova.scheduler import ironic_host_manager
@@ -45,6 +45,18 @@ class IronicHostManagerTestCase(test.NoDBTestCase):
     def setUp(self):
         super(IronicHostManagerTestCase, self).setUp()
         self.host_manager = ironic_host_manager.IronicHostManager()
+
+    def test_manager_public_api_signatures(self):
+        self.assertPublicAPISignatures(host_manager.HostManager(),
+                                       self.host_manager)
+
+    def test_state_public_api_signatures(self):
+        self.assertPublicAPISignatures(
+            host_manager.HostState("dummy",
+                                   "dummy"),
+            ironic_host_manager.IronicNodeState("dummy",
+                                                "dummy")
+        )
 
     def test_get_all_host_states(self):
         # Ensure .service is set and we have the values we expect to.
@@ -88,7 +100,10 @@ class IronicHostManagerChangedNodesTestCase(test.NoDBTestCase):
                                     ironic_driver=ironic_driver,
                                     cpu_arch='i386')),
                             supported_instances=supported_instances,
-                            free_disk_gb=10, free_ram_mb=1024)
+                            free_disk_gb=10, free_ram_mb=1024,
+                            hypervisor_type='ironic',
+                            hypervisor_version = 1,
+                            hypervisor_hostname = 'fake_host')
 
     @mock.patch.object(ironic_host_manager.IronicNodeState, '__init__')
     def test_create_ironic_node_state(self, init_mock):
@@ -149,6 +164,9 @@ class IronicHostManagerChangedNodesTestCase(test.NoDBTestCase):
         self.assertEqual(0, host.vcpus_used)
         self.assertEqual(jsonutils.loads(self.compute_node['stats']),
                          host.stats)
+        self.assertEqual('ironic', host.hypervisor_type)
+        self.assertEqual(1, host.hypervisor_version)
+        self.assertEqual('fake_host', host.hypervisor_hostname)
 
     def test_consume_identical_instance_from_compute(self):
         host = ironic_host_manager.IronicNodeState("fakehost", "fakenode")

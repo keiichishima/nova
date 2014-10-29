@@ -16,15 +16,18 @@
 
 import collections
 import copy
+import datetime
 import functools
+import traceback
 
 import netaddr
 from oslo import messaging
+from oslo.utils import timeutils
 import six
 
 from nova import context
 from nova import exception
-from nova.i18n import _
+from nova.i18n import _, _LE
 from nova import objects
 from nova.objects import fields
 from nova.openstack.common import log as logging
@@ -83,8 +86,7 @@ def make_class_properties(cls):
                 return setattr(self, attrname, field_value)
             except Exception:
                 attr = "%s.%s" % (self.obj_name(), name)
-                LOG.exception(_('Error setting %(attr)s') %
-                              {'attr': attr})
+                LOG.exception(_LE('Error setting %(attr)s'), {'attr': attr})
                 raise
 
         setattr(cls, name, property(getter, setter))
@@ -259,8 +261,8 @@ class NovaObject(object):
     def obj_class_from_name(cls, objname, objver):
         """Returns a class from the registry based on a name and version."""
         if objname not in cls._obj_classes:
-            LOG.error(_('Unable to instantiate unregistered object type '
-                        '%(objtype)s') % dict(objtype=objname))
+            LOG.error(_LE('Unable to instantiate unregistered object type '
+                          '%(objtype)s'), dict(objtype=objname))
             raise exception.UnsupportedObjectError(objtype=objname)
 
         # NOTE(comstud): If there's not an exact match, return the highest
@@ -572,18 +574,6 @@ class ObjectListBase(object):
     def sort(self, cmp=None, key=None, reverse=False):
         self.objects.sort(cmp=cmp, key=key, reverse=reverse)
 
-    def _attr_objects_to_primitive(self):
-        """Serialization of object list."""
-        return [x.obj_to_primitive() for x in self.objects]
-
-    def _attr_objects_from_primitive(self, value):
-        """Deserialization of object list."""
-        objects = []
-        for entity in value:
-            obj = NovaObject.obj_from_primitive(entity, context=self._context)
-            objects.append(obj)
-        return objects
-
     def obj_make_compatible(self, primitive, target_version):
         primitives = primitive['objects']
         child_target_version = self.child_versions.get(target_version, '1.0')
@@ -705,3 +695,27 @@ def obj_make_list(context, list_obj, item_cls, db_list, **extra_args):
     list_obj._context = context
     list_obj.obj_reset_changes()
     return list_obj
+
+
+def serialize_args(fn):
+    """Decorator that will do the arguments serialization before remoting."""
+    def wrapper(obj, *args, **kwargs):
+        for kw in kwargs:
+            value_arg = kwargs.get(kw)
+            if kw == 'exc_val' and value_arg:
+                kwargs[kw] = str(value_arg)
+            elif kw == 'exc_tb' and (
+                    not isinstance(value_arg, six.string_types) and value_arg):
+                kwargs[kw] = ''.join(traceback.format_tb(value_arg))
+            elif isinstance(value_arg, datetime.datetime):
+                kwargs[kw] = timeutils.isotime(value_arg)
+        if hasattr(fn, '__call__'):
+            return fn(obj, *args, **kwargs)
+        # NOTE(danms): We wrap a descriptor, so use that protocol
+        return fn.__get__(None, obj)(*args, **kwargs)
+
+    # NOTE(danms): Make this discoverable
+    wrapper.remotable = getattr(fn, 'remotable', False)
+    wrapper.original_fn = fn
+    return (functools.wraps(fn)(wrapper) if hasattr(fn, '__call__')
+            else classmethod(wrapper))

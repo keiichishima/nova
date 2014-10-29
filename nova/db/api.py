@@ -27,12 +27,11 @@ these objects be simple dictionaries.
 
 """
 
-from eventlet import tpool
 from oslo.config import cfg
+from oslo.db import concurrency
 
 from nova.cells import rpcapi as cells_rpcapi
 from nova.i18n import _
-from nova.openstack.common.db import api as db_api
 from nova.openstack.common import log as logging
 
 
@@ -48,51 +47,13 @@ db_opts = [
                help='Template string to be used to generate snapshot names'),
 ]
 
-tpool_opts = [
-    cfg.BoolOpt('use_tpool',
-                default=False,
-                deprecated_name='dbapi_use_tpool',
-                deprecated_group='DEFAULT',
-                help='Enable the experimental use of thread pooling for '
-                     'all DB API calls'),
-]
-
 CONF = cfg.CONF
 CONF.register_opts(db_opts)
-CONF.register_opts(tpool_opts, 'database')
-CONF.import_opt('backend', 'nova.openstack.common.db.options',
-                group='database')
 
 _BACKEND_MAPPING = {'sqlalchemy': 'nova.db.sqlalchemy.api'}
 
 
-class NovaDBAPI(object):
-    """Nova's DB API wrapper class.
-
-    This wraps the oslo DB API with an option to be able to use eventlet's
-    thread pooling. Since the CONF variable may not be loaded at the time
-    this class is instantiated, we must look at it on the first DB API call.
-    """
-
-    def __init__(self):
-        self.__db_api = None
-
-    @property
-    def _db_api(self):
-        if not self.__db_api:
-            nova_db_api = db_api.DBAPI(CONF.database.backend,
-                                       backend_mapping=_BACKEND_MAPPING)
-            if CONF.database.use_tpool:
-                self.__db_api = tpool.Proxy(nova_db_api)
-            else:
-                self.__db_api = nova_db_api
-        return self.__db_api
-
-    def __getattr__(self, key):
-        return getattr(self._db_api, key)
-
-
-IMPL = NovaDBAPI()
+IMPL = concurrency.TpoolDbapiWrapper(CONF, backend_mapping=_BACKEND_MAPPING)
 
 LOG = logging.getLogger(__name__)
 
@@ -133,10 +94,12 @@ def service_destroy(context, service_id):
     return IMPL.service_destroy(context, service_id)
 
 
-def service_get(context, service_id, with_compute_node=False):
+def service_get(context, service_id, with_compute_node=False,
+                use_slave=False):
     """Get a service or raise if it does not exist."""
     return IMPL.service_get(context, service_id,
-                            with_compute_node=with_compute_node)
+                            with_compute_node=with_compute_node,
+                            use_slave=use_slave)
 
 
 def service_get_by_host_and_topic(context, host, topic):
@@ -159,12 +122,13 @@ def service_get_all_by_host(context, host):
     return IMPL.service_get_all_by_host(context, host)
 
 
-def service_get_by_compute_host(context, host):
+def service_get_by_compute_host(context, host, use_slave=False):
     """Get the service entry for a given compute host.
 
     Returns the service entry joined with the compute_node entry.
     """
-    return IMPL.service_get_by_compute_host(context, host)
+    return IMPL.service_get_by_compute_host(context, host,
+                                            use_slave=use_slave)
 
 
 def service_get_by_args(context, host, binary):
@@ -700,7 +664,8 @@ def instance_get_all_by_filters(context, filters, sort_key='created_at',
 
 def instance_get_active_by_window_joined(context, begin, end=None,
                                          project_id=None, host=None,
-                                         use_slave=False):
+                                         use_slave=False,
+                                         columns_to_join=None):
     """Get instances and joins active during a certain time window.
 
     Specifying a project_id will filter for a certain project.
@@ -708,7 +673,8 @@ def instance_get_active_by_window_joined(context, begin, end=None,
     """
     return IMPL.instance_get_active_by_window_joined(context, begin, end,
                                               project_id, host,
-                                              use_slave=use_slave)
+                                              use_slave=use_slave,
+                                              columns_to_join=columns_to_join)
 
 
 def instance_get_all_by_host(context, host,
@@ -817,6 +783,11 @@ def instance_group_get(context, group_uuid):
     return IMPL.instance_group_get(context, group_uuid)
 
 
+def instance_group_get_by_instance(context, instance_uuid):
+    """Get the group an instance is a member of."""
+    return IMPL.instance_group_get_by_instance(context, instance_uuid)
+
+
 def instance_group_update(context, group_uuid, values):
     """Update the attributes of an group."""
     return IMPL.instance_group_update(context, group_uuid, values)
@@ -914,6 +885,29 @@ def instance_info_cache_delete(context, instance_uuid):
     :param instance_uuid: = uuid of the instance tied to the cache record
     """
     return IMPL.instance_info_cache_delete(context, instance_uuid)
+
+
+###################
+
+
+def instance_extra_get_by_instance_uuid(context, instance_uuid, columns=None):
+    """Get the instance extra record
+
+    :param instance_uuid: = uuid of the instance tied to the topology record
+    :param columns: A list of the columns to load, or None for 'all of them'
+    """
+    return IMPL.instance_extra_get_by_instance_uuid(
+        context, instance_uuid, columns=columns)
+
+
+def instance_extra_update_by_uuid(context, instance_uuid, updates):
+    """Update the instance extra record by instance uuid
+
+    :param instance_uuid: = uuid of the instance tied to the record
+    :param updates: A dict of updates to apply
+    """
+    return IMPL.instance_extra_update_by_uuid(context, instance_uuid,
+                                              updates)
 
 
 ###################
@@ -1660,12 +1654,14 @@ def agent_build_update(context, agent_build_id, values):
 
 def bw_usage_get(context, uuid, start_period, mac, use_slave=False):
     """Return bw usage for instance and mac in a given audit period."""
-    return IMPL.bw_usage_get(context, uuid, start_period, mac)
+    return IMPL.bw_usage_get(context, uuid, start_period, mac,
+                             use_slave=use_slave)
 
 
-def bw_usage_get_by_uuids(context, uuids, start_period):
+def bw_usage_get_by_uuids(context, uuids, start_period, use_slave=False):
     """Return bw usages for instance(s) in a given audit period."""
-    return IMPL.bw_usage_get_by_uuids(context, uuids, start_period)
+    return IMPL.bw_usage_get_by_uuids(context, uuids, start_period,
+                                      use_slave=use_slave)
 
 
 def bw_usage_update(context, uuid, mac, start_period, bw_in, bw_out,

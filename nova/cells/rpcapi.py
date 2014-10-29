@@ -25,11 +25,11 @@ messging module.
 
 from oslo.config import cfg
 from oslo import messaging
+from oslo.serialization import jsonutils
 
 from nova import exception
 from nova.i18n import _
 from nova.objects import base as objects_base
-from nova.openstack.common import jsonutils
 from nova.openstack.common import log as logging
 from nova import rpc
 
@@ -96,12 +96,18 @@ class CellsAPI(object):
         can handle the version_cap being set to 1.27.
 
         * 1.28 - Make bdm_update_or_create_at_top and use bdm objects
+        * 1.29 - Adds set_admin_password()
+
+        ... Juno supports message version 1.29.  So, any changes to
+        existing methods in 1.x after that point should be done such that they
+        can handle the version_cap being set to 1.29.
     '''
 
     VERSION_ALIASES = {
         'grizzly': '1.6',
         'havana': '1.24',
         'icehouse': '1.27',
+        'juno': '1.29',
     }
 
     def __init__(self):
@@ -164,8 +170,8 @@ class CellsAPI(object):
         self.client.cast(ctxt, 'instance_destroy_at_top', instance=instance_p)
 
     def instance_delete_everywhere(self, ctxt, instance, delete_type):
-        """Delete instance everywhere.  delete_type may be 'soft'
-        or 'hard'.  This is generally only used to resolve races
+        """Delete instance everywhere.  delete_type may be 'soft_delete'
+        or 'delete'.  This is generally only used to resolve races
         when API cell doesn't know to what cell an instance belongs.
         """
         if not CONF.cells.enable:
@@ -607,3 +613,11 @@ class CellsAPI(object):
                    instance=instance, image_href=image_ref,
                    admin_password=new_pass, files_to_inject=injected_files,
                    preserve_ephemeral=preserve_ephemeral, kwargs=kwargs)
+
+    def set_admin_password(self, ctxt, instance, new_pass):
+        if not CONF.cells.enable:
+            return
+
+        cctxt = self.client.prepare(version='1.29')
+        cctxt.cast(ctxt, 'set_admin_password', instance=instance,
+                new_pass=new_pass)

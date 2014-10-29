@@ -13,25 +13,31 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
+import contextlib
+import inspect
 import os
 import shutil
 import tempfile
 
 import fixtures
+import mock
 from oslo.config import cfg
+from oslo.utils import units
 
-import inspect
-
+from nova import context
 from nova import exception
-from nova.openstack.common import units
+from nova import keymgr
+from nova.openstack.common import imageutils
 from nova.openstack.common import uuidutils
 from nova import test
 from nova.tests import fake_processutils
 from nova.tests.virt.libvirt import fake_libvirt_utils
+from nova.virt import images
 from nova.virt.libvirt import imagebackend
 from nova.virt.libvirt import rbd_utils
 
 CONF = cfg.CONF
+CONF.import_opt('fixed_key', 'nova.keymgr.conf_key_mgr', group='keymgr')
 
 
 class _ImageTestCase(object):
@@ -52,6 +58,7 @@ class _ImageTestCase(object):
                                            self.INSTANCE['uuid'], 'disk.info')
         self.NAME = 'fake.vm'
         self.TEMPLATE = 'template'
+        self.CONTEXT = context.get_admin_context()
 
         self.OLD_STYLE_INSTANCE_PATH = \
             fake_libvirt_utils.get_instance_path(self.INSTANCE, forceold=True)
@@ -137,6 +144,7 @@ class RawTestCase(_ImageTestCase, test.NoDBTestCase):
             os.path.exists(self.OLD_STYLE_INSTANCE_PATH).AndReturn(False)
         os.path.exists(self.TEMPLATE_DIR).AndReturn(False)
         os.path.exists(self.PATH).AndReturn(False)
+        os.path.exists(self.TEMPLATE_PATH).AndReturn(False)
         fn = self.mox.CreateMockAnything()
         fn(target=self.TEMPLATE_PATH)
         self.mox.StubOutWithMock(imagebackend.fileutils, 'ensure_tree')
@@ -169,6 +177,7 @@ class RawTestCase(_ImageTestCase, test.NoDBTestCase):
             os.path.exists(self.OLD_STYLE_INSTANCE_PATH).AndReturn(False)
         os.path.exists(self.TEMPLATE_DIR).AndReturn(True)
         os.path.exists(self.PATH).AndReturn(False)
+        os.path.exists(self.TEMPLATE_PATH).AndReturn(False)
         fn = self.mox.CreateMockAnything()
         fn(target=self.TEMPLATE_PATH)
         self.mox.StubOutWithMock(imagebackend.fileutils, 'ensure_tree')
@@ -186,13 +195,12 @@ class RawTestCase(_ImageTestCase, test.NoDBTestCase):
             os.path.exists(self.OLD_STYLE_INSTANCE_PATH).AndReturn(False)
         os.path.exists(self.TEMPLATE_DIR).AndReturn(True)
         os.path.exists(self.PATH).AndReturn(False)
-        fn = self.mox.CreateMockAnything()
-        fn(target=self.TEMPLATE_PATH)
+        os.path.exists(self.TEMPLATE_PATH).AndReturn(True)
         self.mox.ReplayAll()
 
         image = self.image_class(self.INSTANCE, self.NAME)
         self.mock_create_image(image)
-        image.cache(fn, self.TEMPLATE)
+        image.cache(None, self.TEMPLATE)
 
         self.mox.VerifyAll()
 
@@ -217,7 +225,9 @@ class RawTestCase(_ImageTestCase, test.NoDBTestCase):
 
         self.mox.VerifyAll()
 
-    def test_create_image_extend(self):
+    @mock.patch.object(images, 'qemu_img_info',
+                       return_value=imageutils.QemuImgInfo())
+    def test_create_image_extend(self, fake_qemu_img_info):
         fn = self.prepare_mocks()
         fn(max_size=self.SIZE, target=self.TEMPLATE_PATH, image_id=None)
         imagebackend.libvirt_utils.copy_image(self.TEMPLATE_PATH, self.PATH)
@@ -248,7 +258,10 @@ class RawTestCase(_ImageTestCase, test.NoDBTestCase):
 
         self.mox.VerifyAll()
 
-    def test_resolve_driver_format(self):
+    @mock.patch.object(images, 'qemu_img_info',
+                       side_effect=exception.InvalidDiskInfo(
+                           reason='invalid path'))
+    def test_resolve_driver_format(self, fake_qemu_img_info):
         image = self.image_class(self.INSTANCE, self.NAME)
         driver_format = image.resolve_driver_format()
         self.assertEqual(driver_format, 'raw')
@@ -282,6 +295,7 @@ class Qcow2TestCase(_ImageTestCase, test.NoDBTestCase):
         os.path.exists(self.TEMPLATE_DIR).AndReturn(False)
         os.path.exists(self.INSTANCES_PATH).AndReturn(True)
         os.path.exists(self.PATH).AndReturn(False)
+        os.path.exists(self.TEMPLATE_PATH).AndReturn(False)
         fn = self.mox.CreateMockAnything()
         fn(target=self.TEMPLATE_PATH)
         self.mox.ReplayAll()
@@ -316,6 +330,7 @@ class Qcow2TestCase(_ImageTestCase, test.NoDBTestCase):
         os.path.exists(self.INSTANCES_PATH).AndReturn(True)
         os.path.exists(self.TEMPLATE_DIR).AndReturn(True)
         os.path.exists(self.PATH).AndReturn(False)
+        os.path.exists(self.TEMPLATE_PATH).AndReturn(False)
         fn = self.mox.CreateMockAnything()
         fn(target=self.TEMPLATE_PATH)
         self.mox.ReplayAll()
@@ -334,13 +349,12 @@ class Qcow2TestCase(_ImageTestCase, test.NoDBTestCase):
         os.path.exists(self.INSTANCES_PATH).AndReturn(True)
         os.path.exists(self.TEMPLATE_DIR).AndReturn(True)
         os.path.exists(self.PATH).AndReturn(False)
-        fn = self.mox.CreateMockAnything()
-        fn(target=self.TEMPLATE_PATH)
+        os.path.exists(self.TEMPLATE_PATH).AndReturn(True)
         self.mox.ReplayAll()
 
         image = self.image_class(self.INSTANCE, self.NAME)
         self.mock_create_image(image)
-        image.cache(fn, self.TEMPLATE)
+        image.cache(None, self.TEMPLATE)
 
         self.mox.VerifyAll()
 
@@ -462,10 +476,11 @@ class LvmTestCase(_ImageTestCase, test.NoDBTestCase):
         self.image_class = imagebackend.Lvm
         super(LvmTestCase, self).setUp()
         self.flags(images_volume_group=self.VG, group='libvirt')
+        self.flags(enabled=False, group='ephemeral_storage_encryption')
+        self.INSTANCE['ephemeral_key_uuid'] = None
         self.LV = '%s_%s' % (self.INSTANCE['uuid'], self.NAME)
         self.OLD_STYLE_INSTANCE_PATH = None
         self.PATH = os.path.join('/dev', self.VG, self.LV)
-
         self.disk = imagebackend.disk
         self.utils = imagebackend.utils
         self.lvm = imagebackend.lvm
@@ -534,6 +549,7 @@ class LvmTestCase(_ImageTestCase, test.NoDBTestCase):
             os.path.exists(self.OLD_STYLE_INSTANCE_PATH).AndReturn(False)
         os.path.exists(self.TEMPLATE_DIR).AndReturn(False)
         os.path.exists(self.PATH).AndReturn(False)
+        os.path.exists(self.TEMPLATE_PATH).AndReturn(False)
 
         fn = self.mox.CreateMockAnything()
         fn(target=self.TEMPLATE_PATH)
@@ -567,6 +583,7 @@ class LvmTestCase(_ImageTestCase, test.NoDBTestCase):
             os.path.exists(self.OLD_STYLE_INSTANCE_PATH).AndReturn(False)
         os.path.exists(self.TEMPLATE_DIR).AndReturn(True)
         os.path.exists(self.PATH).AndReturn(False)
+        os.path.exists(self.TEMPLATE_PATH).AndReturn(False)
         fn = self.mox.CreateMockAnything()
         fn(target=self.TEMPLATE_PATH)
         self.mox.StubOutWithMock(imagebackend.fileutils, 'ensure_tree')
@@ -610,7 +627,7 @@ class LvmTestCase(_ImageTestCase, test.NoDBTestCase):
         self.disk.get_disk_size(self.TEMPLATE_PATH
                                          ).AndReturn(self.TEMPLATE_SIZE)
         self.mox.StubOutWithMock(self.lvm, 'remove_volumes')
-        self.lvm.remove_volumes(self.PATH)
+        self.lvm.remove_volumes([self.PATH])
         self.mox.ReplayAll()
 
         image = self.image_class(self.INSTANCE, self.NAME)
@@ -628,7 +645,7 @@ class LvmTestCase(_ImageTestCase, test.NoDBTestCase):
                                self.SIZE,
                                sparse=False)
         self.mox.StubOutWithMock(self.lvm, 'remove_volumes')
-        self.lvm.remove_volumes(self.PATH)
+        self.lvm.remove_volumes([self.PATH])
         self.mox.ReplayAll()
 
         image = self.image_class(self.INSTANCE, self.NAME)
@@ -641,6 +658,378 @@ class LvmTestCase(_ImageTestCase, test.NoDBTestCase):
     def test_prealloc_image(self):
         CONF.set_override('preallocate_images', 'space')
 
+        fake_processutils.fake_execute_clear_log()
+        fake_processutils.stub_out_processutils_execute(self.stubs)
+        image = self.image_class(self.INSTANCE, self.NAME)
+
+        def fake_fetch(target, *args, **kwargs):
+            return
+
+        self.stubs.Set(os.path, 'exists', lambda _: True)
+        self.stubs.Set(image, 'check_image_exists', lambda: True)
+
+        image.cache(fake_fetch, self.TEMPLATE_PATH, self.SIZE)
+
+        self.assertEqual(fake_processutils.fake_execute_get_log(), [])
+
+
+class EncryptedLvmTestCase(_ImageTestCase, test.NoDBTestCase):
+    VG = 'FakeVG'
+    TEMPLATE_SIZE = 512
+    SIZE = 1024
+
+    def setUp(self):
+        super(EncryptedLvmTestCase, self).setUp()
+        self.image_class = imagebackend.Lvm
+        self.flags(enabled=True, group='ephemeral_storage_encryption')
+        self.flags(cipher='aes-xts-plain64',
+                   group='ephemeral_storage_encryption')
+        self.flags(key_size=512, group='ephemeral_storage_encryption')
+        self.flags(fixed_key='00000000000000000000000000000000'
+                             '00000000000000000000000000000000',
+                   group='keymgr')
+        self.flags(images_volume_group=self.VG, group='libvirt')
+        self.LV = '%s_%s' % (self.INSTANCE['uuid'], self.NAME)
+        self.OLD_STYLE_INSTANCE_PATH = None
+        self.LV_PATH = os.path.join('/dev', self.VG, self.LV)
+        self.PATH = os.path.join('/dev/mapper',
+            imagebackend.dmcrypt.volume_name(self.LV))
+        self.key_manager = keymgr.API()
+        self.INSTANCE['ephemeral_key_uuid'] =\
+            self.key_manager.create_key(self.CONTEXT)
+        self.KEY = self.key_manager.get_key(self.CONTEXT,
+            self.INSTANCE['ephemeral_key_uuid']).get_encoded()
+
+        self.lvm = imagebackend.lvm
+        self.disk = imagebackend.disk
+        self.utils = imagebackend.utils
+        self.libvirt_utils = imagebackend.libvirt_utils
+        self.dmcrypt = imagebackend.dmcrypt
+
+    def _create_image(self, sparse):
+        with contextlib.nested(
+                mock.patch.object(self.lvm, 'create_volume', mock.Mock()),
+                mock.patch.object(self.lvm, 'remove_volumes', mock.Mock()),
+                mock.patch.object(self.disk, 'resize2fs', mock.Mock()),
+                mock.patch.object(self.disk, 'get_disk_size',
+                                  mock.Mock(return_value=self.TEMPLATE_SIZE)),
+                mock.patch.object(self.dmcrypt, 'create_volume', mock.Mock()),
+                mock.patch.object(self.dmcrypt, 'delete_volume', mock.Mock()),
+                mock.patch.object(self.dmcrypt, 'list_volumes', mock.Mock()),
+                mock.patch.object(self.libvirt_utils, 'create_lvm_image',
+                                  mock.Mock()),
+                mock.patch.object(self.libvirt_utils, 'remove_logical_volumes',
+                                  mock.Mock()),
+                mock.patch.object(self.utils, 'execute', mock.Mock())):
+            fn = mock.Mock()
+
+            image = self.image_class(self.INSTANCE, self.NAME)
+            image.create_image(fn, self.TEMPLATE_PATH, self.TEMPLATE_SIZE,
+                context=self.CONTEXT)
+
+            fn.assert_called_with(context=self.CONTEXT,
+                max_size=self.TEMPLATE_SIZE,
+                target=self.TEMPLATE_PATH)
+            self.lvm.create_volume.assert_called_with(self.VG,
+                self.LV,
+                self.TEMPLATE_SIZE,
+                sparse=sparse)
+            self.dmcrypt.create_volume.assert_called_with(
+                self.PATH.rpartition('/')[2],
+                self.LV_PATH,
+                CONF.ephemeral_storage_encryption.cipher,
+                CONF.ephemeral_storage_encryption.key_size,
+                self.KEY)
+            cmd = ('qemu-img',
+                   'convert',
+                   '-O',
+                   'raw',
+                   self.TEMPLATE_PATH,
+                   self.PATH)
+            self.utils.execute.assert_called_with(*cmd, run_as_root=True)
+
+    def _create_image_generated(self, sparse):
+        with contextlib.nested(
+                mock.patch.object(self.lvm, 'create_volume', mock.Mock()),
+                mock.patch.object(self.lvm, 'remove_volumes', mock.Mock()),
+                mock.patch.object(self.disk, 'resize2fs', mock.Mock()),
+                mock.patch.object(self.disk, 'get_disk_size',
+                                  mock.Mock(return_value=self.TEMPLATE_SIZE)),
+                mock.patch.object(self.dmcrypt, 'create_volume', mock.Mock()),
+                mock.patch.object(self.dmcrypt, 'delete_volume', mock.Mock()),
+                mock.patch.object(self.dmcrypt, 'list_volumes', mock.Mock()),
+                mock.patch.object(self.libvirt_utils, 'create_lvm_image',
+                                  mock.Mock()),
+                mock.patch.object(self.libvirt_utils, 'remove_logical_volumes',
+                                  mock.Mock()),
+                mock.patch.object(self.utils, 'execute', mock.Mock())):
+            fn = mock.Mock()
+
+            image = self.image_class(self.INSTANCE, self.NAME)
+            image.create_image(fn, self.TEMPLATE_PATH,
+                self.SIZE,
+                ephemeral_size=None,
+                context=self.CONTEXT)
+
+            self.lvm.create_volume.assert_called_with(
+                self.VG,
+                self.LV,
+                self.SIZE,
+                sparse=sparse)
+            self.dmcrypt.create_volume.assert_called_with(
+                self.PATH.rpartition('/')[2],
+                self.LV_PATH,
+                CONF.ephemeral_storage_encryption.cipher,
+                CONF.ephemeral_storage_encryption.key_size,
+                self.KEY)
+            fn.assert_called_with(target=self.PATH,
+                ephemeral_size=None, context=self.CONTEXT)
+
+    def _create_image_resize(self, sparse):
+        with contextlib.nested(
+                mock.patch.object(self.lvm, 'create_volume', mock.Mock()),
+                mock.patch.object(self.lvm, 'remove_volumes', mock.Mock()),
+                mock.patch.object(self.disk, 'resize2fs', mock.Mock()),
+                mock.patch.object(self.disk, 'get_disk_size',
+                                  mock.Mock(return_value=self.TEMPLATE_SIZE)),
+                mock.patch.object(self.dmcrypt, 'create_volume', mock.Mock()),
+                mock.patch.object(self.dmcrypt, 'delete_volume', mock.Mock()),
+                mock.patch.object(self.dmcrypt, 'list_volumes', mock.Mock()),
+                mock.patch.object(self.libvirt_utils, 'create_lvm_image',
+                                  mock.Mock()),
+                mock.patch.object(self.libvirt_utils, 'remove_logical_volumes',
+                                  mock.Mock()),
+                mock.patch.object(self.utils, 'execute', mock.Mock())):
+            fn = mock.Mock()
+
+            image = self.image_class(self.INSTANCE, self.NAME)
+            image.create_image(fn, self.TEMPLATE_PATH, self.SIZE,
+                context=self.CONTEXT)
+
+            fn.assert_called_with(context=self.CONTEXT, max_size=self.SIZE,
+                target=self.TEMPLATE_PATH)
+            self.disk.get_disk_size.assert_called_with(self.TEMPLATE_PATH)
+            self.lvm.create_volume.assert_called_with(
+                self.VG,
+                self.LV,
+                self.SIZE,
+                sparse=sparse)
+            self.dmcrypt.create_volume.assert_called_with(
+                 self.PATH.rpartition('/')[2],
+                 self.LV_PATH,
+                 CONF.ephemeral_storage_encryption.cipher,
+                 CONF.ephemeral_storage_encryption.key_size,
+                 self.KEY)
+            cmd = ('qemu-img',
+                   'convert',
+                   '-O',
+                   'raw',
+                   self.TEMPLATE_PATH,
+                   self.PATH)
+            self.utils.execute.assert_called_with(*cmd, run_as_root=True)
+            self.disk.resize2fs.assert_called_with(self.PATH, run_as_root=True)
+
+    def test_create_image(self):
+        self._create_image(False)
+
+    def test_create_image_sparsed(self):
+        self.flags(sparse_logical_volumes=True, group='libvirt')
+        self._create_image(True)
+
+    def test_create_image_generated(self):
+        self._create_image_generated(False)
+
+    def test_create_image_generated_sparsed(self):
+        self.flags(sparse_logical_volumes=True, group='libvirt')
+        self._create_image_generated(True)
+
+    def test_create_image_resize(self):
+        self._create_image_resize(False)
+
+    def test_create_image_resize_sparsed(self):
+        self.flags(sparse_logical_volumes=True, group='libvirt')
+        self._create_image_resize(True)
+
+    def test_create_image_negative(self):
+        with contextlib.nested(
+                mock.patch.object(self.lvm, 'create_volume', mock.Mock()),
+                mock.patch.object(self.lvm, 'remove_volumes', mock.Mock()),
+                mock.patch.object(self.disk, 'resize2fs', mock.Mock()),
+                mock.patch.object(self.disk, 'get_disk_size',
+                                  mock.Mock(return_value=self.TEMPLATE_SIZE)),
+                mock.patch.object(self.dmcrypt, 'create_volume', mock.Mock()),
+                mock.patch.object(self.dmcrypt, 'delete_volume', mock.Mock()),
+                mock.patch.object(self.dmcrypt, 'list_volumes', mock.Mock()),
+                mock.patch.object(self.libvirt_utils, 'create_lvm_image',
+                                  mock.Mock()),
+                mock.patch.object(self.libvirt_utils, 'remove_logical_volumes',
+                                  mock.Mock()),
+                mock.patch.object(self.utils, 'execute', mock.Mock())):
+            fn = mock.Mock()
+            self.lvm.create_volume.side_effect = RuntimeError()
+
+            image = self.image_class(self.INSTANCE, self.NAME)
+            self.assertRaises(
+                RuntimeError,
+                image.create_image,
+                fn,
+                self.TEMPLATE_PATH,
+                self.SIZE,
+                context=self.CONTEXT)
+
+            fn.assert_called_with(
+                context=self.CONTEXT,
+                max_size=self.SIZE,
+                target=self.TEMPLATE_PATH)
+            self.disk.get_disk_size.assert_called_with(
+                self.TEMPLATE_PATH)
+            self.lvm.create_volume.assert_called_with(
+                self.VG,
+                self.LV,
+                self.SIZE,
+                sparse=False)
+            self.dmcrypt.delete_volume.assert_called_with(
+                self.PATH.rpartition('/')[2])
+            self.lvm.remove_volumes.assert_called_with([self.LV_PATH])
+
+    def test_create_image_encrypt_negative(self):
+        with contextlib.nested(
+                mock.patch.object(self.lvm, 'create_volume', mock.Mock()),
+                mock.patch.object(self.lvm, 'remove_volumes', mock.Mock()),
+                mock.patch.object(self.disk, 'resize2fs', mock.Mock()),
+                mock.patch.object(self.disk, 'get_disk_size',
+                                  mock.Mock(return_value=self.TEMPLATE_SIZE)),
+                mock.patch.object(self.dmcrypt, 'create_volume', mock.Mock()),
+                mock.patch.object(self.dmcrypt, 'delete_volume', mock.Mock()),
+                mock.patch.object(self.dmcrypt, 'list_volumes', mock.Mock()),
+                mock.patch.object(self.libvirt_utils, 'create_lvm_image',
+                                  mock.Mock()),
+                mock.patch.object(self.libvirt_utils, 'remove_logical_volumes',
+                                  mock.Mock()),
+                mock.patch.object(self.utils, 'execute', mock.Mock())):
+            fn = mock.Mock()
+            self.dmcrypt.create_volume.side_effect = RuntimeError()
+
+            image = self.image_class(self.INSTANCE, self.NAME)
+            self.assertRaises(
+                RuntimeError,
+                image.create_image,
+                fn,
+                self.TEMPLATE_PATH,
+                self.SIZE,
+                context=self.CONTEXT)
+
+            fn.assert_called_with(
+                context=self.CONTEXT,
+                max_size=self.SIZE,
+                target=self.TEMPLATE_PATH)
+            self.disk.get_disk_size.assert_called_with(self.TEMPLATE_PATH)
+            self.lvm.create_volume.assert_called_with(
+                self.VG,
+                self.LV,
+                self.SIZE,
+                sparse=False)
+            self.dmcrypt.create_volume.assert_called_with(
+                self.dmcrypt.volume_name(self.LV),
+                self.LV_PATH,
+                CONF.ephemeral_storage_encryption.cipher,
+                CONF.ephemeral_storage_encryption.key_size,
+                self.KEY)
+            self.dmcrypt.delete_volume.assert_called_with(
+                self.PATH.rpartition('/')[2])
+            self.lvm.remove_volumes.assert_called_with([self.LV_PATH])
+
+    def test_create_image_generated_negative(self):
+        with contextlib.nested(
+                mock.patch.object(self.lvm, 'create_volume', mock.Mock()),
+                mock.patch.object(self.lvm, 'remove_volumes', mock.Mock()),
+                mock.patch.object(self.disk, 'resize2fs', mock.Mock()),
+                mock.patch.object(self.disk, 'get_disk_size',
+                                  mock.Mock(return_value=self.TEMPLATE_SIZE)),
+                mock.patch.object(self.dmcrypt, 'create_volume', mock.Mock()),
+                mock.patch.object(self.dmcrypt, 'delete_volume', mock.Mock()),
+                mock.patch.object(self.dmcrypt, 'list_volumes', mock.Mock()),
+                mock.patch.object(self.libvirt_utils, 'create_lvm_image',
+                                  mock.Mock()),
+                mock.patch.object(self.libvirt_utils, 'remove_logical_volumes',
+                                  mock.Mock()),
+                mock.patch.object(self.utils, 'execute', mock.Mock())):
+            fn = mock.Mock()
+            fn.side_effect = RuntimeError()
+
+            image = self.image_class(self.INSTANCE, self.NAME)
+            self.assertRaises(RuntimeError,
+                image.create_image,
+                fn,
+                self.TEMPLATE_PATH,
+                self.SIZE,
+                ephemeral_size=None,
+                context=self.CONTEXT)
+
+            self.lvm.create_volume.assert_called_with(
+                self.VG,
+                self.LV,
+                self.SIZE,
+                sparse=False)
+            self.dmcrypt.create_volume.assert_called_with(
+                self.PATH.rpartition('/')[2],
+                self.LV_PATH,
+                CONF.ephemeral_storage_encryption.cipher,
+                CONF.ephemeral_storage_encryption.key_size,
+                self.KEY)
+            fn.assert_called_with(
+                target=self.PATH,
+                ephemeral_size=None,
+                context=self.CONTEXT)
+            self.dmcrypt.delete_volume.assert_called_with(
+                self.PATH.rpartition('/')[2])
+            self.lvm.remove_volumes.assert_called_with([self.LV_PATH])
+
+    def test_create_image_generated_encrypt_negative(self):
+        with contextlib.nested(
+                mock.patch.object(self.lvm, 'create_volume', mock.Mock()),
+                mock.patch.object(self.lvm, 'remove_volumes', mock.Mock()),
+                mock.patch.object(self.disk, 'resize2fs', mock.Mock()),
+                mock.patch.object(self.disk, 'get_disk_size',
+                                  mock.Mock(return_value=self.TEMPLATE_SIZE)),
+                mock.patch.object(self.dmcrypt, 'create_volume', mock.Mock()),
+                mock.patch.object(self.dmcrypt, 'delete_volume', mock.Mock()),
+                mock.patch.object(self.dmcrypt, 'list_volumes', mock.Mock()),
+                mock.patch.object(self.libvirt_utils, 'create_lvm_image',
+                                  mock.Mock()),
+                mock.patch.object(self.libvirt_utils, 'remove_logical_volumes',
+                                  mock.Mock()),
+                mock.patch.object(self.utils, 'execute', mock.Mock())):
+            fn = mock.Mock()
+            fn.side_effect = RuntimeError()
+
+            image = self.image_class(self.INSTANCE, self.NAME)
+            self.assertRaises(
+                RuntimeError,
+                image.create_image,
+                fn,
+                self.TEMPLATE_PATH,
+                self.SIZE,
+                ephemeral_size=None,
+                context=self.CONTEXT)
+
+            self.lvm.create_volume.assert_called_with(
+                self.VG,
+                self.LV,
+                self.SIZE,
+                sparse=False)
+            self.dmcrypt.create_volume.assert_called_with(
+                self.PATH.rpartition('/')[2],
+                self.LV_PATH,
+                CONF.ephemeral_storage_encryption.cipher,
+                CONF.ephemeral_storage_encryption.key_size,
+                self.KEY)
+            self.dmcrypt.delete_volume.assert_called_with(
+                self.PATH.rpartition('/')[2])
+            self.lvm.remove_volumes.assert_called_with([self.LV_PATH])
+
+    def test_prealloc_image(self):
+        self.flags(preallocate_images='space')
         fake_processutils.fake_execute_clear_log()
         fake_processutils.stub_out_processutils_execute(self.stubs)
         image = self.image_class(self.INSTANCE, self.NAME)
@@ -681,6 +1070,7 @@ class RbdTestCase(_ImageTestCase, test.NoDBTestCase):
         self.mox.StubOutWithMock(image, 'check_image_exists')
         os.path.exists(self.TEMPLATE_DIR).AndReturn(False)
         image.check_image_exists().AndReturn(False)
+        os.path.exists(self.TEMPLATE_PATH).AndReturn(False)
         fn = self.mox.CreateMockAnything()
         fn(target=self.TEMPLATE_PATH)
         self.mox.StubOutWithMock(imagebackend.fileutils, 'ensure_tree')
@@ -700,6 +1090,7 @@ class RbdTestCase(_ImageTestCase, test.NoDBTestCase):
         self.mox.StubOutWithMock(image, 'check_image_exists')
         os.path.exists(self.TEMPLATE_DIR).AndReturn(True)
         image.check_image_exists().AndReturn(False)
+        os.path.exists(self.TEMPLATE_PATH).AndReturn(False)
         fn = self.mox.CreateMockAnything()
         fn(target=self.TEMPLATE_PATH)
         self.mox.StubOutWithMock(imagebackend.fileutils, 'ensure_tree')
@@ -731,12 +1122,11 @@ class RbdTestCase(_ImageTestCase, test.NoDBTestCase):
         self.mox.StubOutWithMock(image, 'check_image_exists')
         os.path.exists(self.TEMPLATE_DIR).AndReturn(True)
         image.check_image_exists().AndReturn(False)
-        fn = self.mox.CreateMockAnything()
-        fn(target=self.TEMPLATE_PATH)
+        os.path.exists(self.TEMPLATE_PATH).AndReturn(True)
         self.mox.ReplayAll()
 
         self.mock_create_image(image)
-        image.cache(fn, self.TEMPLATE)
+        image.cache(None, self.TEMPLATE)
 
         self.mox.VerifyAll()
 
@@ -862,6 +1252,8 @@ class BackendTestCase(test.NoDBTestCase):
 
     def setUp(self):
         super(BackendTestCase, self).setUp()
+        self.flags(enabled=False, group='ephemeral_storage_encryption')
+        self.INSTANCE['ephemeral_key_uuid'] = None
 
     def get_image(self, use_cow, image_type):
         return imagebackend.Backend(use_cow).image(self.INSTANCE,
@@ -902,3 +1294,12 @@ class BackendTestCase(test.NoDBTestCase):
 
     def test_image_default(self):
         self._test_image('default', imagebackend.Raw, imagebackend.Qcow2)
+
+
+class UtilTestCase(test.NoDBTestCase):
+    def test_get_hw_disk_discard(self):
+        self.assertEqual('unmap', imagebackend.get_hw_disk_discard("unmap"))
+        self.assertEqual('ignore', imagebackend.get_hw_disk_discard("ignore"))
+        self.assertIsNone(imagebackend.get_hw_disk_discard(None))
+        self.assertRaises(RuntimeError, imagebackend.get_hw_disk_discard,
+                          "fake")

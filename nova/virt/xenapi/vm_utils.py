@@ -24,30 +24,30 @@ import os
 import time
 import urllib
 import uuid
+from xml.dom import minidom
 from xml.parsers import expat
 
 from eventlet import greenthread
 from oslo.config import cfg
+from oslo.utils import excutils
+from oslo.utils import importutils
+from oslo.utils import strutils
+from oslo.utils import timeutils
+from oslo.utils import units
+import six
 import six.moves.urllib.parse as urlparse
 
 from nova.api.metadata import base as instance_metadata
-from nova import block_device
 from nova.compute import flavors
 from nova.compute import power_state
 from nova.compute import task_states
 from nova.compute import vm_mode
 from nova import exception
-from nova.i18n import _, _LI
+from nova.i18n import _, _LE, _LI
 from nova.network import model as network_model
-from nova.openstack.common import excutils
-from nova.openstack.common import importutils
 from nova.openstack.common import log as logging
 from nova.openstack.common import processutils
-from nova.openstack.common import strutils
-from nova.openstack.common import timeutils
-from nova.openstack.common import units
 from nova.openstack.common import versionutils
-from nova.openstack.common import xmlutils
 from nova import utils
 from nova.virt import configdrive
 from nova.virt import diagnostics
@@ -57,7 +57,6 @@ from nova.virt import hardware
 from nova.virt import netutils
 from nova.virt.xenapi import agent
 from nova.virt.xenapi.image import utils as image_utils
-from nova.virt.xenapi import volume_utils
 
 
 LOG = logging.getLogger(__name__)
@@ -508,74 +507,6 @@ def create_vdi(session, sr_ref, instance, name_label, disk_type, virtual_size,
     return vdi_ref
 
 
-def get_vdi_uuid_for_volume(session, connection_data):
-    sr_uuid, label, sr_params = volume_utils.parse_sr_info(connection_data)
-    sr_ref = volume_utils.find_sr_by_uuid(session, sr_uuid)
-
-    if not sr_ref:
-        sr_ref = volume_utils.introduce_sr(session, sr_uuid, label, sr_params)
-
-    if sr_ref is None:
-        raise exception.NovaException(_('SR not present and could not be '
-                                        'introduced'))
-
-    vdi_uuid = None
-
-    if 'vdi_uuid' in connection_data:
-        _scan_sr(session, sr_ref)
-        vdi_uuid = connection_data['vdi_uuid']
-    else:
-        try:
-            vdi_ref = volume_utils.introduce_vdi(session, sr_ref)
-            vdi_uuid = session.call_xenapi("VDI.get_uuid", vdi_ref)
-        except exception.StorageError as exc:
-            LOG.exception(exc)
-            volume_utils.forget_sr(session, sr_ref)
-
-    return vdi_uuid
-
-
-def get_vdis_for_instance(context, session, instance, name_label, image,
-                          image_type, block_device_info=None):
-    vdis = {}
-
-    if block_device_info:
-        msg = "block device info: %s" % block_device_info
-        # NOTE(mriedem): block_device_info can contain an auth_password
-        # so we have to scrub the message before logging it.
-        LOG.debug(logging.mask_password(msg), instance=instance)
-        root_device_name = block_device_info['root_device_name']
-
-        for bdm in block_device_info['block_device_mapping']:
-            if (block_device.strip_prefix(bdm['mount_device']) ==
-                    block_device.strip_prefix(root_device_name)):
-                # If we're a root-device, record that fact so we don't download
-                # a root image via Glance
-                type_ = 'root'
-            else:
-                # Otherwise, use mount_device as `type_` so that we have easy
-                # access to it in _attach_disks to create the VBD
-                type_ = bdm['mount_device']
-
-            connection_data = bdm['connection_info']['data']
-            vdi_uuid = get_vdi_uuid_for_volume(session, connection_data)
-            if vdi_uuid:
-                vdis[type_] = dict(uuid=vdi_uuid, file=None, osvol=True)
-
-    # If we didn't get a root VDI from volumes, then use the Glance image as
-    # the root device
-    if 'root' not in vdis:
-        create_image_vdis = _create_image(
-                context, session, instance, name_label, image, image_type)
-        vdis.update(create_image_vdis)
-
-    # Just get the VDI ref once
-    for vdi in vdis.itervalues():
-        vdi['ref'] = session.call_xenapi('VDI.get_by_uuid', vdi['uuid'])
-
-    return vdis
-
-
 @contextlib.contextmanager
 def _dummy_vm(session, instance, vdi_ref):
     """This creates a temporary VM so that we can snapshot a VDI.
@@ -728,38 +659,40 @@ def strip_base_mirror_from_vdis(session, vm_ref):
         _try_strip_base_mirror_from_vdi(session, vdi_ref)
 
 
-def _get_snapshots_for_vm(session, instance, vm_ref):
-    sr_ref = safe_find_sr(session)
-    vm_vdi_ref, vm_vdi_rec = get_vdi_for_vm_safely(session, vm_ref)
-    parent_uuid = _get_vhd_parent_uuid(session, vm_vdi_ref)
+def _delete_snapshots_in_vdi_chain(session, instance, vdi_uuid_chain, sr_ref):
+    possible_snapshot_parents = vdi_uuid_chain[1:]
 
-    if not parent_uuid:
-        return []
+    if len(possible_snapshot_parents) == 0:
+        LOG.debug("No VHD chain.", instance=instance)
+        return
 
-    return _child_vhds(session, sr_ref, parent_uuid, old_snapshots_only=True)
-
-
-def remove_old_snapshots(session, instance, vm_ref):
-    """See if there is an snapshot present that should be removed."""
-    LOG.debug("Starting remove_old_snapshots for VM", instance=instance)
-
-    snapshot_uuids = _get_snapshots_for_vm(session, instance, vm_ref)
+    snapshot_uuids = _child_vhds(session, sr_ref, possible_snapshot_parents,
+                                 old_snapshots_only=True)
     number_of_snapshots = len(snapshot_uuids)
 
     if number_of_snapshots <= 0:
         LOG.debug("No snapshots to remove.", instance=instance)
         return
 
-    if number_of_snapshots > 1:
-        LOG.debug("More snapshots than expected, only deleting one.",
-                  instance=instance)
+    vdi_refs = [session.VDI.get_by_uuid(vdi_uuid)
+                for vdi_uuid in snapshot_uuids]
+    safe_destroy_vdis(session, vdi_refs)
 
-    vdi_uuid = snapshot_uuids[0]
-    vdi_ref = session.VDI.get_by_uuid(vdi_uuid)
-    safe_destroy_vdis(session, [vdi_ref])
-    scan_default_sr(session)
-    # TODO(johnthetubaguy): we could look for older snapshots too
-    LOG.debug("Removed one old snapshot.", instance=instance)
+    # ensure garbage collector has been run
+    _scan_sr(session, sr_ref)
+
+    LOG.info(_LI("Deleted %s snapshots.") % number_of_snapshots,
+             instance=instance)
+
+
+def remove_old_snapshots(session, instance, vm_ref):
+    """See if there is an snapshot present that should be removed."""
+    LOG.debug("Starting remove_old_snapshots for VM", instance=instance)
+    vm_vdi_ref, vm_vdi_rec = get_vdi_for_vm_safely(session, vm_ref)
+    chain = _walk_vdi_chain(session, vm_vdi_rec['uuid'])
+    vdi_uuid_chain = [vdi_rec['uuid'] for vdi_rec in chain]
+    sr_ref = vm_vdi_rec["SR"]
+    _delete_snapshots_in_vdi_chain(session, instance, vdi_uuid_chain, sr_ref)
 
 
 @contextlib.contextmanager
@@ -784,11 +717,16 @@ def _snapshot_attached_here_impl(session, instance, vm_ref, label, userdevice,
     vdi_uuid_chain = [vdi_rec['uuid'] for vdi_rec in chain]
     sr_ref = vm_vdi_rec["SR"]
 
+    # clean up after any interrupted snapshot attempts
+    _delete_snapshots_in_vdi_chain(session, instance, vdi_uuid_chain, sr_ref)
+
     snapshot_ref = _vdi_snapshot(session, vm_vdi_ref)
     if post_snapshot_callback is not None:
         post_snapshot_callback(task_state=task_states.IMAGE_PENDING_UPLOAD)
     try:
-        # Ensure no VHDs will vanish while we migrate them
+        # When the VDI snapshot is taken a new parent is introduced.
+        # If we have taken a snapshot before, the new parent can be coalesced.
+        # We need to wait for this to happen before trying to copy the chain.
         _wait_for_vhd_coalesce(session, instance, sr_ref, vm_vdi_ref,
                                vdi_uuid_chain)
 
@@ -873,7 +811,7 @@ def destroy_cached_images(session, sr_ref, all_cached=False, dry_run=False):
         elif len(chain) == 2:
             # Siblings imply cached image is used
             root_vdi_rec = chain[-1]
-            children = _child_vhds(session, sr_ref, root_vdi_rec['uuid'])
+            children = _child_vhds(session, sr_ref, [root_vdi_rec['uuid']])
             if len(children) > 1:
                 continue
 
@@ -1347,8 +1285,8 @@ def _create_cached_image(context, session, instance, name_label,
     return downloaded, vdis
 
 
-def _create_image(context, session, instance, name_label, image_id,
-                  image_type):
+def create_image(context, session, instance, name_label, image_id,
+                 image_type):
     """Creates VDI from the image stored in the local cache. If the image
     is not present in the cache, it streams it from glance.
 
@@ -1486,7 +1424,7 @@ def _fetch_vhd_image(context, session, instance, image_id):
     handler = _choose_download_handler(context, instance)
 
     try:
-        vdis = handler.download_image(context, session, image_id)
+        vdis = handler.download_image(context, session, instance, image_id)
     except Exception:
         default_handler = _default_download_handler()
 
@@ -1502,7 +1440,7 @@ def _fetch_vhd_image(context, session, instance, image_id):
                          'default_handler': default_handler})
 
         vdis = default_handler.download_image(
-                context, session, image_id)
+                context, session, instance, image_id)
 
     # Ensure we can see the import VHDs as VDIs
     scan_default_sr(session)
@@ -1551,8 +1489,8 @@ def _check_vdi_size(context, session, instance, vdi_uuid):
 
     size = _get_vdi_chain_size(session, vdi_uuid)
     if size > allowed_size:
-        LOG.error(_("Image size %(size)d exceeded flavor "
-                    "allowed size %(allowed_size)d"),
+        LOG.error(_LE("Image size %(size)d exceeded flavor "
+                      "allowed size %(allowed_size)d"),
                   {'size': size, 'allowed_size': allowed_size},
                   instance=instance)
 
@@ -1854,7 +1792,7 @@ def compile_diagnostics(vm_rec):
         vm_uuid = vm_rec["uuid"]
         xml = _get_rrd(_get_rrd_server(), vm_uuid)
         if xml:
-            rrd = xmlutils.safe_minidom_parse_string(xml)
+            rrd = minidom.parseString(xml)
             for i, node in enumerate(rrd.firstChild.childNodes):
                 # Provide the last update of the information
                 if node.localName == 'lastupdate':
@@ -1961,10 +1899,10 @@ def _find_sr(session):
         if sr_ref:
             return sr_ref
     # No SR found!
-    LOG.error(_("XenAPI is unable to find a Storage Repository to "
-                "install guest instances on. Please check your "
-                "configuration (e.g. set a default SR for the pool) "
-                "and/or configure the flag 'sr_matching_filter'."))
+    LOG.error(_LE("XenAPI is unable to find a Storage Repository to "
+                  "install guest instances on. Please check your "
+                  "configuration (e.g. set a default SR for the pool) "
+                  "and/or configure the flag 'sr_matching_filter'."))
     return None
 
 
@@ -2089,7 +2027,7 @@ def _is_vdi_a_snapshot(vdi_rec):
     return is_a_snapshot and not image_id
 
 
-def _child_vhds(session, sr_ref, vdi_uuid, old_snapshots_only=False):
+def _child_vhds(session, sr_ref, vdi_uuid_list, old_snapshots_only=False):
     """Return the immediate children of a given VHD.
 
     This is not recursive, only the immediate children are returned.
@@ -2098,11 +2036,11 @@ def _child_vhds(session, sr_ref, vdi_uuid, old_snapshots_only=False):
     for ref, rec in _get_all_vdis_in_sr(session, sr_ref):
         rec_uuid = rec['uuid']
 
-        if rec_uuid == vdi_uuid:
+        if rec_uuid in vdi_uuid_list:
             continue
 
         parent_uuid = _get_vhd_parent_uuid(session, ref, rec)
-        if parent_uuid != vdi_uuid:
+        if parent_uuid not in vdi_uuid_list:
             continue
 
         if old_snapshots_only and not _is_vdi_a_snapshot(rec):
@@ -2113,10 +2051,9 @@ def _child_vhds(session, sr_ref, vdi_uuid, old_snapshots_only=False):
     return list(children)
 
 
-def _count_parents_children(session, vdi_ref, sr_ref):
+def _count_children(session, parent_vdi_uuid, sr_ref):
     # Search for any other vdi which has the same parent as us to work out
     # whether we have siblings and therefore if coalesce is possible
-    parent_vdi_uuid = _get_vhd_parent_uuid(session, vdi_ref)
     children = 0
     for _ref, rec in _get_all_vdis_in_sr(session, sr_ref):
         if (rec['sm_config'].get('vhd-parent') == parent_vdi_uuid):
@@ -2136,31 +2073,47 @@ def _wait_for_vhd_coalesce(session, instance, sr_ref, vdi_ref,
     in vdi_uuid_list may also be coalesced (except the base UUID - which is
     guaranteed to remain)
     """
-    # NOTE(bobba): If we don't have any VDIs in the target list, then no
-    # coalescing can be guaranteed (e.g. file based SRs don't do leaf
-    # coalescing)
-    if len(vdi_uuid_list) == 0:
+    # If the base disk was a leaf node, there will be no coalescing
+    # after a VDI snapshot.
+    if len(vdi_uuid_list) == 1:
+        LOG.debug("Old chain is single VHD, coalesce not possible.",
+                  instance=instance)
         return
 
-    # Check if we have siblings. If so, coalesce will not take place.
-    if _count_parents_children(session, vdi_ref, sr_ref) > 1:
+    # If the parent of the original disk has other children,
+    # there will be no coalesce because of the VDI snapshot.
+    # For example, the first snapshot for an instance that has been
+    # spawned from a cached image, will not coalesce, because of this rule.
+    parent_vdi_uuid = vdi_uuid_list[1]
+    if _count_children(session, parent_vdi_uuid, sr_ref) > 1:
+        LOG.debug("Parent has other children, coalesce is unlikely.",
+                  instance=instance)
         return
 
+    # When the VDI snapshot is taken, a new parent is created.
+    # Assuming it is not one of the above cases, that new parent
+    # can be coalesced, so we need to wait for that to happen.
     max_attempts = CONF.xenserver.vhd_coalesce_max_attempts
+    # Remove the leaf node from list, to get possible good parents
+    # when the coalesce has completed.
+    # Its possible that other coalesce operation happen, so we need
+    # to consider the full chain, rather than just the most recent parent.
+    good_parent_uuids = vdi_uuid_list[1:]
     for i in xrange(max_attempts):
         # NOTE(sirp): This rescan is necessary to ensure the VM's `sm_config`
         # matches the underlying VHDs.
+        # This can also kick XenServer into performing a pending coalesce.
         _scan_sr(session, sr_ref)
         parent_uuid = _get_vhd_parent_uuid(session, vdi_ref)
-        if parent_uuid and (parent_uuid not in vdi_uuid_list):
+        if parent_uuid and (parent_uuid not in good_parent_uuids):
             LOG.debug("Parent %(parent_uuid)s not yet in parent list"
-                      " %(vdi_uuid_list)s, waiting for coalesce...",
+                      " %(good_parent_uuids)s, waiting for coalesce...",
                       {'parent_uuid': parent_uuid,
-                       'vdi_uuid_list': vdi_uuid_list},
+                       'good_parent_uuids': good_parent_uuids},
                       instance=instance)
         else:
-            parent_ref = session.call_xenapi("VDI.get_by_uuid", parent_uuid)
-            _get_vhd_parent_uuid(session, parent_ref)
+            LOG.debug("Coalesce detected, because parent is: %s" % parent_uuid,
+                      instance=instance)
             return
 
         greenthread.sleep(CONF.xenserver.vhd_coalesce_poll_interval)
@@ -2377,7 +2330,7 @@ def _resize_part_and_fs(dev, start, old_sectors, new_sectors, flags):
             utils.execute('resize2fs', partition_path, '%ds' % size,
                           run_as_root=True)
         except processutils.ProcessExecutionError as exc:
-            LOG.error(str(exc))
+            LOG.error(six.text_type(exc))
             reason = _("Shrinking the filesystem down with resize2fs "
                        "has failed, please check if you have "
                        "enough free space on your disk.")
@@ -2495,7 +2448,7 @@ def _mount_filesystem(dev_path, dir):
                                  '-t', 'ext2,ext3,ext4,reiserfs',
                                  dev_path, dir, run_as_root=True)
     except processutils.ProcessExecutionError as e:
-        err = str(e)
+        err = six.text_type(e)
     return err
 
 

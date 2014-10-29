@@ -14,11 +14,11 @@
 #    under the License.
 
 from lxml import etree
+from oslo.serialization import jsonutils
 import webob
 
 from nova.api.openstack.compute.contrib import image_size
 from nova.image import glance
-from nova.openstack.common import jsonutils
 from nova import test
 from nova.tests.api.openstack import fakes
 
@@ -72,12 +72,12 @@ def fake_detail(*args, **kwargs):
     return IMAGES
 
 
-class ImageSizeTest(test.NoDBTestCase):
+class ImageSizeTestV21(test.NoDBTestCase):
     content_type = 'application/json'
     prefix = 'OS-EXT-IMG-SIZE'
 
     def setUp(self):
-        super(ImageSizeTest, self).setUp()
+        super(ImageSizeTestV21, self).setUp()
         self.stubs.Set(glance.GlanceImageService, 'show', fake_show)
         self.stubs.Set(glance.GlanceImageService, 'detail', fake_detail)
         self.flags(osapi_compute_extension=['nova.api.openstack.compute'
@@ -86,8 +86,11 @@ class ImageSizeTest(test.NoDBTestCase):
     def _make_request(self, url):
         req = webob.Request.blank(url)
         req.headers['Accept'] = self.content_type
-        res = req.get_response(fakes.wsgi_app())
+        res = req.get_response(self._get_app())
         return res
+
+    def _get_app(self):
+        return fakes.wsgi_app_v21()
 
     def _get_image(self, body):
         return jsonutils.loads(body).get('image')
@@ -116,7 +119,12 @@ class ImageSizeTest(test.NoDBTestCase):
         self.assertImageSize(images[1], 87654321)
 
 
-class ImageSizeXmlTest(ImageSizeTest):
+class ImageSizeTestV2(ImageSizeTestV21):
+    def _get_app(self):
+        return fakes.wsgi_app()
+
+
+class ImageSizeXmlTest(ImageSizeTestV2):
     content_type = 'application/xml'
     prefix = '{%s}' % image_size.Image_size.namespace
 

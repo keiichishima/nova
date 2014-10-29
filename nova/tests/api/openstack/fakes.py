@@ -16,6 +16,8 @@
 import datetime
 import uuid
 
+from oslo.serialization import jsonutils
+from oslo.utils import timeutils
 import routes
 import six
 import webob
@@ -38,8 +40,6 @@ from nova.db.sqlalchemy import models
 from nova import exception as exc
 import nova.netconf
 from nova.network import api as network_api
-from nova.openstack.common import jsonutils
-from nova.openstack.common import timeutils
 from nova import quota
 from nova.tests import fake_block_device
 from nova.tests import fake_network
@@ -99,27 +99,25 @@ def wsgi_app(inner_app_v2=None, fake_auth_context=None,
     return mapper
 
 
-def wsgi_app_v3(inner_app_v3=None, fake_auth_context=None,
+def wsgi_app_v21(inner_app_v21=None, fake_auth_context=None,
         use_no_auth=False, ext_mgr=None, init_only=None):
-    if not inner_app_v3:
-        inner_app_v3 = compute.APIRouterV3(init_only)
+    if not inner_app_v21:
+        inner_app_v21 = compute.APIRouterV21(init_only)
 
     if use_no_auth:
-        api_v3 = openstack_api.FaultWrapper(auth.NoAuthMiddlewareV3(
-              limits.RateLimitingMiddleware(inner_app_v3)))
+        api_v21 = openstack_api.FaultWrapper(auth.NoAuthMiddlewareV3(
+              limits.RateLimitingMiddleware(inner_app_v21)))
     else:
         if fake_auth_context is not None:
             ctxt = fake_auth_context
         else:
             ctxt = context.RequestContext('fake', 'fake', auth_token=True)
-        api_v3 = openstack_api.FaultWrapper(api_auth.InjectContext(ctxt,
-              limits.RateLimitingMiddleware(inner_app_v3)))
+        api_v21 = openstack_api.FaultWrapper(api_auth.InjectContext(ctxt,
+              limits.RateLimitingMiddleware(inner_app_v21)))
 
     mapper = urlmap.URLMap()
-    mapper['/v3'] = api_v3
-    # TODO(cyeoh): bp nova-api-core-as-extensions
-    # Still need to implement versions for v3 API
-    #    mapper['/'] = openstack_api.FaultWrapper(versions.Versions())
+    mapper['/v2'] = api_v21
+    mapper['/v2.1'] = api_v21
     return mapper
 
 
@@ -240,6 +238,11 @@ def stub_out_nw_api(stubs, cls=None, private=None, publics=None):
 
         def validate_networks(self, context, networks, max_count):
             return max_count
+
+        def create_pci_requests_for_sriov_ports(self, context,
+                                                system_metadata,
+                                                requested_networks):
+            pass
 
     if cls is None:
         cls = Fake
@@ -489,7 +492,7 @@ def stub_instance(id, user_id=None, project_id=None, host=None,
         "host": host,
         "node": node,
         "instance_type_id": 1,
-        "instance_type": dict(inst_type),
+        "instance_type": inst_type,
         "user_data": "",
         "reservation_id": reservation_id,
         "mac_address": "",

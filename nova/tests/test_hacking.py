@@ -12,6 +12,11 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
+import textwrap
+
+import mock
+import pep8
+
 from nova.hacking import checks
 from nova import test
 
@@ -76,6 +81,30 @@ class HackingTestCase(test.NoDBTestCase):
             "CONF.import_opt('volume_drivers', "
             "'nova.virt.libvirt.driver', group='libvirt')",
             "./nova/virt/libvirt/volume.py"))
+
+    def test_no_vi_headers(self):
+
+        lines = ['Line 1\n', 'Line 2\n', 'Line 3\n', 'Line 4\n', 'Line 5\n',
+                 'Line 6\n', 'Line 7\n', 'Line 8\n', 'Line 9\n', 'Line 10\n',
+                 'Line 11\n', 'Line 12\n', 'Line 13\n', 'Line14\n', 'Line15\n']
+
+        self.assertIsNone(checks.no_vi_headers(
+            "Test string foo", 1, lines))
+        self.assertEqual(len(list(checks.no_vi_headers(
+            "# vim: et tabstop=4 shiftwidth=4 softtabstop=4",
+            2, lines))), 2)
+        self.assertIsNone(checks.no_vi_headers(
+            "# vim: et tabstop=4 shiftwidth=4 softtabstop=4",
+            6, lines))
+        self.assertIsNone(checks.no_vi_headers(
+            "# vim: et tabstop=4 shiftwidth=4 softtabstop=4",
+            9, lines))
+        self.assertEqual(len(list(checks.no_vi_headers(
+            "# vim: et tabstop=4 shiftwidth=4 softtabstop=4",
+            14, lines))), 2)
+        self.assertIsNone(checks.no_vi_headers(
+            "Test end string for vi",
+            15, lines))
 
     def test_no_author_tags(self):
         self.assertIsInstance(checks.no_author_tags("# author: jogo"), tuple)
@@ -238,3 +267,137 @@ class HackingTestCase(test.NoDBTestCase):
         self.assertEqual(0,
             len(list(checks.use_jsonutils("json.dumb",
                                  "./nova/virt/xenapi/driver.py"))))
+
+    # We are patching pep8 so that only the check under test is actually
+    # installed.
+    @mock.patch('pep8._checks',
+                {'physical_line': {}, 'logical_line': {}, 'tree': {}})
+    def _run_check(self, code, checker, filename=None):
+        pep8.register_check(checker)
+
+        lines = textwrap.dedent(code).strip().splitlines(True)
+
+        checker = pep8.Checker(filename=filename, lines=lines)
+        checker.check_all()
+        checker.report._deferred_print.sort()
+        return checker.report._deferred_print
+
+    def _assert_has_errors(self, code, checker, expected_errors=None,
+                           filename=None):
+        actual_errors = [e[:3] for e in
+                         self._run_check(code, checker, filename)]
+        self.assertEqual(expected_errors or [], actual_errors)
+
+    def test_assert_called_once(self):
+
+        checker = checks.check_assert_called_once
+        code = """
+               mock = Mock()
+               mock.method(1, 2, 3, test='wow')
+               mock.method.assert_called_once()
+               """
+        errors = [(3, 11, 'N327')]
+        self._assert_has_errors(code, checker, expected_errors=errors,
+                                filename='nova/tests/test_assert.py')
+
+    def test_str_unicode_exception(self):
+
+        checker = checks.CheckForStrUnicodeExc
+        code = """
+               def f(a, b):
+                   try:
+                       p = str(a) + str(b)
+                   except ValueError as e:
+                       p = str(e)
+                   return p
+               """
+        errors = [(5, 16, 'N325')]
+        self._assert_has_errors(code, checker, expected_errors=errors)
+
+        code = """
+               def f(a, b):
+                   try:
+                       p = unicode(a) + str(b)
+                   except ValueError as e:
+                       p = e
+                   return p
+               """
+        errors = []
+        self._assert_has_errors(code, checker, expected_errors=errors)
+
+        code = """
+               def f(a, b):
+                   try:
+                       p = str(a) + str(b)
+                   except ValueError as e:
+                       p = unicode(e)
+                   return p
+               """
+        errors = [(5, 20, 'N325')]
+        self._assert_has_errors(code, checker, expected_errors=errors)
+
+        code = """
+               def f(a, b):
+                   try:
+                       p = str(a) + str(b)
+                   except ValueError as e:
+                       try:
+                           p  = unicode(a) + unicode(b)
+                       except ValueError as ve:
+                           p = str(e) + str(ve)
+                       p = e
+                   return p
+               """
+        errors = [(8, 20, 'N325'), (8, 29, 'N325')]
+        self._assert_has_errors(code, checker, expected_errors=errors)
+
+        code = """
+               def f(a, b):
+                   try:
+                       p = str(a) + str(b)
+                   except ValueError as e:
+                       try:
+                           p  = unicode(a) + unicode(b)
+                       except ValueError as ve:
+                           p = str(e) + unicode(ve)
+                       p = str(e)
+                   return p
+               """
+        errors = [(8, 20, 'N325'), (8, 33, 'N325'), (9, 16, 'N325')]
+        self._assert_has_errors(code, checker, expected_errors=errors)
+
+    def test_trans_add(self):
+
+        checker = checks.CheckForTransAdd
+        code = """
+               def fake_tran(msg):
+                   return msg
+
+
+               _ = fake_tran
+               _LI = _
+               _LW = _
+               _LE = _
+               _LC = _
+
+
+               def f(a, b):
+                   msg = _('test') + 'add me'
+                   msg = _LI('test') + 'add me'
+                   msg = _LW('test') + 'add me'
+                   msg = _LE('test') + 'add me'
+                   msg = _LC('test') + 'add me'
+                   msg = 'add to me' + _('test')
+                   return msg
+               """
+        errors = [(13, 10, 'N326'), (14, 10, 'N326'), (15, 10, 'N326'),
+                  (16, 10, 'N326'), (17, 10, 'N326'), (18, 24, 'N326')]
+        self._assert_has_errors(code, checker, expected_errors=errors)
+
+        code = """
+               def f(a, b):
+                   msg = 'test' + 'add me'
+                   return msg
+               """
+        errors = []
+        self._assert_has_errors(code, checker, expected_errors=errors)

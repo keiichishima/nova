@@ -91,6 +91,9 @@ _STATE_MAP = {
         task_states.RESIZE_MIGRATING: 'RESIZE',
         task_states.RESIZE_MIGRATED: 'RESIZE',
         task_states.RESIZE_FINISH: 'RESIZE',
+        task_states.REBUILDING: 'REBUILD',
+        task_states.REBUILD_BLOCK_DEVICE_MAPPING: 'REBUILD',
+        task_states.REBUILD_SPAWNING: 'REBUILD',
     },
     vm_states.RESIZED: {
         'default': 'VERIFY_RESIZE',
@@ -110,6 +113,9 @@ _STATE_MAP = {
     },
     vm_states.ERROR: {
         'default': 'ERROR',
+        task_states.REBUILDING: 'REBUILD',
+        task_states.REBUILD_BLOCK_DEVICE_MAPPING: 'REBUILD',
+        task_states.REBUILD_SPAWNING: 'REBUILD',
     },
     vm_states.DELETED: {
         'default': 'DELETED',
@@ -153,6 +159,39 @@ def task_and_vm_state_from_status(statuses):
                 task_states.add(task_state)
     # Add sort to avoid different order on set in Python 3
     return sorted(vm_states), sorted(task_states)
+
+
+def get_sort_params(input_params, default_key='created_at',
+                    default_dir='desc'):
+    """Retrieves sort keys/directions parameters.
+
+    Processes the parameters to create a list of sort keys and sort directions
+    that correspond to the 'sort_key' and 'sort_dir' parameter values. These
+    sorting parameters can be specified multiple times in order to generate
+    the list of sort keys and directions.
+
+    The input parameters are not modified.
+
+    :param input_params: webob.multidict of request parameters (from
+                         nova.wsgi.Request.params)
+    :param default_key: default sort key value, added to the list if no
+                        'sort_key' parameters are supplied
+    :param default_dir: default sort dir value, added to the list if no
+                        'sort_dir' parameters are supplied
+    :returns: list of sort keys, list of sort dirs
+    """
+    params = input_params.copy()
+    sort_keys = []
+    sort_dirs = []
+    while 'sort_key' in params:
+        sort_keys.append(params.pop('sort_key').strip())
+    while 'sort_dir' in params:
+        sort_dirs.append(params.pop('sort_dir').strip())
+    if len(sort_keys) == 0 and default_key:
+        sort_keys.append(default_key)
+    if len(sort_dirs) == 0 and default_dir:
+        sort_dirs.append(default_dir)
+    return sort_keys, sort_dirs
 
 
 def get_pagination_params(request):
@@ -357,7 +396,7 @@ def get_networks_for_instance(context, instance):
     return get_networks_for_instance_from_nw_info(nw_info)
 
 
-def raise_http_conflict_for_instance_invalid_state(exc, action):
+def raise_http_conflict_for_instance_invalid_state(exc, action, server_id):
     """Raises a webob.exc.HTTPConflict instance containing a message
     appropriate to return via the API based on the original
     InstanceInvalidState exception.
@@ -366,13 +405,17 @@ def raise_http_conflict_for_instance_invalid_state(exc, action):
     state = exc.kwargs.get('state')
     not_launched = exc.kwargs.get('not_launched')
     if attr and state:
-        msg = _("Cannot '%(action)s' while instance is in %(attr)s "
-                "%(state)s") % {'action': action, 'attr': attr, 'state': state}
+        msg = _("Cannot '%(action)s' instance %(server_id)s while it is in "
+                "%(attr)s %(state)s") % {'action': action, 'attr': attr,
+                                         'state': state,
+                                         'server_id': server_id}
     elif not_launched:
-        msg = _("Cannot '%s' an instance which has never been active") % action
+        msg = _("Cannot '%(action)' instance %(server_id)s which has never "
+                "been active") % {'action': action, 'server_id': server_id}
     else:
         # At least give some meaningful message
-        msg = _("Instance is in an invalid state for '%s'") % action
+        msg = _("Instance %(server_id)s is in an invalid state for "
+                "'%(action)s'") % {'action': action, 'server_id': server_id}
     raise webob.exc.HTTPConflict(explanation=msg)
 
 
@@ -549,7 +592,8 @@ class ViewBuilder(object):
         url_parts = list(urlparse.urlsplit(orig_url))
         prefix_parts = list(urlparse.urlsplit(prefix))
         url_parts[0:2] = prefix_parts[0:2]
-        return urlparse.urlunsplit(url_parts)
+        url_parts[2] = prefix_parts[2] + url_parts[2]
+        return urlparse.urlunsplit(url_parts).rstrip('/')
 
     def _update_glance_link_prefix(self, orig_url):
         return self._update_link_prefix(orig_url,

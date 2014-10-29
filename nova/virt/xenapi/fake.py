@@ -56,12 +56,13 @@ import uuid
 from xml.sax import saxutils
 import zlib
 
+from oslo.serialization import jsonutils
+from oslo.utils import timeutils
+from oslo.utils import units
+
 from nova import exception
 from nova.i18n import _
-from nova.openstack.common import jsonutils
 from nova.openstack.common import log as logging
-from nova.openstack.common import timeutils
-from nova.openstack.common import units
 from nova.virt.xenapi.client import session as xenapi_session
 
 
@@ -206,11 +207,15 @@ def after_VDI_create(vdi_ref, vdi_rec):
     vdi_rec.setdefault('VBDs', [])
 
 
-def create_vbd(vm_ref, vdi_ref, userdevice=0):
+def create_vbd(vm_ref, vdi_ref, userdevice=0, other_config=None):
+    if other_config is None:
+        other_config = {}
+
     vbd_rec = {'VM': vm_ref,
                'VDI': vdi_ref,
                'userdevice': str(userdevice),
-               'currently_attached': False}
+               'currently_attached': False,
+               'other_config': other_config}
     vbd_ref = _create_object('VBD', vbd_rec)
     after_VBD_create(vbd_ref, vbd_rec)
     return vbd_ref
@@ -222,6 +227,7 @@ def after_VBD_create(vbd_ref, vbd_rec):
     """
     vbd_rec['currently_attached'] = False
     vbd_rec['device'] = ''
+    vbd_rec.setdefault('other_config', {})
 
     vm_ref = vbd_rec['VM']
     vm_rec = _db_content['VM'][vm_ref]
@@ -707,14 +713,14 @@ class SessionBase(object):
 
         """
         # Driver is not pciback
-        dev_bad1 = ["Slot:\t86:10.0", "Class:\t0604", "Vendor:\t10b5",
+        dev_bad1 = ["Slot:\t0000:86:10.0", "Class:\t0604", "Vendor:\t10b5",
                     "Device:\t8747", "Rev:\tba", "Driver:\tpcieport", "\n"]
         # Driver is pciback but vendor and device are bad
-        dev_bad2 = ["Slot:\t88:00.0", "Class:\t0300", "Vendor:\t0bad",
+        dev_bad2 = ["Slot:\t0000:88:00.0", "Class:\t0300", "Vendor:\t0bad",
                     "Device:\tcafe", "SVendor:\t10de", "SDevice:\t100d",
                     "Rev:\ta1", "Driver:\tpciback", "\n"]
         # Driver is pciback and vendor, device are used for matching
-        dev_good = ["Slot:\t87:00.0", "Class:\t0300", "Vendor:\t10de",
+        dev_good = ["Slot:\t0000:87:00.0", "Class:\t0300", "Vendor:\t10de",
                     "Device:\t11bf", "SVendor:\t10de", "SDevice:\t100d",
                     "Rev:\ta1", "Driver:\tpciback", "\n"]
 

@@ -17,11 +17,11 @@ import os
 import re
 
 from lxml import etree
+from oslo.serialization import jsonutils
+from oslo.utils import importutils
 import six
 
 from nova.i18n import _
-from nova.openstack.common import importutils
-from nova.openstack.common import jsonutils
 from nova import test
 from nova.tests.integrated import integrated_helpers
 
@@ -197,7 +197,8 @@ class ApiSampleTestBase(integrated_helpers._IntegratedTestBase):
             if isinstance(expected, six.string_types):
                 # NOTE(danms): Ignore whitespace in this comparison
                 expected = expected.strip()
-                result = result.strip()
+                if isinstance(result, six.string_types):
+                    result = result.strip()
             if expected != result:
                 raise NoMatch(
                         _('Values do not match:\n'
@@ -219,8 +220,8 @@ class ApiSampleTestBase(integrated_helpers._IntegratedTestBase):
         return subs
 
     def _verify_response(self, name, subs, response, exp_code):
-        self.assertEqual(response.status, exp_code)
-        response_data = response.read()
+        self.assertEqual(response.status_code, exp_code)
+        response_data = response.content
         response_data = self._pretty_data(response_data)
         if not os.path.exists(self._get_template(name)):
             self._write_template(name, response_data)

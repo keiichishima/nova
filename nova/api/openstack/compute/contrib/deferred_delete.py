@@ -46,7 +46,7 @@ class DeferredDeleteController(wsgi.Controller):
             raise webob.exc.HTTPForbidden(explanation=error.format_message())
         except exception.InstanceInvalidState as state_error:
             common.raise_http_conflict_for_instance_invalid_state(state_error,
-                    'restore')
+                    'restore', id)
         return webob.Response(status_int=202)
 
     @wsgi.action('forceDelete')
@@ -59,9 +59,8 @@ class DeferredDeleteController(wsgi.Controller):
 
         try:
             self.compute_api.force_delete(context, instance)
-        except exception.InstanceInvalidState as state_error:
-            common.raise_http_conflict_for_instance_invalid_state(state_error,
-                    'forceDelete')
+        except exception.InstanceIsLocked as e:
+            raise webob.exc.HTTPConflict(explanation=e.format_message())
         return webob.Response(status_int=202)
 
 

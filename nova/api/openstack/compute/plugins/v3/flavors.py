@@ -13,15 +13,16 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
+from oslo.utils import strutils
 import webob
 
+from nova.api.openstack import common
 from nova.api.openstack.compute.views import flavors as flavors_view
 from nova.api.openstack import extensions
 from nova.api.openstack import wsgi
 from nova.compute import flavors
 from nova import exception
 from nova.i18n import _
-from nova.openstack.common import strutils
 from nova import utils
 
 ALIAS = 'flavors'
@@ -77,8 +78,7 @@ class FlavorsController(wsgi.Controller):
         filters = {}
         sort_key = req.params.get('sort_key') or 'flavorid'
         sort_dir = req.params.get('sort_dir') or 'asc'
-        limit = req.params.get('limit') or None
-        marker = req.params.get('marker') or None
+        limit, marker = common.get_limit_and_marker(req)
 
         context = req.environ['nova.context']
         if context.is_admin:
@@ -89,19 +89,19 @@ class FlavorsController(wsgi.Controller):
             filters['is_public'] = True
             filters['disabled'] = False
 
-        if 'min_ram' in req.params:
+        if 'minRam' in req.params:
             try:
-                filters['min_memory_mb'] = int(req.params['min_ram'])
+                filters['min_memory_mb'] = int(req.params['minRam'])
             except ValueError:
-                msg = _('Invalid min_ram filter [%s]') % req.params['min_ram']
+                msg = _('Invalid min_ram filter [%s]') % req.params['minRam']
                 raise webob.exc.HTTPBadRequest(explanation=msg)
 
-        if 'min_disk' in req.params:
+        if 'minDisk' in req.params:
             try:
-                filters['min_root_gb'] = int(req.params['min_disk'])
+                filters['min_root_gb'] = int(req.params['minDisk'])
             except ValueError:
-                msg = (_('Invalid min_disk filter [%s]') %
-                       req.params['min_disk'])
+                msg = (_('Invalid minDisk filter [%s]') %
+                       req.params['minDisk'])
                 raise webob.exc.HTTPBadRequest(explanation=msg)
 
         try:

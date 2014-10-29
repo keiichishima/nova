@@ -39,10 +39,6 @@ class FakeMount(object):
 
 
 class APITestCase(test.NoDBTestCase):
-
-    def setUp(self):
-        super(APITestCase, self).setUp()
-
     def test_can_resize_need_fs_type_specified(self):
         # NOTE(mikal): Bug 1094373 saw a regression where we failed to
         # treat a failure to mount as a failure to be able to resize the
@@ -70,7 +66,7 @@ class APITestCase(test.NoDBTestCase):
         def fake_import_fails(*args, **kwargs):
             raise Exception('Failed')
         self.useFixture(fixtures.MonkeyPatch(
-                'nova.openstack.common.importutils.import_module',
+                'oslo.utils.import_module',
                 fake_import_fails))
 
         imgfile = tempfile.NamedTemporaryFile()

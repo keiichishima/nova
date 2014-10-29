@@ -18,6 +18,7 @@ import uuid
 import mock
 import mox
 from oslo.config import cfg
+from oslo.serialization import jsonutils
 import webob
 
 from nova.api.openstack.compute import plugins
@@ -30,7 +31,6 @@ from nova import db
 from nova import exception
 from nova.image import glance
 from nova import objects
-from nova.openstack.common import jsonutils
 from nova.openstack.common import uuidutils
 from nova import test
 from nova.tests.api.openstack import fakes
@@ -74,7 +74,7 @@ class MockSetAdminPassword(object):
 
 class ServerActionsControllerTest(test.TestCase):
     image_uuid = '76fa36fc-c930-4bf3-8c8a-ea2a2420deb6'
-    image_href = 'http://localhost/v3/images/%s' % image_uuid
+    image_href = 'http://localhost/v2/fake/images/%s' % image_uuid
 
     def setUp(self):
         super(ServerActionsControllerTest, self).setUp()
@@ -99,11 +99,11 @@ class ServerActionsControllerTest(test.TestCase):
         self.controller = servers.ServersController(extension_info=ext_info)
         self.compute_api = self.controller.compute_api
         self.context = context.RequestContext('fake', 'fake')
-        self.app = fakes.wsgi_app_v3(init_only=('servers',),
-                                     fake_auth_context=self.context)
+        self.app = fakes.wsgi_app_v21(init_only=('servers',),
+                                      fake_auth_context=self.context)
 
     def _make_request(self, url, body):
-        req = webob.Request.blank('/v3' + url)
+        req = webob.Request.blank('/v2/fake' + url)
         req.method = 'POST'
         req.body = jsonutils.dumps(body)
         req.content_type = 'application/json'
@@ -149,8 +149,11 @@ class ServerActionsControllerTest(test.TestCase):
         self.mox.UnsetStubs()
 
     def test_actions_with_locked_instance(self):
-        actions = ['resize', 'confirm_resize', 'revert_resize', 'reboot',
+        actions = ['resize', 'confirmResize', 'revertResize', 'reboot',
                    'rebuild']
+
+        method_translations = {'confirmResize': 'confirm_resize',
+                               'revertResize': 'revert_resize'}
 
         body_map = {'resize': {'flavorRef': '2'},
                     'reboot': {'type': 'HARD'},
@@ -158,13 +161,14 @@ class ServerActionsControllerTest(test.TestCase):
                                 'adminPass': 'TNc53Dr8s7vw'}}
 
         args_map = {'resize': (('2'), {}),
-                    'confirm_resize': ((), {}),
+                    'confirmResize': ((), {}),
                     'reboot': (('HARD',), {}),
                     'rebuild': ((self.image_uuid, 'TNc53Dr8s7vw'), {})}
 
         for action in actions:
-            self.mox.StubOutWithMock(compute_api.API, action)
-            self._test_locked_instance(action, method=None,
+            method = method_translations.get(action)
+            self.mox.StubOutWithMock(compute_api.API, method or action)
+            self._test_locked_instance(action, method=method,
                                        body_map=body_map,
                                        compute_api_args_map=args_map)
 
@@ -284,14 +288,13 @@ class ServerActionsControllerTest(test.TestCase):
                 fakes.fake_instance_get(vm_state=vm_states.ACTIVE))
         self.stubs.Set(compute_api.API, 'rebuild', rebuild)
 
-        # proper local hrefs must start with 'http://localhost/v3/'
         body = {
             'rebuild': {
                 'imageRef': self.image_uuid,
             },
         }
 
-        req = fakes.HTTPRequestV3.blank('/v3/servers/a/action')
+        req = fakes.HTTPRequestV3.blank('/v2/fake/servers/a/action')
         self.controller._action_rebuild(req, FAKE_UUID, body=body)
         self.assertEqual(info['image_href_in_call'], self.image_uuid)
 
@@ -305,14 +308,13 @@ class ServerActionsControllerTest(test.TestCase):
                 fakes.fake_instance_get(vm_state=vm_states.ACTIVE))
         self.stubs.Set(compute_api.API, 'rebuild', rebuild)
 
-        # proper local hrefs must start with 'http://localhost/v3/'
         body = {
             'rebuild': {
                 'imageRef': self.image_href,
             },
         }
 
-        req = fakes.HTTPRequestV3.blank('/v3/servers/a/action')
+        req = fakes.HTTPRequestV3.blank('/v2/fake/servers/a/action')
         self.controller._action_rebuild(req, FAKE_UUID, body=body)
         self.assertEqual(info['image_href_in_call'], self.image_uuid)
 
@@ -388,7 +390,7 @@ class ServerActionsControllerTest(test.TestCase):
         }
 
         req = fakes.HTTPRequestV3.blank(self.url)
-        self.assertRaises(webob.exc.HTTPBadRequest,
+        self.assertRaises(exception.ValidationError,
                           self.controller._action_rebuild,
                           req, FAKE_UUID, body=body)
 
@@ -403,7 +405,7 @@ class ServerActionsControllerTest(test.TestCase):
         }
 
         req = fakes.HTTPRequestV3.blank(self.url)
-        self.assertRaises(webob.exc.HTTPRequestEntityTooLarge,
+        self.assertRaises(exception.ValidationError,
                           self.controller._action_rebuild, req,
                           FAKE_UUID, body=body)
 
@@ -415,7 +417,7 @@ class ServerActionsControllerTest(test.TestCase):
         }
 
         req = fakes.HTTPRequestV3.blank(self.url)
-        self.assertRaises(webob.exc.HTTPBadRequest,
+        self.assertRaises(exception.ValidationError,
                           self.controller._action_rebuild,
                           req, FAKE_UUID, body=body)
 
@@ -597,6 +599,21 @@ class ServerActionsControllerTest(test.TestCase):
     def test_rebuild_preserve_ephemeral_default(self):
         self._test_rebuild_preserve_ephemeral()
 
+    @mock.patch.object(compute_api.API, 'rebuild',
+                       side_effect=exception.AutoDiskConfigDisabledByImage(
+                           image='dummy'))
+    def test_rebuild_instance_raise_auto_disk_config_exc(self, mock_rebuild):
+        body = {
+            "rebuild": {
+                "imageRef": self._image_href,
+            },
+        }
+
+        req = fakes.HTTPRequest.blank(self.url)
+        self.assertRaises(webob.exc.HTTPBadRequest,
+                          self.controller._action_rebuild,
+                          req, FAKE_UUID, body=body)
+
     def test_resize_server(self):
 
         body = dict(resize=dict(flavorRef="http://localhost/3"))
@@ -609,7 +626,7 @@ class ServerActionsControllerTest(test.TestCase):
         self.stubs.Set(compute_api.API, 'resize', resize_mock)
 
         req = fakes.HTTPRequestV3.blank(self.url)
-        body = self.controller._action_resize(req, FAKE_UUID, body)
+        body = self.controller._action_resize(req, FAKE_UUID, body=body)
 
         self.assertEqual(self.resize_called, True)
 
@@ -617,17 +634,17 @@ class ServerActionsControllerTest(test.TestCase):
         body = dict(resize=dict())
 
         req = fakes.HTTPRequestV3.blank(self.url)
-        self.assertRaises(webob.exc.HTTPBadRequest,
+        self.assertRaises(exception.ValidationError,
                           self.controller._action_resize,
-                          req, FAKE_UUID, body)
+                          req, FAKE_UUID, body=body)
 
     def test_resize_server_no_flavor_ref(self):
         body = dict(resize=dict(flavorRef=None))
 
         req = fakes.HTTPRequestV3.blank(self.url)
-        self.assertRaises(webob.exc.HTTPBadRequest,
+        self.assertRaises(exception.ValidationError,
                           self.controller._action_resize,
-                          req, FAKE_UUID, body)
+                          req, FAKE_UUID, body=body)
 
     def test_resize_with_server_not_found(self):
         body = dict(resize=dict(flavorRef="http://localhost/3"))
@@ -637,7 +654,7 @@ class ServerActionsControllerTest(test.TestCase):
         req = fakes.HTTPRequestV3.blank(self.url)
         self.assertRaises(webob.exc.HTTPNotFound,
                           self.controller._action_resize,
-                          req, FAKE_UUID, body)
+                          req, FAKE_UUID, body=body)
 
     def test_resize_with_image_exceptions(self):
         body = dict(resize=dict(flavorRef="http://localhost/3"))
@@ -650,6 +667,10 @@ class ServerActionsControllerTest(test.TestCase):
             (exception.ImageNotFound(image_id=image_id),
              webob.exc.HTTPBadRequest),
             (exception.Invalid, webob.exc.HTTPBadRequest),
+            (exception.NoValidHost(reason='Bad host'),
+             webob.exc.HTTPBadRequest),
+            (exception.AutoDiskConfigDisabledByImage(image=image_id),
+             webob.exc.HTTPBadRequest),
         ]
 
         raised, expected = map(iter, zip(*exceptions))
@@ -662,9 +683,19 @@ class ServerActionsControllerTest(test.TestCase):
 
         for call_no in range(len(exceptions)):
             req = fakes.HTTPRequestV3.blank(self.url)
-            self.assertRaises(expected.next(),
+            next_exception = expected.next()
+            actual = self.assertRaises(next_exception,
                               self.controller._action_resize,
-                              req, FAKE_UUID, body)
+                              req, FAKE_UUID, body=body)
+            if (isinstance(exceptions[call_no][0],
+                           exception.NoValidHost)):
+                self.assertEqual(actual.explanation,
+                                 'No valid host was found. Bad host')
+            elif (isinstance(exceptions[call_no][0],
+                             exception.AutoDiskConfigDisabledByImage)):
+                self.assertEqual(actual.explanation,
+                                 'Requested image fake_image_id has automatic'
+                                 ' disk resize disabled.')
             self.assertEqual(self.resize_called, call_no + 1)
 
     def test_resize_with_too_many_instances(self):
@@ -678,7 +709,7 @@ class ServerActionsControllerTest(test.TestCase):
         req = fakes.HTTPRequestV3.blank(self.url)
         self.assertRaises(webob.exc.HTTPForbidden,
                           self.controller._action_resize,
-                          req, FAKE_UUID, body)
+                          req, FAKE_UUID, body=body)
 
     @mock.patch('nova.compute.api.API.resize',
                 side_effect=exception.CannotResizeDisk(reason=''))
@@ -687,7 +718,7 @@ class ServerActionsControllerTest(test.TestCase):
         req = fakes.HTTPRequestV3.blank(self.url)
         self.assertRaises(webob.exc.HTTPBadRequest,
                           self.controller._action_resize,
-                          req, FAKE_UUID, body)
+                          req, FAKE_UUID, body=body)
 
     @mock.patch('nova.compute.api.API.resize',
                 side_effect=exception.FlavorNotFound(reason='',
@@ -697,7 +728,7 @@ class ServerActionsControllerTest(test.TestCase):
         req = fakes.HTTPRequestV3.blank(self.url)
         self.assertRaises(webob.exc.HTTPBadRequest,
                           self.controller._action_resize,
-                          req, FAKE_UUID, body)
+                          req, FAKE_UUID, body=body)
 
     def test_resize_raises_conflict_on_invalid_state(self):
         body = dict(resize=dict(flavorRef="http://localhost/3"))
@@ -712,10 +743,10 @@ class ServerActionsControllerTest(test.TestCase):
         req = fakes.HTTPRequestV3.blank(self.url)
         self.assertRaises(webob.exc.HTTPConflict,
                           self.controller._action_resize,
-                          req, FAKE_UUID, body)
+                          req, FAKE_UUID, body=body)
 
     def test_confirm_resize_server(self):
-        body = dict(confirm_resize=None)
+        body = dict(confirmResize=None)
 
         self.confirm_resize_called = False
 
@@ -730,7 +761,7 @@ class ServerActionsControllerTest(test.TestCase):
         self.assertEqual(self.confirm_resize_called, True)
 
     def test_confirm_resize_migration_not_found(self):
-        body = dict(confirm_resize=None)
+        body = dict(confirmResize=None)
 
         def confirm_resize_mock(*args):
             raise exception.MigrationNotFoundByStatus(instance_id=1,
@@ -746,7 +777,7 @@ class ServerActionsControllerTest(test.TestCase):
                           req, FAKE_UUID, body)
 
     def test_confirm_resize_raises_conflict_on_invalid_state(self):
-        body = dict(confirm_resize=None)
+        body = dict(confirmResize=None)
 
         def fake_confirm_resize(*args, **kwargs):
             raise exception.InstanceInvalidState(attr='fake_attr',
@@ -818,7 +849,7 @@ class ServerActionsControllerTest(test.TestCase):
 
     def test_create_image(self):
         body = {
-            'create_image': {
+            'createImage': {
                 'name': 'Snapshot 1',
             },
         }
@@ -832,7 +863,7 @@ class ServerActionsControllerTest(test.TestCase):
     def test_create_image_name_too_long(self):
         long_name = 'a' * 260
         body = {
-            'create_image': {
+            'createImage': {
                 'name': long_name,
             },
         }
@@ -847,10 +878,10 @@ class ServerActionsControllerTest(test.TestCase):
         def _fake_id(x):
             return '%s-%s-%s-%s' % (x * 8, x * 4, x * 4, x * 12)
 
-        body = dict(create_image=dict(name='snapshot_of_volume_backed'))
+        body = dict(createImage=dict(name='snapshot_of_volume_backed'))
 
         if extra_properties:
-            body['create_image']['metadata'] = extra_properties
+            body['createImage']['metadata'] = extra_properties
 
         image_service = glance.get_default_image_service()
 
@@ -941,9 +972,9 @@ class ServerActionsControllerTest(test.TestCase):
         def _fake_id(x):
             return '%s-%s-%s-%s' % (x * 8, x * 4, x * 4, x * 12)
 
-        body = dict(create_image=dict(name='snapshot_of_volume_backed'))
+        body = dict(createImage=dict(name='snapshot_of_volume_backed'))
         if extra_metadata:
-            body['create_image']['metadata'] = extra_metadata
+            body['createImage']['metadata'] = extra_metadata
 
         image_service = glance.get_default_image_service()
 
@@ -1011,7 +1042,7 @@ class ServerActionsControllerTest(test.TestCase):
         """
         self.flags(allow_instance_snapshots=False)
         body = {
-            'create_image': {
+            'createImage': {
                 'name': 'Snapshot 1',
             },
         }
@@ -1022,7 +1053,7 @@ class ServerActionsControllerTest(test.TestCase):
 
     def test_create_image_with_metadata(self):
         body = {
-            'create_image': {
+            'createImage': {
                 'name': 'Snapshot 1',
                 'metadata': {'key': 'asdf'},
             },
@@ -1036,13 +1067,13 @@ class ServerActionsControllerTest(test.TestCase):
 
     def test_create_image_with_too_much_metadata(self):
         body = {
-            'create_image': {
+            'createImage': {
                 'name': 'Snapshot 1',
                 'metadata': {},
             },
         }
         for num in range(CONF.quota_metadata_items + 1):
-            body['create_image']['metadata']['foo%i' % num] = "bar"
+            body['createImage']['metadata']['foo%i' % num] = "bar"
 
         req = fakes.HTTPRequestV3.blank(self.url)
         self.assertRaises(webob.exc.HTTPForbidden,
@@ -1051,7 +1082,7 @@ class ServerActionsControllerTest(test.TestCase):
 
     def test_create_image_no_name(self):
         body = {
-            'create_image': {},
+            'createImage': {},
         }
         req = fakes.HTTPRequestV3.blank(self.url)
         self.assertRaises(webob.exc.HTTPBadRequest,
@@ -1060,7 +1091,7 @@ class ServerActionsControllerTest(test.TestCase):
 
     def test_create_image_blank_name(self):
         body = {
-            'create_image': {
+            'createImage': {
                 'name': '',
             }
         }
@@ -1071,7 +1102,7 @@ class ServerActionsControllerTest(test.TestCase):
 
     def test_create_image_bad_metadata(self):
         body = {
-            'create_image': {
+            'createImage': {
                 'name': 'geoff',
                 'metadata': 'henry',
             },
@@ -1089,7 +1120,7 @@ class ServerActionsControllerTest(test.TestCase):
         self.stubs.Set(compute_api.API, 'snapshot', snapshot)
 
         body = {
-            "create_image": {
+            "createImage": {
                 "name": "test_snapshot",
             },
         }

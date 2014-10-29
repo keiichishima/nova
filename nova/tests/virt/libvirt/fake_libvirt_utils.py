@@ -156,7 +156,12 @@ def file_open(path, mode=None):
 
 
 def find_disk(virt_dom):
-    return "filename"
+    if disk_type == 'lvm':
+        return "/dev/nova-vg/lv"
+    elif disk_type in ['raw', 'qcow2']:
+        return "filename"
+    else:
+        return "unknown_type_disk"
 
 
 def load_file(path):
@@ -194,5 +199,13 @@ def pick_disk_driver_name(hypervisor_version, is_block_dev=False):
     return "qemu"
 
 
-def get_arch(image_meta):
+def is_valid_hostname(name):
+    return True
+
+
+def chown_for_id_maps(path, id_maps):
     pass
+
+
+def get_arch(image_meta):
+    return libvirt_utils.get_arch(image_meta)

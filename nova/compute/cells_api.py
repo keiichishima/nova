@@ -23,6 +23,7 @@ from nova import block_device
 from nova.cells import rpcapi as cells_rpcapi
 from nova.cells import utils as cells_utils
 from nova.compute import api as compute_api
+from nova.compute import delete_types
 from nova.compute import rpcapi as compute_rpcapi
 from nova import exception
 from nova import objects
@@ -49,7 +50,8 @@ class ComputeRPCAPIRedirect(object):
                         'unpause_instance', 'revert_resize',
                         'confirm_resize', 'reset_network',
                         'inject_network_info',
-                        'backup_instance', 'snapshot_instance']
+                        'backup_instance', 'snapshot_instance',
+                        'set_admin_password']
 
     def __init__(self, cells_rpcapi):
         self.cells_rpcapi = cells_rpcapi
@@ -224,14 +226,13 @@ class ComputeCellsAPI(compute_api.API):
         return rv
 
     def soft_delete(self, context, instance):
-        self._handle_cell_delete(context, instance, 'soft_delete')
+        self._handle_cell_delete(context, instance, delete_types.SOFT_DELETE)
 
     def delete(self, context, instance):
-        self._handle_cell_delete(context, instance, 'delete')
+        self._handle_cell_delete(context, instance, delete_types.DELETE)
 
-    def _handle_cell_delete(self, context, instance, method_name):
+    def _handle_cell_delete(self, context, instance, delete_type):
         if not instance['cell_name']:
-            delete_type = method_name == 'soft_delete' and 'soft' or 'hard'
             self.cells_rpcapi.instance_delete_everywhere(context,
                     instance, delete_type)
             bdms = block_device.legacy_mapping(
@@ -240,11 +241,11 @@ class ComputeCellsAPI(compute_api.API):
             # NOTE(danms): If we try to delete an instance with no cell,
             # there isn't anything to salvage, so we can hard-delete here.
             super(ComputeCellsAPI, self)._local_delete(context, instance, bdms,
-                                                       method_name,
+                                                       delete_type,
                                                        self._do_delete)
             return
 
-        method = getattr(super(ComputeCellsAPI, self), method_name)
+        method = getattr(super(ComputeCellsAPI, self), delete_type)
         method(context, instance)
 
     @check_instance_cell
@@ -257,7 +258,7 @@ class ComputeCellsAPI(compute_api.API):
     def force_delete(self, context, instance):
         """Force delete a previously deleted (but not reclaimed) instance."""
         super(ComputeCellsAPI, self).force_delete(context, instance)
-        self._cast_to_cells(context, instance, 'force_delete')
+        self._cast_to_cells(context, instance, delete_types.FORCE_DELETE)
 
     @check_instance_cell
     def evacuate(self, context, instance, *args, **kwargs):
@@ -335,14 +336,6 @@ class ComputeCellsAPI(compute_api.API):
         super(ComputeCellsAPI, self).unshelve(context, instance)
         self._cast_to_cells(context, instance, 'unshelve')
 
-    @check_instance_cell
-    def set_admin_password(self, context, instance, password=None):
-        """Set the root/admin password for the given instance."""
-        super(ComputeCellsAPI, self).set_admin_password(context, instance,
-                password=password)
-        self._cast_to_cells(context, instance, 'set_admin_password',
-                password=password)
-
     @wrap_check_policy
     @check_instance_cell
     def get_vnc_console(self, context, instance, console_type):
@@ -384,6 +377,22 @@ class ComputeCellsAPI(compute_api.API):
 
         connect_info = self._call_to_cells(context, instance,
                 'get_rdp_connect_info', console_type)
+
+        self.consoleauth_rpcapi.authorize_console(context,
+                connect_info['token'], console_type, connect_info['host'],
+                connect_info['port'], connect_info['internal_access_path'],
+                instance['uuid'])
+        return {'url': connect_info['access_url']}
+
+    @wrap_check_policy
+    @check_instance_cell
+    def get_serial_console(self, context, instance, console_type):
+        """Get a url to a serial console."""
+        if not instance['host']:
+            raise exception.InstanceNotReady(instance_id=instance['uuid'])
+
+        connect_info = self._call_to_cells(context, instance,
+                'get_serial_console_connect_info', console_type)
 
         self.consoleauth_rpcapi.authorize_console(context,
                 connect_info['token'], console_type, connect_info['host'],

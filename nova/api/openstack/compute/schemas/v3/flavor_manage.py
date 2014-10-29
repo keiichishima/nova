@@ -12,7 +12,6 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
-from nova.api.openstack.compute.plugins.v3 import flavor_rxtx
 from nova.api.validation import parameter_types
 
 create = {
@@ -45,7 +44,7 @@ create = {
                     'pattern': '^[0-9]*$', 'minimum': 0
                 },
                 # non-negative ( >= 0) integer
-                'ephemeral': {
+                'OS-FLV-EXT-DATA:ephemeral': {
                     'type': ['integer', 'string'],
                     'pattern': '^[0-9]*$', 'minimum': 0
                 },
@@ -55,12 +54,12 @@ create = {
                     'pattern': '^[0-9]*$', 'minimum': 0
                 },
                 # positive ( > 0) float
-                '%s:rxtx_factor' % flavor_rxtx.ALIAS: {
+                'rxtx_factor': {
                     'type': ['number', 'string'],
                     'pattern': '^[0-9]+(\.[0-9]+)?$',
                     'minimum': 0, 'exclusiveMinimum': True
                 },
-                'flavor-access:is_public': parameter_types.boolean,
+                'os-flavor-access:is_public': parameter_types.boolean,
             },
             # TODO(oomichi): 'id' should be required with v2.1+microversions.
             # On v2.0 API, nova-api generates a flavor-id automatically if

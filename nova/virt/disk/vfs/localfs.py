@@ -15,9 +15,10 @@
 import os
 import tempfile
 
+from oslo.utils import excutils
+
 from nova import exception
 from nova.i18n import _
-from nova.openstack.common import excutils
 from nova.openstack.common import log as logging
 from nova import utils
 from nova.virt.disk.mount import loop
@@ -77,7 +78,7 @@ class VFSLocalFS(vfs.VFS):
             self.mount = mount
         except Exception as e:
             with excutils.save_and_reraise_exception():
-                LOG.debug("Failed to mount image %(ex)s)", {'ex': str(e)})
+                LOG.debug("Failed to mount image %(ex)s)", {'ex': e})
                 self.teardown()
 
     def teardown(self):
@@ -86,13 +87,13 @@ class VFSLocalFS(vfs.VFS):
                 self.mount.do_teardown()
         except Exception as e:
             LOG.debug("Failed to unmount %(imgdir)s: %(ex)s",
-                      {'imgdir': self.imgdir, 'ex': str(e)})
+                      {'imgdir': self.imgdir, 'ex': e})
         try:
             if self.imgdir:
                 os.rmdir(self.imgdir)
         except Exception as e:
             LOG.debug("Failed to remove %(imgdir)s: %(ex)s",
-                      {'imgdir': self.imgdir, 'ex': str(e)})
+                      {'imgdir': self.imgdir, 'ex': e})
         self.imgdir = None
         self.mount = None
 

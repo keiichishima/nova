@@ -25,10 +25,9 @@ from oslo.config import cfg
 
 from nova.compute import rpcapi as compute_rpcapi
 from nova import exception
-from nova.i18n import _
+from nova.i18n import _, _LW
 from nova import objects
 from nova.openstack.common import log as logging
-from nova.pci import pci_request
 from nova import rpc
 from nova.scheduler import driver
 from nova.scheduler import scheduler_options
@@ -149,7 +148,16 @@ class FilterScheduler(driver.Scheduler):
 
         # Couldn't fulfill the request_spec
         if len(selected_hosts) < num_instances:
-            raise exception.NoValidHost(reason='')
+            # Log the details but don't put those into the reason since
+            # we don't want to give away too much information about our
+            # actual environment.
+            LOG.debug('There are %(hosts)d hosts available but '
+                      '%(num_instances)d instances requested to build.',
+                      {'hosts': len(selected_hosts),
+                       'num_instances': num_instances})
+
+            reason = _('There are not enough hosts available.')
+            raise exception.NoValidHost(reason=reason)
 
         dests = [dict(host=host.obj.host, nodename=host.obj.nodename,
                       limits=host.obj.limits) for host in selected_hosts]
@@ -176,7 +184,7 @@ class FilterScheduler(driver.Scheduler):
             updated_instance = driver.instance_update_db(context,
                                                          instance_uuid)
         except exception.InstanceNotFound:
-            LOG.warning(_("Instance disappeared during scheduling"),
+            LOG.warning(_LW("Instance disappeared during scheduling"),
                         context=context, instance_uuid=instance_uuid)
 
         else:
@@ -207,36 +215,40 @@ class FilterScheduler(driver.Scheduler):
         os_type = request_spec['instance_properties']['os_type']
         filter_properties['project_id'] = project_id
         filter_properties['os_type'] = os_type
-        pci_requests = pci_request.get_pci_requests_from_flavor(
-            request_spec.get('instance_type') or {})
-        if pci_requests:
-            filter_properties['pci_requests'] = pci_requests
 
     def _setup_instance_group(self, context, filter_properties):
-        update_group_hosts = False
+        """Update filter_properties with server group info.
+
+        :returns: True if filter_properties has been updated, False if not.
+        """
         scheduler_hints = filter_properties.get('scheduler_hints') or {}
         group_hint = scheduler_hints.get('group', None)
-        if group_hint:
-            group = objects.InstanceGroup.get_by_hint(context, group_hint)
-            policies = set(('anti-affinity', 'affinity'))
-            if any((policy in policies) for policy in group.policies):
-                if ('affinity' in group.policies and
-                        not self._supports_affinity):
-                        msg = _("ServerGroupAffinityFilter not configured")
-                        LOG.error(msg)
-                        raise exception.NoValidHost(reason=msg)
-                if ('anti-affinity' in group.policies and
-                        not self._supports_anti_affinity):
-                        msg = _("ServerGroupAntiAffinityFilter not configured")
-                        LOG.error(msg)
-                        raise exception.NoValidHost(reason=msg)
-                update_group_hosts = True
-                filter_properties.setdefault('group_hosts', set())
-                user_hosts = set(filter_properties['group_hosts'])
-                group_hosts = set(group.get_hosts(context))
-                filter_properties['group_hosts'] = user_hosts | group_hosts
-                filter_properties['group_policies'] = group.policies
-        return update_group_hosts
+        if not group_hint:
+            return False
+
+        group = objects.InstanceGroup.get_by_hint(context, group_hint)
+        policies = set(('anti-affinity', 'affinity'))
+        if not any((policy in policies) for policy in group.policies):
+            return False
+
+        if ('affinity' in group.policies and
+                not self._supports_affinity):
+            msg = _("ServerGroupAffinityFilter not configured")
+            LOG.error(msg)
+            raise exception.NoValidHost(reason=msg)
+        if ('anti-affinity' in group.policies and
+                not self._supports_anti_affinity):
+            msg = _("ServerGroupAntiAffinityFilter not configured")
+            LOG.error(msg)
+            raise exception.NoValidHost(reason=msg)
+
+        filter_properties.setdefault('group_hosts', set())
+        user_hosts = set(filter_properties['group_hosts'])
+        group_hosts = set(group.get_hosts(context))
+        filter_properties['group_hosts'] = user_hosts | group_hosts
+        filter_properties['group_policies'] = group.policies
+
+        return True
 
     def _schedule(self, context, request_spec, filter_properties):
         """Returns a list of hosts that meet the required specs,
@@ -302,7 +314,17 @@ class FilterScheduler(driver.Scheduler):
 
             # Now consume the resources so the filter/weights
             # will change for the next instance.
+            # NOTE (baoli) adding and deleting pci_requests is a temporary
+            # fix to avoid DB access in consume_from_instance() while getting
+            # pci_requests. The change can be removed once pci_requests is
+            # part of the instance object that is passed into the scheduler
+            # APIs
+            pci_requests = filter_properties.get('pci_requests')
+            if pci_requests:
+                instance_properties['pci_requests'] = pci_requests
             chosen_host.obj.consume_from_instance(instance_properties)
+            if pci_requests:
+                del instance_properties['pci_requests']
             if update_group_hosts is True:
                 filter_properties['group_hosts'].add(chosen_host.obj.host)
         return selected_hosts

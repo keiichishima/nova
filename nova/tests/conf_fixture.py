@@ -44,7 +44,8 @@ class ConfFixture(config_fixture.Config):
         self.conf.set_default('api_paste_config',
                               paths.state_path_def('etc/nova/api-paste.ini'))
         self.conf.set_default('host', 'fake-mini')
-        self.conf.set_default('compute_driver', 'nova.virt.fake.FakeDriver')
+        self.conf.set_default('compute_driver',
+                              'nova.virt.fake.SmallFakeDriver')
         self.conf.set_default('fake_network', True)
         self.conf.set_default('flat_network_bridge', 'br100')
         self.conf.set_default('floating_ip_dns_manager',
@@ -53,11 +54,11 @@ class ConfFixture(config_fixture.Config):
                               'nova.tests.utils.dns_manager')
         self.conf.set_default('network_size', 8)
         self.conf.set_default('num_networks', 2)
-        self.conf.set_default('connection', "sqlite://", group='database')
-        self.conf.set_default('sqlite_synchronous', False, group='database')
         self.conf.set_default('use_ipv6', True)
         self.conf.set_default('vlan_interface', 'eth0')
         self.conf.set_default('auth_strategy', 'noauth')
         config.parse_args([], default_config_files=[])
+        self.conf.set_default('connection', "sqlite://", group='database')
+        self.conf.set_default('sqlite_synchronous', False, group='database')
         self.addCleanup(utils.cleanup_dns_managers)
         self.addCleanup(ipv6.api.reset_backend)

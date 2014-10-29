@@ -78,18 +78,18 @@ class ExtendedVolumesSampleJsonTests(test_servers.ServersSampleBase):
         self._verify_response('servers-detail-resp', subs, response, 200)
 
     def test_attach_volume(self):
+        bdm = objects.BlockDeviceMapping()
         device_name = '/dev/vdd'
+        bdm['device_name'] = device_name
         self.stubs.Set(cinder.API, 'get', fakes.stub_volume_get)
         self.stubs.Set(cinder.API, 'check_attach', lambda *a, **k: None)
         self.stubs.Set(cinder.API, 'reserve_volume', lambda *a, **k: None)
         self.stubs.Set(compute_manager.ComputeManager,
                        "reserve_block_device_name",
-                       lambda *a, **k: device_name)
+                       lambda *a, **k: bdm)
         self.stubs.Set(compute_manager.ComputeManager,
                        'attach_volume',
                        lambda *a, **k: None)
-        self.stubs.Set(objects.BlockDeviceMapping, 'get_by_volume_id',
-                       classmethod(lambda *a, **k: None))
 
         volume = fakes.stub_volume_get(None, context.get_admin_context(),
                                        'a26887c6-c47b-4654-abb5-dfadf7d3f803')
@@ -103,8 +103,8 @@ class ExtendedVolumesSampleJsonTests(test_servers.ServersSampleBase):
         response = self._do_post('servers/%s/action'
                                  % server_id,
                                  'attach-volume-req', subs)
-        self.assertEqual(response.status, 202)
-        self.assertEqual(response.read(), '')
+        self.assertEqual(response.status_code, 202)
+        self.assertEqual(response.content, '')
 
     def test_detach_volume(self):
         server_id = self._post_server()
@@ -118,8 +118,8 @@ class ExtendedVolumesSampleJsonTests(test_servers.ServersSampleBase):
         }
         response = self._do_post('servers/%s/action'
                                  % server_id, 'detach-volume-req', subs)
-        self.assertEqual(response.status, 202)
-        self.assertEqual(response.read(), '')
+        self.assertEqual(response.status_code, 202)
+        self.assertEqual(response.content, '')
 
     def test_swap_volume(self):
         server_id = self._post_server()
@@ -147,5 +147,5 @@ class ExtendedVolumesSampleJsonTests(test_servers.ServersSampleBase):
         }
         response = self._do_post('servers/%s/action' % server_id,
                                  'swap-volume-req', subs)
-        self.assertEqual(response.status, 202)
-        self.assertEqual(response.read(), '')
+        self.assertEqual(response.status_code, 202)
+        self.assertEqual(response.content, '')

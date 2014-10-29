@@ -15,10 +15,10 @@
 import contextlib
 
 import mock
+from oslo.serialization import jsonutils
 
 from nova import block_device
 from nova import context
-from nova.openstack.common import jsonutils
 from nova import test
 from nova.tests import fake_instance
 from nova.tests import matchers
@@ -656,7 +656,7 @@ class TestDriverBlockDevice(test.NoDBTestCase):
         self.assertEqual(swap[0], driver_block_device.get_swap(swap))
         self.assertEqual(legacy_swap[0],
                           driver_block_device.get_swap(legacy_swap))
-        self.assertEqual(no_swap, driver_block_device.get_swap(no_swap))
+        self.assertIsNone(driver_block_device.get_swap(no_swap))
         self.assertIsNone(driver_block_device.get_swap([]))
 
     def test_is_implemented(self):

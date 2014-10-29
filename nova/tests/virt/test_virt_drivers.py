@@ -19,13 +19,15 @@ import traceback
 import fixtures
 import mock
 import netaddr
+from oslo.serialization import jsonutils
+from oslo.utils import importutils
+from oslo.utils import timeutils
 import six
 
 from nova.compute import manager
+from nova.console import type as ctype
 from nova import exception
 from nova import objects
-from nova.openstack.common import importutils
-from nova.openstack.common import jsonutils
 from nova.openstack.common import log as logging
 from nova import test
 from nova.tests import fake_block_device
@@ -45,17 +47,17 @@ def catch_notimplementederror(f):
     """Decorator to simplify catching drivers raising NotImplementedError
 
     If a particular call makes a driver raise NotImplementedError, we
-    log it so that we can extract this information afterwards to
-    automatically generate a hypervisor/feature support matrix.
+    log it so that we can extract this information afterwards as needed.
     """
     def wrapped_func(self, *args, **kwargs):
         try:
             return f(self, *args, **kwargs)
         except NotImplementedError:
             frame = traceback.extract_tb(sys.exc_info()[2])[-1]
-            LOG.error('%(driver)s does not implement %(method)s' % {
-                                               'driver': type(self.connection),
-                                               'method': frame[2]})
+            LOG.error("%(driver)s does not implement %(method)s "
+                      "required for test %(test)s" %
+                      {'driver': type(self.connection),
+                       'method': frame[2], 'test': f.__name__})
 
     wrapped_func.__name__ = f.__name__
     wrapped_func.__doc__ = f.__doc__
@@ -216,7 +218,7 @@ class _VirtDriverTestCase(_FakeDriverBackendTestCase):
         self.stubs.Set(imagebackend.Image, 'resolve_driver_format',
                        imagebackend.Image._get_driver_format)
 
-    def _get_running_instance(self, obj=False):
+    def _get_running_instance(self, obj=True):
         instance_ref = test_utils.get_test_instance(obj=obj)
         network_info = test_utils.get_test_network_info()
         network_info[0]['network']['subnets'][0]['meta']['dhcp_server'] = \
@@ -511,6 +513,7 @@ class _VirtDriverTestCase(_FakeDriverBackendTestCase):
     @catch_notimplementederror
     def test_get_instance_diagnostics(self):
         instance_ref, network_info = self._get_running_instance(obj=True)
+        instance_ref['launched_at'] = timeutils.utcnow()
         self.connection.get_instance_diagnostics(instance_ref)
 
     @catch_notimplementederror
@@ -537,27 +540,27 @@ class _VirtDriverTestCase(_FakeDriverBackendTestCase):
     def test_get_vnc_console(self):
         instance, network_info = self._get_running_instance(obj=True)
         vnc_console = self.connection.get_vnc_console(self.ctxt, instance)
-        self.assertIn('internal_access_path', vnc_console)
-        self.assertIn('host', vnc_console)
-        self.assertIn('port', vnc_console)
+        self.assertIsInstance(vnc_console, ctype.ConsoleVNC)
 
     @catch_notimplementederror
     def test_get_spice_console(self):
         instance_ref, network_info = self._get_running_instance()
         spice_console = self.connection.get_spice_console(self.ctxt,
-                instance_ref)
-        self.assertIn('internal_access_path', spice_console)
-        self.assertIn('host', spice_console)
-        self.assertIn('port', spice_console)
-        self.assertIn('tlsPort', spice_console)
+                                                          instance_ref)
+        self.assertIsInstance(spice_console, ctype.ConsoleSpice)
 
     @catch_notimplementederror
     def test_get_rdp_console(self):
         instance_ref, network_info = self._get_running_instance()
         rdp_console = self.connection.get_rdp_console(self.ctxt, instance_ref)
-        self.assertIn('internal_access_path', rdp_console)
-        self.assertIn('host', rdp_console)
-        self.assertIn('port', rdp_console)
+        self.assertIsInstance(rdp_console, ctype.ConsoleRDP)
+
+    @catch_notimplementederror
+    def test_get_serial_console(self):
+        instance_ref, network_info = self._get_running_instance()
+        serial_console = self.connection.get_serial_console(self.ctxt,
+                                                            instance_ref)
+        self.assertIsInstance(serial_console, ctype.ConsoleSerial)
 
     @catch_notimplementederror
     def test_get_console_pool_info(self):
@@ -620,15 +623,14 @@ class _VirtDriverTestCase(_FakeDriverBackendTestCase):
         self.assertIsInstance(host_status['hypervisor_version'], int)
 
     @catch_notimplementederror
-    def test_get_host_stats(self):
-        host_status = self.connection.get_host_stats()
-        self._check_available_resource_fields(host_status)
-
-    @catch_notimplementederror
     def test_get_available_resource(self):
         available_resource = self.connection.get_available_resource(
                 'myhostname')
         self._check_available_resource_fields(available_resource)
+
+    @catch_notimplementederror
+    def test_get_available_nodes(self):
+        self.connection.get_available_nodes(False)
 
     @catch_notimplementederror
     def _check_host_cpu_status_fields(self, host_cpu_status):
@@ -740,6 +742,13 @@ class _VirtDriverTestCase(_FakeDriverBackendTestCase):
     def test_set_bootable(self):
         self.assertRaises(NotImplementedError, self.connection.set_bootable,
                           'instance', True)
+
+    @catch_notimplementederror
+    def test_get_instance_disk_info(self):
+        # This should be implemented by any driver that supports live migrate.
+        instance_ref, network_info = self._get_running_instance()
+        self.connection.get_instance_disk_info(instance_ref['name'],
+                                               block_device_info={})
 
 
 class AbstractDriverTestCase(_VirtDriverTestCase, test.TestCase):

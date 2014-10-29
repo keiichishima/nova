@@ -16,17 +16,17 @@
 import math
 
 import mock
+from oslo.utils import units
 
-from nova.openstack.common import units
-from nova.tests.virt import test_driver
+from nova.compute import arch
 from nova.tests.virt.xenapi import stubs
+from nova.virt import driver
 from nova.virt import fake
 from nova.virt import xenapi
 from nova.virt.xenapi import driver as xenapi_driver
 
 
-class XenAPIDriverTestCase(stubs.XenAPITestBaseNoDB,
-                           test_driver.DriverAPITestHelper):
+class XenAPIDriverTestCase(stubs.XenAPITestBaseNoDB):
     """Unit tests for Driver operations."""
 
     def _get_driver(self):
@@ -42,7 +42,7 @@ class XenAPIDriverTestCase(stubs.XenAPITestBaseNoDB,
                 'disk_used': 2 * units.Gi,
                 'disk_allocated': 4 * units.Gi,
                 'host_hostname': 'somename',
-                'supported_instances': 'x86_64',
+                'supported_instances': arch.X86_64,
                 'host_cpu_info': {'cpu_count': 50},
                 'vcpus_used': 10,
                 'pci_passthrough_devices': ''}
@@ -51,7 +51,7 @@ class XenAPIDriverTestCase(stubs.XenAPITestBaseNoDB,
         driver = self._get_driver()
         driver._session.product_version = (6, 8, 2)
 
-        self.stubs.Set(driver, 'get_host_stats', self.host_stats)
+        self.stubs.Set(driver.host_state, 'get_host_stats', self.host_stats)
 
         resources = driver.get_available_resource(None)
         self.assertEqual(6008002, resources['hypervisor_version'])
@@ -98,4 +98,4 @@ class XenAPIDriverTestCase(stubs.XenAPITestBaseNoDB,
 
     def test_public_api_signatures(self):
         inst = self._get_driver()
-        self.assertPublicAPISignatures(inst)
+        self.assertPublicAPISignatures(driver.ComputeDriver(None), inst)

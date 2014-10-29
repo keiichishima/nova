@@ -16,6 +16,8 @@
 import datetime
 
 import iso8601
+from oslo.utils import timeutils
+import six
 import six.moves.urllib.parse as urlparse
 from webob import exc
 
@@ -26,7 +28,6 @@ from nova import exception
 from nova.i18n import _
 from nova import objects
 from nova.objects import instance as instance_obj
-from nova.openstack.common import timeutils
 
 authorize_show = extensions.extension_authorizer('compute',
                                                  'simple_tenant_usage:show')
@@ -55,7 +56,7 @@ def parse_strtime(dstr, fmt):
     try:
         return timeutils.parse_strtime(dstr, fmt)
     except (TypeError, ValueError) as e:
-        raise exception.InvalidStrTime(reason=unicode(e))
+        raise exception.InvalidStrTime(reason=six.text_type(e))
 
 
 class SimpleTenantUsageTemplate(xmlutil.TemplateBuilder):

@@ -19,6 +19,7 @@ import mock
 from neutronclient.common import exceptions as n_exc
 from neutronclient.neutron import v2_0 as neutronv20
 from oslo.config import cfg
+from oslo.serialization import jsonutils
 import webob
 
 from nova.api.openstack.compute.contrib import security_groups
@@ -27,11 +28,11 @@ from nova import compute
 from nova import context
 import nova.db
 from nova import exception
+from nova.network import model
 from nova.network import neutronv2
 from nova.network.neutronv2 import api as neutron_api
 from nova.network.security_group import neutron_driver
 from nova.objects import instance as instance_obj
-from nova.openstack.common import jsonutils
 from nova import test
 from nova.tests.api.openstack.compute.contrib import test_security_groups
 from nova.tests.api.openstack import fakes
@@ -50,8 +51,8 @@ class TestNeutronSecurityGroupsTestCase(test.TestCase):
         super(TestNeutronSecurityGroupsTestCase, self).tearDown()
 
 
-class TestNeutronSecurityGroups(
-        test_security_groups.TestSecurityGroups,
+class TestNeutronSecurityGroupsV21(
+        test_security_groups.TestSecurityGroupsV21,
         TestNeutronSecurityGroupsTestCase):
 
     def _create_sg_template(self, **kwargs):
@@ -69,7 +70,7 @@ class TestNeutronSecurityGroups(
         return net
 
     def _create_port(self, **kwargs):
-        body = {'port': {}}
+        body = {'port': {'binding:vnic_type': model.VNIC_TYPE_NORMAL}}
         fields = ['security_groups', 'device_id', 'network_id',
                   'port_security_enabled']
         for field in fields:
@@ -88,6 +89,10 @@ class TestNeutronSecurityGroups(
         return neutron.create_security_group(body)
 
     def test_create_security_group_with_no_description(self):
+        # Neutron's security group description field is optional.
+        pass
+
+    def test_create_security_group_with_empty_description(self):
         # Neutron's security group description field is optional.
         pass
 
@@ -142,7 +147,7 @@ class TestNeutronSecurityGroups(
         self._create_port(
             network_id=net['network']['id'], security_groups=[sg['id']],
             device_id=test_security_groups.FAKE_UUID1)
-        expected = [{'rules': [], 'tenant_id': 'fake_tenant', 'id': sg['id'],
+        expected = [{'rules': [], 'tenant_id': 'fake', 'id': sg['id'],
                     'name': 'test', 'description': 'test-description'}]
         self.stubs.Set(nova.db, 'instance_get_by_uuid',
                        test_security_groups.return_server_by_uuid)
@@ -303,8 +308,8 @@ class TestNeutronSecurityGroups(
 
     def test_get_raises_no_unique_match_error(self):
 
-        def fake_find_resourceid_by_name_or_id(client, param, name):
-
+        def fake_find_resourceid_by_name_or_id(client, param, name,
+                                               project_id=None):
             raise n_exc.NeutronClientNoUniqueMatch()
 
         self.stubs.Set(neutronv20, 'find_resourceid_by_name_or_id',
@@ -393,6 +398,12 @@ class TestNeutronSecurityGroups(
                            security_groups=[sg1['id']],
                            port_security_enabled=False,
                            device_id=test_security_groups.FAKE_UUID1)
+
+
+class TestNeutronSecurityGroupsV2(TestNeutronSecurityGroupsV21):
+    controller_cls = security_groups.SecurityGroupController
+    server_secgrp_ctl_cls = security_groups.ServerSecurityGroupController
+    secgrp_act_ctl_cls = security_groups.SecurityGroupActionController
 
 
 class TestNeutronSecurityGroupRulesTestCase(TestNeutronSecurityGroupsTestCase):
@@ -672,7 +683,7 @@ class MockClient(object):
             msg = 'Security Group name great than 255'
             raise n_exc.NeutronClientException(message=msg, status_code=401)
         ret = {'name': s.get('name'), 'description': s.get('description'),
-               'tenant_id': 'fake_tenant', 'security_group_rules': [],
+               'tenant_id': 'fake', 'security_group_rules': [],
                'id': str(uuid.uuid4())}
 
         self._fake_security_groups[ret['id']] = ret
@@ -711,7 +722,9 @@ class MockClient(object):
                'device_id': p.get('device_id', str(uuid.uuid4())),
                'admin_state_up': p.get('admin_state_up', True),
                'security_groups': p.get('security_groups', []),
-               'network_id': p.get('network_id')}
+               'network_id': p.get('network_id'),
+               'binding:vnic_type':
+                   p.get('binding:vnic_type') or model.VNIC_TYPE_NORMAL}
 
         network = self._fake_networks[p['network_id']]
         if 'port_security_enabled' in p:

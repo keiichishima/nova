@@ -20,6 +20,8 @@ import time
 from xml.dom import minidom
 
 from lxml import etree
+from oslo.serialization import jsonutils
+from oslo.utils import strutils
 import six
 import webob
 
@@ -29,7 +31,6 @@ from nova import i18n
 from nova.i18n import _
 from nova.i18n import _LE
 from nova.i18n import _LI
-from nova.openstack.common import jsonutils
 from nova.openstack.common import log as logging
 from nova import utils
 from nova import wsgi
@@ -389,43 +390,17 @@ class XMLDictSerializer(DictSerializer):
         """Recursive method to convert data members to XML nodes."""
         result = doc.createElement(nodename)
 
-        # Set the xml namespace if one is specified
-        # TODO(justinsb): We could also use prefixes on the keys
-        xmlns = metadata.get('xmlns', None)
-        if xmlns:
-            result.setAttribute('xmlns', xmlns)
-
         # TODO(bcwaldon): accomplish this without a type-check
         if isinstance(data, list):
-            collections = metadata.get('list_collections', {})
-            if nodename in collections:
-                metadata = collections[nodename]
-                for item in data:
-                    node = doc.createElement(metadata['item_name'])
-                    node.setAttribute(metadata['item_key'], str(item))
-                    result.appendChild(node)
-                return result
-            singular = metadata.get('plurals', {}).get(nodename, None)
-            if singular is None:
-                if nodename.endswith('s'):
-                    singular = nodename[:-1]
-                else:
-                    singular = 'item'
+            if nodename.endswith('s'):
+                singular = nodename[:-1]
+            else:
+                singular = 'item'
             for item in data:
                 node = self._to_xml_node(doc, metadata, singular, item)
                 result.appendChild(node)
         # TODO(bcwaldon): accomplish this without a type-check
         elif isinstance(data, dict):
-            collections = metadata.get('dict_collections', {})
-            if nodename in collections:
-                metadata = collections[nodename]
-                for k, v in data.items():
-                    node = doc.createElement(metadata['item_name'])
-                    node.setAttribute(metadata['item_key'], str(k))
-                    text = doc.createTextNode(str(v))
-                    node.appendChild(text)
-                    result.appendChild(node)
-                return result
             attrs = metadata.get('attributes', {}).get(nodename, {})
             for k, v in data.items():
                 if k in attrs:
@@ -437,7 +412,9 @@ class XMLDictSerializer(DictSerializer):
                     result.appendChild(node)
         else:
             # Type is atom
-            node = doc.createTextNode(str(data))
+            if not isinstance(data, six.string_types):
+                data = six.text_type(data)
+            node = doc.createTextNode(data)
             result.appendChild(node)
         return result
 
@@ -685,10 +662,10 @@ class ResourceExceptionHandler(object):
                       exc_info=exc_info)
             raise Fault(webob.exc.HTTPBadRequest())
         elif isinstance(ex_value, Fault):
-            LOG.info(_LI("Fault thrown: %s"), unicode(ex_value))
+            LOG.info(_LI("Fault thrown: %s"), ex_value)
             raise ex_value
         elif isinstance(ex_value, webob.exc.HTTPException):
-            LOG.info(_LI("HTTP exception thrown: %s"), unicode(ex_value))
+            LOG.info(_LI("HTTP exception thrown: %s"), ex_value)
             raise Fault(ex_value)
 
         # We didn't handle the exception
@@ -925,15 +902,14 @@ class Resource(wsgi.Application):
             return Fault(webob.exc.HTTPBadRequest(explanation=msg))
 
         if body:
-            msg = _("Action: '%(action)s', body: "
+            msg = _("Action: '%(action)s', calling method: %(meth)s, body: "
                     "%(body)s") % {'action': action,
-                                   'body': unicode(body, 'utf-8')}
-            LOG.debug(logging.mask_password(msg))
-        LOG.debug("Calling method '%(meth)s' (Content-type='%(ctype)s', "
-                  "Accept='%(accept)s')",
-                  {'meth': str(meth),
-                   'ctype': content_type,
-                   'accept': accept})
+                                   'body': unicode(body, 'utf-8'),
+                                   'meth': str(meth)}
+            LOG.debug(strutils.mask_password(msg))
+        else:
+            LOG.debug("Calling method '%(meth)s'",
+                      {'meth': str(meth)})
 
         # Now, deserialize the request body...
         try:

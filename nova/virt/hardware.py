@@ -15,10 +15,13 @@
 import collections
 
 from oslo.config import cfg
+from oslo.serialization import jsonutils
+import six
 
+from nova import context
 from nova import exception
 from nova.i18n import _
-from nova.openstack.common import jsonutils
+from nova import objects
 from nova.openstack.common import log as logging
 
 virt_cpu_opts = [
@@ -36,7 +39,7 @@ LOG = logging.getLogger(__name__)
 def get_vcpu_pin_set():
     """Parsing vcpu_pin_set config.
 
-    Returns a list of pcpu ids can be used by instances.
+    Returns a set of pcpu ids can be used by instances.
     """
     if not CONF.vcpu_pin_set:
         return None
@@ -45,7 +48,7 @@ def get_vcpu_pin_set():
     if not cpuset_ids:
         raise exception.Invalid(_("No CPUs available after parsing %r") %
                                 CONF.vcpu_pin_set)
-    return sorted(cpuset_ids)
+    return cpuset_ids
 
 
 def parse_cpu_spec(spec):
@@ -138,6 +141,52 @@ def format_cpu_spec(cpuset, allow_ranges=True):
         return ",".join(parts)
     else:
         return ",".join(str(id) for id in sorted(cpuset))
+
+
+def get_number_of_serial_ports(flavor, image_meta):
+    """Get the number of serial consoles from the flavor or image
+
+    :param flavor: Flavor object to read extra specs from
+    :param image_meta: Image object to read image metadata from
+
+    If flavor extra specs is not set, then any image meta value is permitted.
+    If flavour extra specs *is* set, then this provides the default serial
+    port count. The image meta is permitted to override the extra specs, but
+    *only* with a lower value. ie
+
+    - flavor hw:serial_port_count=4
+      VM gets 4 serial ports
+    - flavor hw:serial_port_count=4 and image hw_serial_port_count=2
+      VM gets 2 serial ports
+    - image hw_serial_port_count=6
+      VM gets 6 serial ports
+    - flavor hw:serial_port_count=4 and image hw_serial_port_count=6
+      Abort guest boot - forbidden to exceed flavor value
+
+    :returns: number of serial ports
+    """
+
+    def get_number(obj, property):
+        num_ports = obj.get(property)
+        if num_ports is not None:
+            try:
+                num_ports = int(num_ports)
+            except ValueError:
+                raise exception.ImageSerialPortNumberInvalid(
+                    num_ports=num_ports, property=property)
+        return num_ports
+
+    image_meta_prop = (image_meta or {}).get('properties', {})
+
+    flavor_num_ports = get_number(flavor.extra_specs, "hw:serial_port_count")
+    image_num_ports = get_number(image_meta_prop, "hw_serial_port_count")
+
+    if (flavor_num_ports and image_num_ports) is not None:
+        if image_num_ports > flavor_num_ports:
+            raise exception.ImageSerialPortNumberExceedFlavorValue()
+        return image_num_ports
+
+    return flavor_num_ports or image_num_ports or 1
 
 
 class VirtCPUTopology(object):
@@ -522,6 +571,49 @@ class VirtNUMATopologyCell(object):
         return cls(cell_id, cpuset, memory)
 
 
+class VirtNUMATopologyCellLimit(VirtNUMATopologyCell):
+    def __init__(self, id, cpuset, memory, cpu_limit, memory_limit):
+        """Create a new NUMA Cell with usage
+
+        :param id: integer identifier of cell
+        :param cpuset: set containing list of CPU indexes
+        :param memory: RAM measured in KiB
+        :param cpu_limit: maximum number of  CPUs allocated
+        :param memory_usage: maxumum RAM allocated in KiB
+
+        Creates a new NUMA cell object to represent the max hardware
+        resources and utilization. The number of CPUs specified
+        by the @cpu_usage parameter may be larger than the number
+        of bits set in @cpuset if CPU overcommit is used. Likewise
+        the amount of RAM specified by the @memory_usage parameter
+        may be larger than the available RAM in @memory if RAM
+        overcommit is used.
+
+        :returns: a new NUMA cell object
+        """
+
+        super(VirtNUMATopologyCellLimit, self).__init__(
+            id, cpuset, memory)
+
+        self.cpu_limit = cpu_limit
+        self.memory_limit = memory_limit
+
+    def _to_dict(self):
+        data_dict = super(VirtNUMATopologyCellLimit, self)._to_dict()
+        data_dict['mem']['limit'] = self.memory_limit
+        data_dict['cpu_limit'] = self.cpu_limit
+        return data_dict
+
+    @classmethod
+    def _from_dict(cls, data_dict):
+        cpuset = parse_cpu_spec(data_dict.get('cpus', ''))
+        memory = data_dict.get('mem', {}).get('total', 0)
+        cpu_limit = data_dict.get('cpu_limit', len(cpuset))
+        memory_limit = data_dict.get('mem', {}).get('limit', memory)
+        cell_id = data_dict.get('id')
+        return cls(cell_id, cpuset, memory, cpu_limit, memory_limit)
+
+
 class VirtNUMATopologyCellUsage(VirtNUMATopologyCell):
     """Class for reporting NUMA resources and usage in a cell
 
@@ -643,7 +735,7 @@ class VirtNUMAInstanceTopology(VirtNUMATopology):
         cells = []
         totalmem = 0
 
-        availcpus = set(range(flavor.vcpus))
+        availcpus = set(range(flavor['vcpus']))
 
         for node in range(nodes):
             cpus = cls._get_flavor_or_image_prop(
@@ -660,9 +752,9 @@ class VirtNUMAInstanceTopology(VirtNUMATopology):
             cpuset = parse_cpu_spec(cpus)
 
             for cpu in cpuset:
-                if cpu > (flavor.vcpus - 1):
+                if cpu > (flavor['vcpus'] - 1):
                     raise exception.ImageNUMATopologyCPUOutOfRange(
-                        cpunum=cpu, cpumax=(flavor.vcpus - 1))
+                        cpunum=cpu, cpumax=(flavor['vcpus'] - 1))
 
                 if cpu not in availcpus:
                     raise exception.ImageNUMATopologyCPUDuplicates(
@@ -677,17 +769,17 @@ class VirtNUMAInstanceTopology(VirtNUMATopology):
             raise exception.ImageNUMATopologyCPUsUnassigned(
                 cpuset=str(availcpus))
 
-        if totalmem != flavor.memory_mb:
+        if totalmem != flavor['memory_mb']:
             raise exception.ImageNUMATopologyMemoryOutOfRange(
                 memsize=totalmem,
-                memtotal=flavor.memory_mb)
+                memtotal=flavor['memory_mb'])
 
         return cls(cells)
 
     @classmethod
     def _get_constraints_auto(cls, nodes, flavor, image_meta):
-        if ((flavor.vcpus % nodes) > 0 or
-            (flavor.memory_mb % nodes) > 0):
+        if ((flavor['vcpus'] % nodes) > 0 or
+            (flavor['memory_mb'] % nodes) > 0):
             raise exception.ImageNUMATopologyAsymmetric()
 
         cells = []
@@ -702,8 +794,8 @@ class VirtNUMAInstanceTopology(VirtNUMATopology):
             if cpus is not None or mem is not None:
                 raise exception.ImageNUMATopologyIncomplete()
 
-            ncpus = int(flavor.vcpus / nodes)
-            mem = int(flavor.memory_mb / nodes)
+            ncpus = int(flavor['vcpus'] / nodes)
+            mem = int(flavor['memory_mb'] / nodes)
             start = node * ncpus
             cpuset = set(range(start, start + ncpus))
 
@@ -735,6 +827,14 @@ class VirtNUMAInstanceTopology(VirtNUMATopology):
                 nodes, flavor, image_meta)
 
 
+class VirtNUMALimitTopology(VirtNUMATopology):
+    """Class to represent the max resources of a compute node used
+    for checking oversubscription limits.
+    """
+
+    cell_class = VirtNUMATopologyCellLimit
+
+
 class VirtNUMAHostTopology(VirtNUMATopology):
 
     """Class represents the NUMA configuration and utilization
@@ -743,6 +843,22 @@ class VirtNUMAHostTopology(VirtNUMATopology):
     """
 
     cell_class = VirtNUMATopologyCellUsage
+
+    @staticmethod
+    def can_fit_instances(host, instances):
+        """Test if the instance topology can fit into the host
+
+        Returns True if all the cells of the all the instance topologies in
+        'instances' exist in the given 'host' topology. False otherwise.
+        """
+        if not host:
+            return True
+
+        host_cells = set(cell.id for cell in host.cells)
+        instances_cells = [set(cell.id for cell in instance.cells)
+                            for instance in instances]
+        return all(instance_cells <= host_cells
+                    for instance_cells in instances_cells)
 
     @classmethod
     def usage_from_instances(cls, host, instances, free=False):
@@ -781,3 +897,148 @@ class VirtNUMAHostTopology(VirtNUMATopology):
             cells.append(cell)
 
         return cls(cells)
+
+    @classmethod
+    def claim_test(cls, host, instances, limits=None):
+        """Test if we can claim an instance on the host with given limits.
+
+        :param host: VirtNUMAHostTopology with usage information
+        :param instances: list of VirtNUMAInstanceTopology
+        :param limits: VirtNUMALimitTopology with max values set. Should
+                       match the host topology otherwise
+
+        :returns: None if the claim succeeds or text explaining the error.
+        """
+        if not (host and instances):
+            return
+
+        if not cls.can_fit_instances(host, instances):
+            return (_("Requested instance NUMA topology cannot fit "
+                      "the given host NUMA topology."))
+
+        if not limits:
+            return
+
+        claimed_host = cls.usage_from_instances(host, instances)
+
+        for claimed_cell, limit_cell in zip(claimed_host.cells, limits.cells):
+            if (claimed_cell.memory_usage > limit_cell.memory_limit or
+                    claimed_cell.cpu_usage > limit_cell.cpu_limit):
+                return (_("Requested instance NUMA topology is too large for "
+                          "the given host NUMA topology limits."))
+
+
+# TODO(ndipanov): Remove when all code paths are using objects
+def instance_topology_from_instance(instance):
+    """Convenience method for getting the numa_topology out of instances
+
+    Since we may get an Instance as either a dict, a db object, or an actual
+    Instance object, this makes sure we get beck either None, or an instance
+    of objects.InstanceNUMATopology class.
+    """
+    if isinstance(instance, objects.Instance):
+        # NOTE (ndipanov): This may cause a lazy-load of the attribute
+        instance_numa_topology = instance.numa_topology
+    else:
+        if 'numa_topology' in instance:
+            instance_numa_topology = instance['numa_topology']
+        elif 'uuid' in instance:
+            try:
+                instance_numa_topology = (
+                    objects.InstanceNUMATopology.get_by_instance_uuid(
+                            context.get_admin_context(), instance['uuid'])
+                    )
+            except exception.NumaTopologyNotFound:
+                instance_numa_topology = None
+        else:
+            instance_numa_topology = None
+
+    if instance_numa_topology:
+        if isinstance(instance_numa_topology, six.string_types):
+            instance_numa_topology = VirtNUMAInstanceTopology.from_json(
+                            instance_numa_topology)
+        elif isinstance(instance_numa_topology, dict):
+            # NOTE (ndipanov): A horrible hack so that we can use this in the
+            # scheduler, since the InstanceNUMATopology object is serialized
+            # raw using the obj_base.obj_to_primitive, (which is buggy and will
+            # give us a dict with a list of InstanceNUMACell objects), and then
+            # passed to jsonutils.to_primitive, which will make a dict out of
+            # those objects. All of this is done by
+            # scheduler.utils.build_request_spec called in the conductor.
+            #
+            # Remove when request_spec is a proper object itself!
+            dict_cells = instance_numa_topology.get('cells')
+            if dict_cells:
+                cells = [objects.InstanceNUMACell(id=cell['id'],
+                                                  cpuset=set(cell['cpuset']),
+                                                  memory=cell['memory'])
+                         for cell in dict_cells]
+                instance_numa_topology = (
+                        objects.InstanceNUMATopology(cells=cells))
+
+    return instance_numa_topology
+
+
+# TODO(ndipanov): Remove when all code paths are using objects
+def host_topology_and_format_from_host(host):
+    """Convenience method for getting the numa_topology out of hosts
+
+    Since we may get a host as either a dict, a db object, or an actual
+    ComputeNode object, or an instance of HostState class, this makes sure we
+    get beck either None, or an instance of VirtNUMAHostTopology class.
+
+    :returns: A two-tuple, first element is the topology itself or None, second
+              is a boolean set to True if topology was in json format.
+    """
+    was_json = False
+    try:
+        host_numa_topology = host.get('numa_topology')
+    except AttributeError:
+        host_numa_topology = host.numa_topology
+
+    if host_numa_topology is not None and isinstance(
+            host_numa_topology, six.string_types):
+        was_json = True
+        host_numa_topology = VirtNUMAHostTopology.from_json(host_numa_topology)
+
+    return host_numa_topology, was_json
+
+
+# TODO(ndipanov): Remove when all code paths are using objects
+def get_host_numa_usage_from_instance(host, instance, free=False,
+                                     never_serialize_result=False):
+    """Calculate new 'numa_usage' of 'host' from 'instance' NUMA usage
+
+    This is a convenience method to help us handle the fact that we use several
+    different types throughout the code (ComputeNode and Instance objects,
+    dicts, scheduler HostState) which may have both json and deserialized
+    versions of VirtNUMATopology classes.
+
+    Handles all the complexity without polluting the class method with it.
+
+    :param host: nova.objects.ComputeNode instance, or a db object or dict
+    :param instance: nova.objects.Instance instance, or a db object or dict
+    :param free: if True the the returned topology will have it's usage
+                 decreased instead.
+    :param never_serialize_result: if True result will always be an instance of
+                                   VirtNUMAHostTopology class.
+
+    :returns: numa_usage in the format it was on the host or
+              VirtNUMAHostTopology instance if never_serialize_result was True
+    """
+    instance_numa_topology = instance_topology_from_instance(instance)
+    if instance_numa_topology:
+        instance_numa_topology = [instance_numa_topology]
+
+    host_numa_topology, jsonify_result = host_topology_and_format_from_host(
+            host)
+
+    updated_numa_topology = (
+        VirtNUMAHostTopology.usage_from_instances(
+                host_numa_topology, instance_numa_topology, free=free))
+
+    if updated_numa_topology is not None:
+        if jsonify_result and not never_serialize_result:
+            updated_numa_topology = updated_numa_topology.to_json()
+
+    return updated_numa_topology

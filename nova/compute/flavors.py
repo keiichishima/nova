@@ -22,6 +22,8 @@ import re
 import uuid
 
 from oslo.config import cfg
+from oslo.db import exception as db_exc
+from oslo.utils import strutils
 import six
 
 from nova import context
@@ -29,10 +31,7 @@ from nova import db
 from nova import exception
 from nova.i18n import _
 from nova.i18n import _LE
-from nova.openstack.common.db import exception as db_exc
 from nova.openstack.common import log as logging
-from nova.openstack.common import strutils
-from nova.pci import pci_request
 from nova import utils
 
 flavor_opts = [
@@ -84,6 +83,11 @@ system_metadata_flavor_props = {
     }
 
 
+system_metadata_flavor_extra_props = [
+    'hw:numa_cpus.', 'hw:numa_mem.',
+]
+
+
 def create(name, memory, vcpus, root_gb, ephemeral_gb=0, flavorid=None,
            swap=0, rxtx_factor=1.0, is_public=True):
     """Creates flavors."""
@@ -131,15 +135,20 @@ def create(name, memory, vcpus, root_gb, ephemeral_gb=0, flavorid=None,
                 "periods, dashes, underscores and spaces.")
         raise exception.InvalidInput(reason=msg)
 
-    # Some attributes are positive ( > 0) integers
-    for option in ['memory_mb', 'vcpus']:
-        kwargs[option] = utils.validate_integer(kwargs[option], option, 1,
-                                                db.MAX_INT)
+    # NOTE(wangbo): validate attributes of the creating flavor.
+    # ram and vcpus should be positive ( > 0) integers.
+    # disk, ephemeral and swap should be non-negative ( >= 0) integers.
+    flavor_attributes = {
+        'memory_mb': ('ram', 1),
+        'vcpus': ('vcpus', 1),
+        'root_gb': ('disk', 0),
+        'ephemeral_gb': ('ephemeral', 0),
+        'swap': ('swap', 0)
+    }
 
-    # Some attributes are non-negative ( >= 0) integers
-    for option in ['root_gb', 'ephemeral_gb', 'swap']:
-        kwargs[option] = utils.validate_integer(kwargs[option], option, 0,
-                                                db.MAX_INT)
+    for key, value in flavor_attributes.items():
+        kwargs[key] = utils.validate_integer(kwargs[key], value[0], value[1],
+                                             db.MAX_INT)
 
     # rxtx_factor should be a positive float
     try:
@@ -251,7 +260,8 @@ def get_flavor_by_flavor_id(flavorid, ctxt=None, read_deleted="yes"):
     if ctxt is None:
         ctxt = context.get_admin_context(read_deleted=read_deleted)
 
-    return db.flavor_get_by_flavor_id(ctxt, flavorid, read_deleted)
+    # NOTE(melwitt): return a copy temporarily until conversion to object
+    return dict(db.flavor_get_by_flavor_id(ctxt, flavorid, read_deleted))
 
 
 def get_flavor_access_by_flavor_id(flavorid, ctxt=None):
@@ -288,6 +298,19 @@ def extract_flavor(instance, prefix=''):
     for key, type_fn in system_metadata_flavor_props.items():
         type_key = '%sinstance_type_%s' % (prefix, key)
         instance_type[key] = type_fn(sys_meta[type_key])
+
+    # NOTE(danms): We do NOT save all of extra_specs, but only the
+    # NUMA-related ones that we need to avoid an uglier alternative. This
+    # should be replaced by a general split-out of flavor information from
+    # system_metadata very soon.
+    extra_specs = [(k, v) for k, v in sys_meta.items()
+                   if k.startswith('%sinstance_type_extra_' % prefix)]
+    if extra_specs:
+        instance_type['extra_specs'] = {}
+        for key, value in extra_specs:
+            extra_key = key[len('%sinstance_type_extra_' % prefix):]
+            instance_type['extra_specs'][extra_key] = value
+
     return instance_type
 
 
@@ -305,7 +328,18 @@ def save_flavor_info(metadata, instance_type, prefix=''):
     for key in system_metadata_flavor_props.keys():
         to_key = '%sinstance_type_%s' % (prefix, key)
         metadata[to_key] = instance_type[key]
-    pci_request.save_flavor_pci_info(metadata, instance_type, prefix)
+
+    # NOTE(danms): We do NOT save all of extra_specs here, but only the
+    # NUMA-related ones that we need to avoid an uglier alternative. This
+    # should be replaced by a general split-out of flavor information from
+    # system_metadata very soon.
+    extra_specs = instance_type.get('extra_specs', {})
+    for extra_prefix in system_metadata_flavor_extra_props:
+        for key in extra_specs:
+            if key.startswith(extra_prefix):
+                to_key = '%sinstance_type_extra_%s' % (prefix, key)
+                metadata[to_key] = extra_specs[key]
+
     return metadata
 
 
@@ -318,7 +352,16 @@ def delete_flavor_info(metadata, *prefixes):
         for prefix in prefixes:
             to_key = '%sinstance_type_%s' % (prefix, key)
             del metadata[to_key]
-    pci_request.delete_flavor_pci_info(metadata, *prefixes)
+
+    # NOTE(danms): We do NOT save all of extra_specs, but only the
+    # NUMA-related ones that we need to avoid an uglier alternative. This
+    # should be replaced by a general split-out of flavor information from
+    # system_metadata very soon.
+    for key in metadata.keys():
+        for prefix in prefixes:
+            if key.startswith('%sinstance_type_extra_' % prefix):
+                del metadata[key]
+
     return metadata
 
 

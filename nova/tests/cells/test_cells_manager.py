@@ -20,11 +20,11 @@ import datetime
 
 import mock
 from oslo.config import cfg
+from oslo.utils import timeutils
 
 from nova.cells import messaging
 from nova.cells import utils as cells_utils
 from nova import context
-from nova.openstack.common import timeutils
 from nova import test
 from nova.tests.cells import fakes
 from nova.tests import fake_server_actions
@@ -798,3 +798,11 @@ class CellsManagerClassTestCase(test.NoDBTestCase):
                                            image_id='fake-id',
                                            backup_type='backup-type',
                                            rotation='rotation')
+
+    def test_set_admin_password(self):
+        with mock.patch.object(self.msg_runner,
+                               'set_admin_password') as set_admin_password:
+            self.cells_manager.set_admin_password(self.ctxt,
+                    instance='fake-instance', new_pass='fake-password')
+            set_admin_password.assert_called_once_with(self.ctxt,
+                    'fake-instance', 'fake-password')

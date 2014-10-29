@@ -18,11 +18,12 @@ Management class for migration / resize operations.
 """
 import os
 
+from oslo.utils import excutils
+from oslo.utils import units
+
 from nova import exception
-from nova.i18n import _
-from nova.openstack.common import excutils
+from nova.i18n import _, _LE
 from nova.openstack.common import log as logging
-from nova.openstack.common import units
 from nova.virt import configdrive
 from nova.virt.hyperv import imagecache
 from nova.virt.hyperv import utilsfactory
@@ -96,7 +97,7 @@ class MigrationOps(object):
         except Exception as ex:
             # Log and ignore this exception
             LOG.exception(ex)
-            LOG.error(_("Cannot cleanup migration files"))
+            LOG.error(_LE("Cannot cleanup migration files"))
 
     def _check_target_flavor(self, instance, flavor):
         new_root_gb = flavor['root_gb']
@@ -113,12 +114,13 @@ class MigrationOps(object):
 
     def migrate_disk_and_power_off(self, context, instance, dest,
                                    flavor, network_info,
-                                   block_device_info=None):
+                                   block_device_info=None, timeout=0,
+                                   retry_interval=0):
         LOG.debug("migrate_disk_and_power_off called", instance=instance)
 
         self._check_target_flavor(instance, flavor)
 
-        self._vmops.power_off(instance)
+        self._vmops.power_off(instance, timeout, retry_interval)
 
         instance_name = instance["name"]
 

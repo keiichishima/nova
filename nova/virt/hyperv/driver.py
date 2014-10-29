@@ -17,6 +17,8 @@
 A Hyper-V Nova Compute driver.
 """
 
+import platform
+
 from nova.i18n import _
 from nova.openstack.common import log as logging
 from nova.virt import driver
@@ -44,7 +46,10 @@ class HyperVDriver(driver.ComputeDriver):
         self._rdpconsoleops = rdpconsoleops.RDPConsoleOps()
 
     def init_host(self, host):
-        pass
+        self._vmops.restart_vm_log_writers()
+
+    def list_instance_uuids(self):
+        return self._vmops.list_instance_uuids()
 
     def list_instances(self):
         return self._vmops.list_instances()
@@ -87,8 +92,8 @@ class HyperVDriver(driver.ComputeDriver):
     def get_available_resource(self, nodename):
         return self._hostops.get_available_resource()
 
-    def get_host_stats(self, refresh=False):
-        return self._hostops.get_host_stats(refresh)
+    def get_available_nodes(self, refresh=False):
+        return [platform.node()]
 
     def host_power_action(self, host, action):
         return self._hostops.host_power_action(host, action)
@@ -110,12 +115,17 @@ class HyperVDriver(driver.ComputeDriver):
         self._vmops.resume(instance)
 
     def power_off(self, instance, timeout=0, retry_interval=0):
-        # TODO(PhilDay): Add support for timeout (clean shutdown)
-        self._vmops.power_off(instance)
+        self._vmops.power_off(instance, timeout, retry_interval)
 
     def power_on(self, context, instance, network_info,
                  block_device_info=None):
-        self._vmops.power_on(instance)
+        self._vmops.power_on(instance, block_device_info)
+
+    def resume_state_on_host_boot(self, context, instance, network_info,
+                                  block_device_info=None):
+        """Resume guest state when a host is booted."""
+        self._vmops.resume_state_on_host_boot(context, instance, network_info,
+                                              block_device_info)
 
     def live_migration(self, context, instance, dest, post_method,
                        recover_method, block_migration=False,
@@ -161,7 +171,7 @@ class HyperVDriver(driver.ComputeDriver):
             context, dest_check_data)
 
     def check_can_live_migrate_source(self, context, instance,
-                                      dest_check_data):
+                                      dest_check_data, block_device_info=None):
         return self._livemigrationops.check_can_live_migrate_source(
             context, instance, dest_check_data)
 
@@ -189,12 +199,13 @@ class HyperVDriver(driver.ComputeDriver):
                                    flavor, network_info,
                                    block_device_info=None,
                                    timeout=0, retry_interval=0):
-        # TODO(PhilDay): Add support for timeout (clean shutdown)
         return self._migrationops.migrate_disk_and_power_off(context,
                                                              instance, dest,
                                                              flavor,
                                                              network_info,
-                                                             block_device_info)
+                                                             block_device_info,
+                                                             timeout,
+                                                             retry_interval)
 
     def confirm_migration(self, migration, instance, network_info):
         self._migrationops.confirm_migration(migration, instance, network_info)
@@ -221,3 +232,6 @@ class HyperVDriver(driver.ComputeDriver):
 
     def get_rdp_console(self, context, instance):
         return self._rdpconsoleops.get_rdp_console(instance)
+
+    def get_console_output(self, context, instance):
+        return self._vmops.get_console_output(instance)

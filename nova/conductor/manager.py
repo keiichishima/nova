@@ -18,6 +18,9 @@ import copy
 import itertools
 
 from oslo import messaging
+from oslo.serialization import jsonutils
+from oslo.utils import excutils
+from oslo.utils import timeutils
 import six
 
 from nova.api.ec2 import ec2utils
@@ -31,7 +34,7 @@ from nova.compute import vm_states
 from nova.conductor.tasks import live_migrate
 from nova.db import base
 from nova import exception
-from nova.i18n import _
+from nova.i18n import _, _LE
 from nova import image
 from nova import manager
 from nova import network
@@ -39,13 +42,10 @@ from nova.network.security_group import openstack_driver
 from nova import notifications
 from nova import objects
 from nova.objects import base as nova_object
-from nova.openstack.common import excutils
-from nova.openstack.common import jsonutils
 from nova.openstack.common import log as logging
-from nova.openstack.common import timeutils
 from nova import quota
+from nova.scheduler import client as scheduler_client
 from nova.scheduler import driver as scheduler_driver
-from nova.scheduler import rpcapi as scheduler_rpcapi
 from nova.scheduler import utils as scheduler_utils
 
 LOG = logging.getLogger(__name__)
@@ -120,8 +120,8 @@ class ConductorManager(manager.Manager):
                         updates, service):
         for key, value in updates.iteritems():
             if key not in allowed_updates:
-                LOG.error(_("Instance update attempted for "
-                            "'%(key)s' on %(instance_uuid)s"),
+                LOG.error(_LE("Instance update attempted for "
+                              "'%(key)s' on %(instance_uuid)s"),
                           {'key': key, 'instance_uuid': instance_uuid})
                 raise KeyError("unexpected update keyword '%s'" % key)
             if key in datetime_fields and isinstance(value, six.string_types):
@@ -448,13 +448,13 @@ class ComputeTaskManager(base.Base):
     may involve coordinating activities on multiple compute nodes.
     """
 
-    target = messaging.Target(namespace='compute_task', version='1.8')
+    target = messaging.Target(namespace='compute_task', version='1.9')
 
     def __init__(self):
         super(ComputeTaskManager, self).__init__()
         self.compute_rpcapi = compute_rpcapi.ComputeAPI()
-        self.scheduler_rpcapi = scheduler_rpcapi.SchedulerAPI()
         self.image_api = image.API()
+        self.scheduler_client = scheduler_client.SchedulerClient()
 
     @messaging.expected_exceptions(exception.NoValidHost,
                                    exception.ComputeServiceUnavailable,
@@ -504,7 +504,7 @@ class ComputeTaskManager(base.Base):
                                                   instance=instance)
         try:
             scheduler_utils.populate_retry(filter_properties, instance['uuid'])
-            hosts = self.scheduler_rpcapi.select_destinations(
+            hosts = self.scheduler_client.select_destinations(
                     context, request_spec, filter_properties)
             host_state = hosts[0]
         except exception.NoValidHost as ex:
@@ -516,7 +516,11 @@ class ComputeTaskManager(base.Base):
                                           updates, ex, request_spec)
             quotas.rollback()
 
-            msg = _("No valid host found for cold migrate")
+            # if the flavor IDs match, it's migrate; otherwise resize
+            if flavor['id'] == instance['instance_type_id']:
+                msg = _("No valid host found for cold migrate")
+            else:
+                msg = _("No valid host found for resize")
             raise exception.NoValidHost(reason=msg)
 
         try:
@@ -579,10 +583,10 @@ class ComputeTaskManager(base.Base):
                              expected_task_state=task_states.MIGRATING,),
                         ex, request_spec, self.db)
         except Exception as ex:
-            LOG.error(_('Migration of instance %(instance_id)s to host'
-                       ' %(dest)s unexpectedly failed.'),
-                       {'instance_id': instance['uuid'], 'dest': destination},
-                       exc_info=True)
+            LOG.error(_LE('Migration of instance %(instance_id)s to host'
+                          ' %(dest)s unexpectedly failed.'),
+                      {'instance_id': instance['uuid'], 'dest': destination},
+                      exc_info=True)
             raise exception.MigrationError(reason=ex)
 
     def build_instances(self, context, instances, image, filter_properties,
@@ -592,13 +596,21 @@ class ComputeTaskManager(base.Base):
         #                 2.0 of the RPC API.
         request_spec = scheduler_utils.build_request_spec(context, image,
                                                           instances)
+        # TODO(danms): Remove this in version 2.0 of the RPC API
+        if (requested_networks and
+                not isinstance(requested_networks,
+                               objects.NetworkRequestList)):
+            requested_networks = objects.NetworkRequestList(
+                objects=[objects.NetworkRequest.from_tuple(t)
+                         for t in requested_networks])
+
         try:
             # check retry policy. Rather ugly use of instances[0]...
             # but if we've exceeded max retries... then we really only
             # have a single instance.
             scheduler_utils.populate_retry(filter_properties,
                 instances[0].uuid)
-            hosts = self.scheduler_rpcapi.select_destinations(context,
+            hosts = self.scheduler_client.select_destinations(context,
                     request_spec, filter_properties)
         except Exception as exc:
             for instance in instances:
@@ -639,7 +651,7 @@ class ComputeTaskManager(base.Base):
             *instances):
         request_spec = scheduler_utils.build_request_spec(context, image,
                 instances)
-        hosts = self.scheduler_rpcapi.select_destinations(context,
+        hosts = self.scheduler_client.select_destinations(context,
                 request_spec, filter_properties)
         return hosts
 
@@ -648,7 +660,9 @@ class ComputeTaskManager(base.Base):
 
         def safe_image_show(ctx, image_id):
             if image_id:
-                return self.image_api.get(ctx, image_id)
+                return self.image_api.get(ctx, image_id, show_deleted=False)
+            else:
+                raise exception.ImageNotFound(image_id='')
 
         if instance.vm_state == vm_states.SHELVED:
             instance.task_state = task_states.POWERING_ON
@@ -666,8 +680,14 @@ class ComputeTaskManager(base.Base):
                 except exception.ImageNotFound:
                     instance.vm_state = vm_states.ERROR
                     instance.save()
-                    reason = _('Unshelve attempted but the image %s '
-                               'cannot be found.') % image_id
+
+                    if image_id:
+                        reason = _('Unshelve attempted but the image %s '
+                                   'cannot be found.') % image_id
+                    else:
+                        reason = _('Unshelve attempted but the image_id is '
+                                   'not provided')
+
                     LOG.error(reason, instance=instance)
                     raise exception.UnshelveException(
                         instance_id=instance.uuid, reason=reason)
@@ -693,8 +713,8 @@ class ComputeTaskManager(base.Base):
                             instance=instance)
                 return
         else:
-            LOG.error(_('Unshelve attempted but vm_state not SHELVED or '
-                        'SHELVED_OFFLOADED'), instance=instance)
+            LOG.error(_LE('Unshelve attempted but vm_state not SHELVED or '
+                          'SHELVED_OFFLOADED'), instance=instance)
             instance.vm_state = vm_states.ERROR
             instance.save()
             return
@@ -720,7 +740,7 @@ class ComputeTaskManager(base.Base):
                                                                   image_ref,
                                                                   [instance])
                 try:
-                    hosts = self.scheduler_rpcapi.select_destinations(context,
+                    hosts = self.scheduler_client.select_destinations(context,
                                                             request_spec,
                                                             filter_properties)
                     host = hosts.pop(0)['host']

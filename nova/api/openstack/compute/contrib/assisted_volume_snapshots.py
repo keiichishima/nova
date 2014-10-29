@@ -12,6 +12,8 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
+from oslo.serialization import jsonutils
+import six
 import webob
 
 from nova.api.openstack import extensions
@@ -20,7 +22,6 @@ from nova.api.openstack import xmlutil
 from nova import compute
 from nova import exception
 from nova.i18n import _
-from nova.openstack.common import jsonutils
 from nova.openstack.common import log as logging
 
 
@@ -83,7 +84,7 @@ class AssistedVolumeSnapshotsController(wsgi.Controller):
             delete_info = jsonutils.loads(delete_metadata['delete_info'])
             volume_id = delete_info['volume_id']
         except (KeyError, ValueError) as e:
-            raise webob.exc.HTTPBadRequest(explanation=str(e))
+            raise webob.exc.HTTPBadRequest(explanation=six.text_type(e))
 
         try:
             self.compute_api.volume_snapshot_delete(context, volume_id,

@@ -23,24 +23,26 @@ import datetime
 import types
 import uuid as stdlib_uuid
 
-import eventlet
 import iso8601
-import mox
+import mock
 import netaddr
 from oslo.config import cfg
+from oslo.db import exception as db_exc
+from oslo.db.sqlalchemy import test_base
+from oslo.db.sqlalchemy import utils as sqlalchemyutils
+from oslo.serialization import jsonutils
+from oslo.utils import timeutils
 import six
 from sqlalchemy import Column
 from sqlalchemy.dialects import sqlite
-from sqlalchemy import exc
-from sqlalchemy.exc import IntegrityError
 from sqlalchemy import Integer
 from sqlalchemy import MetaData
-from sqlalchemy.orm import exc as sqlalchemy_orm_exc
 from sqlalchemy.orm import query
 from sqlalchemy import sql
 from sqlalchemy import Table
 
 from nova import block_device
+from nova.compute import arch
 from nova.compute import vm_states
 from nova import context
 from nova import db
@@ -49,12 +51,6 @@ from nova.db.sqlalchemy import models
 from nova.db.sqlalchemy import types as col_types
 from nova.db.sqlalchemy import utils as db_utils
 from nova import exception
-from nova.openstack.common.db import api as db_api
-from nova.openstack.common.db import exception as db_exc
-from nova.openstack.common.db.sqlalchemy import test_base
-from nova.openstack.common.db.sqlalchemy import utils as sqlalchemyutils
-from nova.openstack.common import jsonutils
-from nova.openstack.common import timeutils
 from nova.openstack.common import uuidutils
 from nova import quota
 from nova import test
@@ -578,6 +574,18 @@ class AggregateDBApiTestCase(test.TestCase):
         expected = db.aggregate_metadata_get(ctxt, result['id'])
         self.assertThat(metadata, matchers.DictMatches(expected))
 
+    def test_aggregate_metadata_add_and_update(self):
+        ctxt = context.get_admin_context()
+        result = _create_aggregate(context=ctxt)
+        metadata = _get_fake_aggr_metadata()
+        key = metadata.keys()[0]
+        new_metadata = {key: 'foo',
+                        'fake_new_key': 'fake_new_value'}
+        metadata.update(new_metadata)
+        db.aggregate_metadata_add(ctxt, result['id'], new_metadata)
+        expected = db.aggregate_metadata_get(ctxt, result['id'])
+        self.assertThat(metadata, matchers.DictMatches(expected))
+
     def test_aggregate_metadata_add_retry(self):
         ctxt = context.get_admin_context()
         result = _create_aggregate(context=ctxt, metadata=None)
@@ -719,25 +727,165 @@ class SqlAlchemyDbApiTestCase(DbTestCase):
         now2 = now + datetime.timedelta(minutes=2)
         now3 = now + datetime.timedelta(minutes=3)
         ctxt = context.get_admin_context()
-        self.create_instance_with_args(launched_at=now)
-        self.create_instance_with_args(launched_at=now1, terminated_at=now2)
-        self.create_instance_with_args(launched_at=now2, terminated_at=now3)
-        self.create_instance_with_args(launched_at=now3, terminated_at=None)
+        # used for testing columns_to_join
+        network_info = jsonutils.dumps({'ckey': 'cvalue'})
+        sample_data = {
+            'metadata': {'mkey1': 'mval1', 'mkey2': 'mval2'},
+            'system_metadata': {'smkey1': 'smval1', 'smkey2': 'smval2'},
+            'info_cache': {'network_info': network_info},
+        }
+        self.create_instance_with_args(launched_at=now, **sample_data)
+        self.create_instance_with_args(launched_at=now1, terminated_at=now2,
+                                       **sample_data)
+        self.create_instance_with_args(launched_at=now2, terminated_at=now3,
+                                       **sample_data)
+        self.create_instance_with_args(launched_at=now3, terminated_at=None,
+                                       **sample_data)
+
         result = sqlalchemy_api.instance_get_active_by_window_joined(
             ctxt, begin=now)
         self.assertEqual(4, len(result))
+        # verify that all default columns are joined
+        meta = utils.metadata_to_dict(result[0]['metadata'])
+        self.assertEqual(sample_data['metadata'], meta)
+        sys_meta = utils.metadata_to_dict(result[0]['system_metadata'])
+        self.assertEqual(sample_data['system_metadata'], sys_meta)
+        self.assertIn('info_cache', result[0])
+
         result = sqlalchemy_api.instance_get_active_by_window_joined(
-            ctxt, begin=now3)
+            ctxt, begin=now3, columns_to_join=['info_cache'])
         self.assertEqual(2, len(result))
+        # verify that only info_cache is loaded
+        meta = utils.metadata_to_dict(result[0]['metadata'])
+        self.assertEqual({}, meta)
+        self.assertIn('info_cache', result[0])
+
         result = sqlalchemy_api.instance_get_active_by_window_joined(
             ctxt, begin=start_time, end=now)
         self.assertEqual(0, len(result))
+
         result = sqlalchemy_api.instance_get_active_by_window_joined(
-            ctxt, begin=start_time, end=now2)
+            ctxt, begin=start_time, end=now2,
+            columns_to_join=['system_metadata'])
         self.assertEqual(2, len(result))
+        # verify that only system_metadata is loaded
+        meta = utils.metadata_to_dict(result[0]['metadata'])
+        self.assertEqual({}, meta)
+        sys_meta = utils.metadata_to_dict(result[0]['system_metadata'])
+        self.assertEqual(sample_data['system_metadata'], sys_meta)
+        self.assertNotIn('info_cache', result[0])
+
         result = sqlalchemy_api.instance_get_active_by_window_joined(
-            ctxt, begin=now2, end=now3)
+            ctxt, begin=now2, end=now3,
+            columns_to_join=['metadata', 'info_cache'])
         self.assertEqual(2, len(result))
+        # verify that only metadata and info_cache are loaded
+        meta = utils.metadata_to_dict(result[0]['metadata'])
+        self.assertEqual(sample_data['metadata'], meta)
+        sys_meta = utils.metadata_to_dict(result[0]['system_metadata'])
+        self.assertEqual({}, sys_meta)
+        self.assertIn('info_cache', result[0])
+        self.assertEqual(network_info, result[0]['info_cache']['network_info'])
+
+
+class ProcessSortParamTestCase(test.TestCase):
+
+    def test_process_sort_params_defaults(self):
+        '''Verifies default sort parameters.'''
+        sort_keys, sort_dirs = sqlalchemy_api.process_sort_params([], [])
+        self.assertEqual(['created_at', 'id'], sort_keys)
+        self.assertEqual(['asc', 'asc'], sort_dirs)
+
+        sort_keys, sort_dirs = sqlalchemy_api.process_sort_params(None, None)
+        self.assertEqual(['created_at', 'id'], sort_keys)
+        self.assertEqual(['asc', 'asc'], sort_dirs)
+
+    def test_process_sort_params_override_default_keys(self):
+        '''Verifies that the default keys can be overridden.'''
+        sort_keys, sort_dirs = sqlalchemy_api.process_sort_params(
+            [], [], default_keys=['key1', 'key2', 'key3'])
+        self.assertEqual(['key1', 'key2', 'key3'], sort_keys)
+        self.assertEqual(['asc', 'asc', 'asc'], sort_dirs)
+
+    def test_process_sort_params_override_default_dir(self):
+        '''Verifies that the default direction can be overridden.'''
+        sort_keys, sort_dirs = sqlalchemy_api.process_sort_params(
+            [], [], default_dir='dir1')
+        self.assertEqual(['created_at', 'id'], sort_keys)
+        self.assertEqual(['dir1', 'dir1'], sort_dirs)
+
+    def test_process_sort_params_override_default_key_and_dir(self):
+        '''Verifies that the default key and dir can be overridden.'''
+        sort_keys, sort_dirs = sqlalchemy_api.process_sort_params(
+            [], [], default_keys=['key1', 'key2', 'key3'],
+            default_dir='dir1')
+        self.assertEqual(['key1', 'key2', 'key3'], sort_keys)
+        self.assertEqual(['dir1', 'dir1', 'dir1'], sort_dirs)
+
+        sort_keys, sort_dirs = sqlalchemy_api.process_sort_params(
+            [], [], default_keys=[], default_dir='dir1')
+        self.assertEqual([], sort_keys)
+        self.assertEqual([], sort_dirs)
+
+    def test_process_sort_params_non_default(self):
+        '''Verifies that non-default keys are added correctly.'''
+        sort_keys, sort_dirs = sqlalchemy_api.process_sort_params(
+            ['key1', 'key2'], ['asc', 'desc'])
+        self.assertEqual(['key1', 'key2', 'created_at', 'id'], sort_keys)
+        # First sort_dir in list is used when adding the default keys
+        self.assertEqual(['asc', 'desc', 'asc', 'asc'], sort_dirs)
+
+    def test_process_sort_params_default(self):
+        '''Verifies that default keys are added correctly.'''
+        sort_keys, sort_dirs = sqlalchemy_api.process_sort_params(
+            ['id', 'key2'], ['asc', 'desc'])
+        self.assertEqual(['id', 'key2', 'created_at'], sort_keys)
+        self.assertEqual(['asc', 'desc', 'asc'], sort_dirs)
+
+        # Include default key value, rely on default direction
+        sort_keys, sort_dirs = sqlalchemy_api.process_sort_params(
+            ['id', 'key2'], [])
+        self.assertEqual(['id', 'key2', 'created_at'], sort_keys)
+        self.assertEqual(['asc', 'asc', 'asc'], sort_dirs)
+
+    def test_process_sort_params_default_dir(self):
+        '''Verifies that the default dir is applied to all keys.'''
+        # Direction is set, ignore default dir
+        sort_keys, sort_dirs = sqlalchemy_api.process_sort_params(
+            ['id', 'key2'], ['desc'], default_dir='dir')
+        self.assertEqual(['id', 'key2', 'created_at'], sort_keys)
+        self.assertEqual(['desc', 'desc', 'desc'], sort_dirs)
+
+        # But should be used if no direction is set
+        sort_keys, sort_dirs = sqlalchemy_api.process_sort_params(
+            ['id', 'key2'], [], default_dir='dir')
+        self.assertEqual(['id', 'key2', 'created_at'], sort_keys)
+        self.assertEqual(['dir', 'dir', 'dir'], sort_dirs)
+
+    def test_process_sort_params_unequal_length(self):
+        '''Verifies that a sort direction list is applied correctly.'''
+        sort_keys, sort_dirs = sqlalchemy_api.process_sort_params(
+            ['id', 'key2', 'key3'], ['desc'])
+        self.assertEqual(['id', 'key2', 'key3', 'created_at'], sort_keys)
+        self.assertEqual(['desc', 'desc', 'desc', 'desc'], sort_dirs)
+
+        # Default direction is the first key in the list
+        sort_keys, sort_dirs = sqlalchemy_api.process_sort_params(
+            ['id', 'key2', 'key3'], ['desc', 'asc'])
+        self.assertEqual(['id', 'key2', 'key3', 'created_at'], sort_keys)
+        self.assertEqual(['desc', 'asc', 'desc', 'desc'], sort_dirs)
+
+        sort_keys, sort_dirs = sqlalchemy_api.process_sort_params(
+            ['id', 'key2', 'key3'], ['desc', 'asc', 'asc'])
+        self.assertEqual(['id', 'key2', 'key3', 'created_at'], sort_keys)
+        self.assertEqual(['desc', 'asc', 'asc', 'desc'], sort_dirs)
+
+    def test_process_sort_params_extra_dirs_lengths(self):
+        '''InvalidInput raised if more directions are given.'''
+        self.assertRaises(exception.InvalidInput,
+                          sqlalchemy_api.process_sort_params,
+                          ['key1', 'key2'],
+                          ['asc', 'desc', 'desc'])
 
 
 class MigrationTestCase(test.TestCase):
@@ -1222,21 +1370,12 @@ class SecurityGroupTestCase(test.TestCase, ModelsObjectComparatorMixin):
         instance = db.instance_create(self.ctxt, {})
         sid = self._create_security_group({'instances': [instance]})['id']
 
-        session = get_session()
-        self.mox.StubOutWithMock(sqlalchemy_api, 'get_session')
-        sqlalchemy_api.get_session(use_slave=False).AndReturn(session)
-        sqlalchemy_api.get_session(use_slave=False).AndReturn(session)
-        self.mox.ReplayAll()
-
         security_group = db.security_group_get(self.ctxt, sid,
                                                columns_to_join=['instances'])
-        session.expunge(security_group)
-        self.assertEqual(1, len(security_group['instances']))
+        self.assertIn('instances', security_group.__dict__)
 
         security_group = db.security_group_get(self.ctxt, sid)
-        session.expunge(security_group)
-        self.assertRaises(sqlalchemy_orm_exc.DetachedInstanceError,
-                          getattr, security_group, 'instances')
+        self.assertNotIn('instances', security_group.__dict__)
 
     def test_security_group_get_not_found_exception(self):
         self.assertRaises(exception.SecurityGroupNotFound,
@@ -1348,6 +1487,24 @@ class SecurityGroupTestCase(test.TestCase, ModelsObjectComparatorMixin):
                                    'security_groups',
                                    self.ctxt.user_id)
         self.assertEqual(1, usage.in_use)
+
+    @mock.patch.object(db.sqlalchemy.api, '_security_group_get_by_names')
+    def test_security_group_ensure_default_called_concurrently(self, sg_mock):
+        # make sure NotFound is always raised here to trick Nova to insert the
+        # duplicate security group entry
+        sg_mock.side_effect = exception.NotFound
+
+        # create the first db entry
+        self.ctxt.project_id = 1
+        db.security_group_ensure_default(self.ctxt)
+        security_groups = db.security_group_get_by_project(
+                            self.ctxt,
+                            self.ctxt.project_id)
+        self.assertEqual(1, len(security_groups))
+
+        # create the second one and ensure the exception is handled properly
+        default_group = db.security_group_ensure_default(self.ctxt)
+        self.assertEqual('default', default_group.name)
 
     def test_security_group_update(self):
         security_group = self._create_security_group({})
@@ -2000,6 +2157,10 @@ class InstanceTestCase(test.TestCase, ModelsObjectComparatorMixin):
                 db.instance_floating_address_get_all(ctxt, instance_uuids[2])
         self.assertEqual(set([float_addresses[2]]), set(real_float_addresses))
 
+        self.assertRaises(exception.InvalidUUID,
+                          db.instance_floating_address_get_all,
+                          ctxt, 'invalid_uuid')
+
     def test_instance_stringified_ips(self):
         instance = self.create_instance_with_args()
         instance = db.instance_update(
@@ -2072,6 +2233,32 @@ class InstanceMetadataTestCase(test.TestCase):
                     {'new_key': 'new_value'}, True)
         metadata = db.instance_metadata_get(self.ctxt, instance['uuid'])
         self.assertEqual(metadata, {'new_key': 'new_value'})
+
+
+class InstanceExtraTestCase(test.TestCase):
+    def setUp(self):
+        super(InstanceExtraTestCase, self).setUp()
+        self.ctxt = context.get_admin_context()
+        self.instance = db.instance_create(self.ctxt, {})
+
+    def test_instance_extra_get_by_uuid_instance_create(self):
+        inst_extra = db.instance_extra_get_by_instance_uuid(
+                self.ctxt, self.instance['uuid'])
+        self.assertIsNotNone(inst_extra)
+
+    def test_instance_extra_update_by_uuid(self):
+        db.instance_extra_update_by_uuid(self.ctxt, self.instance['uuid'],
+                                         {'numa_topology': 'changed'})
+        inst_extra = db.instance_extra_get_by_instance_uuid(
+            self.ctxt, self.instance['uuid'])
+        self.assertEqual('changed', inst_extra.numa_topology)
+
+    def test_instance_extra_get_with_columns(self):
+        extra = db.instance_extra_get_by_instance_uuid(
+            self.ctxt, self.instance['uuid'],
+            columns=['numa_topology'])
+        self.assertNotIn('pci_requests', extra)
+        self.assertIn('numa_topology', extra)
 
 
 class ServiceTestCase(test.TestCase, ModelsObjectComparatorMixin):
@@ -3176,9 +3363,7 @@ class FixedIPTestCase(BaseInstanceTypeTestCase):
 
     def mock_db_query_first_to_raise_data_error_exception(self):
         self.mox.StubOutWithMock(query.Query, 'first')
-        query.Query.first().AndRaise(exc.DataError(mox.IgnoreArg(),
-                                                   mox.IgnoreArg(),
-                                                   mox.IgnoreArg()))
+        query.Query.first().AndRaise(db_exc.DBError())
         self.mox.ReplayAll()
 
     def test_fixed_ip_disassociate_all_by_timeout_single_host(self):
@@ -3491,7 +3676,8 @@ class FixedIPTestCase(BaseInstanceTypeTestCase):
         ]
 
         db.fixed_ip_bulk_create(self.ctxt, params)
-        ignored_keys = ['created_at', 'id', 'deleted_at', 'updated_at']
+        ignored_keys = ['created_at', 'id', 'deleted_at', 'updated_at',
+                        'virtual_interface', 'network', 'floating_ips']
         fixed_ip_data = db.fixed_ip_get_by_instance(self.ctxt, instance_uuid)
 
         # we have no `id` in incoming data so we can not use
@@ -3682,9 +3868,7 @@ class FloatingIpTestCase(test.TestCase, ModelsObjectComparatorMixin):
 
     def mock_db_query_first_to_raise_data_error_exception(self):
         self.mox.StubOutWithMock(query.Query, 'first')
-        query.Query.first().AndRaise(exc.DataError(mox.IgnoreArg(),
-                                                   mox.IgnoreArg(),
-                                                   mox.IgnoreArg()))
+        query.Query.first().AndRaise(db_exc.DBError())
         self.mox.ReplayAll()
 
     def _create_floating_ip(self, values):
@@ -4702,11 +4886,11 @@ class AgentBuildTestCase(test.TestCase, ModelsObjectComparatorMixin):
 
     def test_agent_build_get_by_triple(self):
         agent_build = db.agent_build_create(self.ctxt, {'hypervisor': 'kvm',
-                                'os': 'FreeBSD', 'architecture': 'x86_64'})
+                                'os': 'FreeBSD', 'architecture': arch.X86_64})
         self.assertIsNone(db.agent_build_get_by_triple(self.ctxt, 'kvm',
                                                         'FreeBSD', 'i386'))
         self._assertEqualObjects(agent_build, db.agent_build_get_by_triple(
-                                    self.ctxt, 'kvm', 'FreeBSD', 'x86_64'))
+                                    self.ctxt, 'kvm', 'FreeBSD', arch.X86_64))
 
     def test_agent_build_destroy(self):
         agent_build = db.agent_build_create(self.ctxt, {})
@@ -4733,14 +4917,14 @@ class AgentBuildTestCase(test.TestCase, ModelsObjectComparatorMixin):
 
     def test_agent_build_exists(self):
         values = {'hypervisor': 'kvm', 'os': 'FreeBSD',
-                  'architecture': 'x86_64'}
+                  'architecture': arch.X86_64}
         db.agent_build_create(self.ctxt, values)
         self.assertRaises(exception.AgentBuildExists, db.agent_build_create,
                           self.ctxt, values)
 
     def test_agent_build_get_all_by_hypervisor(self):
         values = {'hypervisor': 'kvm', 'os': 'FreeBSD',
-                  'architecture': 'x86_64'}
+                  'architecture': arch.X86_64}
         created = db.agent_build_create(self.ctxt, values)
         actual = db.agent_build_get_all(self.ctxt, hypervisor='kvm')
         self._assertEqualListsOfObjects([created], actual)
@@ -4764,9 +4948,7 @@ class VirtualInterfaceTestCase(test.TestCase, ModelsObjectComparatorMixin):
 
     def mock_db_query_first_to_raise_data_error_exception(self):
         self.mox.StubOutWithMock(query.Query, 'first')
-        query.Query.first().AndRaise(exc.DataError(mox.IgnoreArg(),
-                                                   mox.IgnoreArg(),
-                                                   mox.IgnoreArg()))
+        query.Query.first().AndRaise(db_exc.DBError())
         self.mox.ReplayAll()
 
     def _create_virt_interface(self, values):
@@ -4904,6 +5086,27 @@ class NetworkTestCase(test.TestCase, ModelsObjectComparatorMixin):
             network.id)
         return network, instance
 
+    def test_network_get_associated_default_route(self):
+        network, instance = self._get_associated_fixed_ip('host.net',
+            '192.0.2.0/30', '192.0.2.1')
+        network2 = db.network_create_safe(self.ctxt,
+            {'project_id': 'project1', 'cidr': '192.0.3.0/30'})
+        ip = '192.0.3.1'
+        virtual_interface = db.virtual_interface_create(self.ctxt,
+            {'instance_uuid': instance.uuid, 'network_id': network2.id,
+            'address': ip})
+        db.fixed_ip_create(self.ctxt, {'address': ip,
+            'network_id': network2.id, 'allocated': True,
+            'virtual_interface_id': virtual_interface.id})
+        db.fixed_ip_associate(self.ctxt, ip, instance.uuid,
+            network2.id)
+        data = db.network_get_associated_fixed_ips(self.ctxt, network.id)
+        self.assertEqual(1, len(data))
+        self.assertTrue(data[0]['default_route'])
+        data = db.network_get_associated_fixed_ips(self.ctxt, network2.id)
+        self.assertEqual(1, len(data))
+        self.assertFalse(data[0]['default_route'])
+
     def test_network_get_associated_fixed_ips(self):
         network, instance = self._get_associated_fixed_ip('host.net',
             '192.0.2.0/30', '192.0.2.1')
@@ -5019,10 +5222,8 @@ class NetworkTestCase(test.TestCase, ModelsObjectComparatorMixin):
         # network with instance with host set
         net3 = db.network_create_safe(self.ctxt, {})
         instance = db.instance_create(self.ctxt, {'host': host})
-        vif = db.virtual_interface_create(self.ctxt,
-            {'instance_uuid': instance.uuid})
         db.fixed_ip_create(self.ctxt, {'network_id': net3.id,
-            'virtual_interface_id': vif.id})
+            'instance_uuid': instance.uuid})
         self._assertEqualListsOfObjects([net1, net2, net3],
             db.network_get_all_by_host(self.ctxt, host))
 
@@ -5326,6 +5527,11 @@ class QuotaTestCase(test.TestCase, ModelsObjectComparatorMixin):
         for i in range(3):
             db.security_group_create(self.ctxt, {'project_id': 'project1'})
 
+        usages['server_groups'] = 4
+        for i in range(4):
+            db.instance_group_create(self.ctxt, {'uuid': str(i),
+                                                 'project_id': 'project1'})
+
         reservations_uuids = db.quota_reserve(self.ctxt, reservable_resources,
                                               quotas, quotas, deltas, None,
                                               None, None, 'project1')
@@ -5424,6 +5630,134 @@ class QuotaTestCase(test.TestCase, ModelsObjectComparatorMixin):
                           'project1', 'resource1', 42)
 
 
+class QuotaReserveNoDbTestCase(test.NoDBTestCase):
+    """Tests quota reserve/refresh operations using mock."""
+
+    def test_create_quota_usage_if_missing_not_created(self):
+        # Tests that QuotaUsage isn't created if it's already in user_usages.
+        resource = 'fake-resource'
+        project_id = 'fake-project'
+        user_id = 'fake_user'
+        session = mock.sentinel
+        quota_usage = mock.sentinel
+        user_usages = {resource: quota_usage}
+        with mock.patch.object(sqlalchemy_api, '_quota_usage_create') as quc:
+            self.assertFalse(sqlalchemy_api._create_quota_usage_if_missing(
+                                user_usages, resource, None,
+                                project_id, user_id, session))
+        self.assertFalse(quc.called)
+
+    def _test_create_quota_usage_if_missing_created(self, per_project_quotas):
+        # Tests that the QuotaUsage is created.
+        user_usages = {}
+        if per_project_quotas:
+            resource = sqlalchemy_api.PER_PROJECT_QUOTAS[0]
+        else:
+            resource = 'fake-resource'
+        project_id = 'fake-project'
+        user_id = 'fake_user'
+        session = mock.sentinel
+        quota_usage = mock.sentinel
+        with mock.patch.object(sqlalchemy_api, '_quota_usage_create',
+                               return_value=quota_usage) as quc:
+            self.assertTrue(sqlalchemy_api._create_quota_usage_if_missing(
+                                user_usages, resource, None,
+                                project_id, user_id, session))
+        self.assertEqual(quota_usage, user_usages[resource])
+        # Now test if the QuotaUsage was created with a user_id or not.
+        if per_project_quotas:
+            quc.assert_called_once_with(
+                project_id, None, resource, 0, 0, None, session=session)
+        else:
+            quc.assert_called_once_with(
+                project_id, user_id, resource, 0, 0, None, session=session)
+
+    def test_create_quota_usage_if_missing_created_per_project_quotas(self):
+        self._test_create_quota_usage_if_missing_created(True)
+
+    def test_create_quota_usage_if_missing_created_user_quotas(self):
+        self._test_create_quota_usage_if_missing_created(False)
+
+    def test_is_quota_refresh_needed_in_use(self):
+        # Tests when a quota refresh is needed based on the in_use value.
+        for in_use in range(-1, 1):
+            # We have to set until_refresh=None otherwise mock will give it
+            # a value which runs some code we don't want.
+            quota_usage = mock.MagicMock(in_use=in_use, until_refresh=None)
+            if in_use < 0:
+                self.assertTrue(sqlalchemy_api._is_quota_refresh_needed(
+                                                    quota_usage, max_age=0))
+            else:
+                self.assertFalse(sqlalchemy_api._is_quota_refresh_needed(
+                                                    quota_usage, max_age=0))
+
+    def test_is_quota_refresh_needed_until_refresh_none(self):
+        quota_usage = mock.MagicMock(in_use=0, until_refresh=None)
+        self.assertFalse(sqlalchemy_api._is_quota_refresh_needed(quota_usage,
+                                                                 max_age=0))
+
+    def test_is_quota_refresh_needed_until_refresh_not_none(self):
+        # Tests different values for the until_refresh counter.
+        for until_refresh in range(3):
+            quota_usage = mock.MagicMock(in_use=0, until_refresh=until_refresh)
+            refresh = sqlalchemy_api._is_quota_refresh_needed(quota_usage,
+                                                              max_age=0)
+            until_refresh -= 1
+            if until_refresh <= 0:
+                self.assertTrue(refresh)
+            else:
+                self.assertFalse(refresh)
+            self.assertEqual(until_refresh, quota_usage.until_refresh)
+
+    def test_refresh_quota_usages(self):
+        quota_usage = mock.Mock(spec=models.QuotaUsage)
+        quota_usage.in_use = 5
+        quota_usage.until_refresh = None
+        sqlalchemy_api._refresh_quota_usages(quota_usage, until_refresh=5,
+                                             in_use=6)
+        self.assertEqual(6, quota_usage.in_use)
+        self.assertEqual(5, quota_usage.until_refresh)
+
+    def test_calculate_overquota_no_delta(self):
+        deltas = {'foo': -1}
+        user_quotas = {'foo': 10}
+        overs = sqlalchemy_api._calculate_overquota({}, user_quotas, deltas,
+                                                    {}, {})
+        self.assertFalse(overs)
+
+    def test_calculate_overquota_unlimited_quota(self):
+        deltas = {'foo': 1}
+        project_quotas = {}
+        user_quotas = {'foo': -1}
+        project_usages = {}
+        user_usages = {'foo': 10}
+        overs = sqlalchemy_api._calculate_overquota(
+            project_quotas, user_quotas, deltas, project_usages, user_usages)
+        self.assertFalse(overs)
+
+    def _test_calculate_overquota(self, resource, project_usages, user_usages):
+        deltas = {resource: 1}
+        project_quotas = {resource: 10}
+        user_quotas = {resource: 10}
+        overs = sqlalchemy_api._calculate_overquota(
+            project_quotas, user_quotas, deltas, project_usages, user_usages)
+        self.assertEqual(resource, overs[0])
+
+    def test_calculate_overquota_per_project_quota_overquota(self):
+        # In this test, user quotas are fine but project quotas are over.
+        resource = 'foo'
+        project_usages = {resource: {'total': 10}}
+        user_usages = {resource: {'total': 5}}
+        self._test_calculate_overquota(resource, project_usages, user_usages)
+
+    def test_calculate_overquota_per_user_quota_overquota(self):
+        # In this test, project quotas are fine but user quotas are over.
+        resource = 'foo'
+        project_usages = {resource: {'total': 5}}
+        user_usages = {resource: {'total': 10}}
+        self._test_calculate_overquota(resource, project_usages, user_usages)
+
+
 class QuotaClassTestCase(test.TestCase, ModelsObjectComparatorMixin):
 
     def setUp(self):
@@ -5479,6 +5813,11 @@ class QuotaClassTestCase(test.TestCase, ModelsObjectComparatorMixin):
     def test_quota_class_update_nonexistent(self):
         self.assertRaises(exception.QuotaClassNotFound, db.quota_class_update,
                                 self.ctxt, 'class name', 'resource', 42)
+
+    def test_refresh_quota_usages(self):
+        quota_usages = mock.Mock()
+        sqlalchemy_api._refresh_quota_usages(quota_usages, until_refresh=5,
+                                             in_use=6)
 
 
 class S3ImageTestCase(test.TestCase):
@@ -5541,7 +5880,7 @@ class ComputeNodeTestCase(test.TestCase, ModelsObjectComparatorMixin):
                                  pci_stats='',
                                  metrics='',
                                  extra_resources='',
-                                 stats='')
+                                 stats='', numa_topology='')
         # add some random stats
         self.stats = dict(num_instances=3, num_proj_12345=2,
                      num_proj_23456=2, num_vm_building=3)
@@ -6255,7 +6594,7 @@ class Ec2TestCase(test.TestCase):
             try:
                 method(self.ctxt, value)
             except exception.NotFound as exc:
-                self.assertIn(unicode(value), unicode(exc))
+                self.assertIn(six.text_type(value), six.text_type(exc))
 
         check_exc_format(db.get_ec2_instance_id_by_uuid, 'fake')
         check_exc_format(db.get_instance_uuid_by_ec2_id, 123456)
@@ -6486,7 +6825,7 @@ class ArchiveTestCase(test.TestCase):
             ins_stmt = main_table.insert().values(uuid=uuidstr)
             try:
                 self.conn.execute(ins_stmt)
-            except IntegrityError:
+            except db_exc.DBError:
                 # This table has constraints that require a table-specific
                 # insert, so skip it.
                 return 2
@@ -6800,6 +7139,18 @@ class InstanceGroupDBApiTestCase(test.TestCase, ModelsObjectComparatorMixin):
                           db.instance_group_update, self.context,
                           'invalid_id', values)
 
+    def test_instance_group_get_by_instance(self):
+        values = self._get_default_values()
+        group1 = self._create_instance_group(self.context, values)
+
+        members = ['instance_id1', 'instance_id2']
+        db.instance_group_members_add(self.context, group1.uuid, members)
+
+        group2 = db.instance_group_get_by_instance(self.context,
+                                                   'instance_id1')
+
+        self.assertEqual(group2.uuid, group1.uuid)
+
 
 class InstanceGroupMembersDBApiTestCase(InstanceGroupDBApiTestCase):
     def test_instance_group_members_on_create(self):
@@ -6964,6 +7315,7 @@ class PciDeviceDBApiTestCase(test.TestCase, ModelsObjectComparatorMixin):
                 'label': 'label_8086_1520',
                 'status': 'available',
                 'instance_uuid': '00000000-0000-0000-0000-000000000010',
+                'request_id': None,
                 }, {'id': 3356,
                 'compute_node_id': 1,
                 'address': '0000:0f:03.7',
@@ -6975,6 +7327,7 @@ class PciDeviceDBApiTestCase(test.TestCase, ModelsObjectComparatorMixin):
                 'label': 'label_8086_1520',
                 'status': 'available',
                 'instance_uuid': '00000000-0000-0000-0000-000000000010',
+                'request_id': None,
                 }
 
     def _create_fake_pci_devs(self):
@@ -7123,27 +7476,6 @@ class RetryOnDeadlockTestCase(test.TestCase):
                 raise db_exc.DBDeadlock("fake exception")
             return True
         self.assertTrue(call_api())
-
-
-class NovaDBAPITestCase(test.TestCase):
-    def test_nova_db_api_common(self):
-        nova_db_api = db.api.NovaDBAPI()
-
-        # get access to some db-api method
-        nova_db_api.instance_group_get
-        # CONF.database.use_tpool is False, so we have no proxy in this case
-        self.assertIsInstance(nova_db_api._db_api, db_api.DBAPI)
-
-    def test_nova_db_api_config_change(self):
-        nova_db_api = db.api.NovaDBAPI()
-
-        CONF.set_override('use_tpool', True, group='database')
-        self.addCleanup(CONF.reset)
-
-        # get access to some db-api method
-        nova_db_api.instance_group_get
-        # CONF.database.use_tpool is True, so we get tpool proxy in this case
-        self.assertIsInstance(nova_db_api._db_api, eventlet.tpool.Proxy)
 
 
 class TestSqlalchemyTypesRepr(test_base.DbTestCase):

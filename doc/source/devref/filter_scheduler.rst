@@ -91,19 +91,36 @@ There are some standard filter classes to use (:mod:`nova.scheduler.filters`):
   different ratio settings), the minimum value will be used.
 * |DiskFilter| - filters hosts by their disk allocation. Only hosts with sufficient
   disk space to host the instance are passed.
-  ``disk_allocation_ration`` setting. It's virtual disk to physical disk
+  ``disk_allocation_ratio`` setting. It's virtual disk to physical disk
   allocation ratio and it's 1.0 by default. The total allow allocated disk size will
   be physical disk multiplied this ratio.
+* |AggregateDiskFilter| - filters hosts by disk allocation with per-aggregate
+  ``disk_allocation_ratio`` setting. If no per-aggregate value is found, it will
+  fall back to the global default ``disk_allocation_ratio``. If more than one value
+  is found for a host (meaning the host is in two or more different aggregates with
+  different ratio settings), the minimum value will be used.
 * |NumInstancesFilter| - filters hosts by number of running instances on it.
   hosts with too many instances will be filtered.
   ``max_instances_per_host`` setting. Maximum number of instances allowed to run on
   this host, the host will be ignored by scheduler if more than ``max_instances_per_host``
   are already existing on the host.
+* |AggregateNumInstancesFilter| - filters hosts by number of instances with
+  per-aggregate ``max_instances_per_host`` setting. If no per-aggregate value
+  is found, it will fall back to the global default ``max_instances_per_host``.
+  If more than one value is found for a host (meaning the host is in two or more
+  different aggregates with different max instances per host settings),
+  the minimum value will be used.
 * |IoOpsFilter| - filters hosts by concurrent I/O operations on it.
   hosts with too many concurrent I/O operations will be filtered.
   ``max_io_ops_per_host`` setting. Maximum number of I/O intensive instances allowed to
   run on this host, the host will be ignored by scheduler if more than ``max_io_ops_per_host``
   instances such as build/resize/snapshot etc are running on it.
+* |AggregateIoOpsFilter| - filters hosts by I/O operations with per-aggregate
+  ``max_io_ops_per_host`` setting. If no per-aggregate value is found, it will
+  fall back to the global default ``max_io_ops_per_host``. If more than
+  one value is found for a host (meaning the host is in two or more different
+  aggregates with different max io operations settings), the minimum value
+  will be used.
 * |PciPassthroughFilter| - Filter that schedules instances on a host if the host
   has devices to meet the device requests in the 'extra_specs' for the flavor.
 * |SimpleCIDRAffinityFilter| - allows to put a new instance on a host within
@@ -140,6 +157,8 @@ There are some standard filter classes to use (:mod:`nova.scheduler.filters`):
   properties and aggregate metadata.
 * |MetricsFilter| - filters hosts based on metrics weight_setting. Only hosts with
   the available metrics are passed.
+* |NUMATopologyFilter| - filters hosts based on the NUMA topology requested by the
+  instance, if any.
 
 Now we can focus on these standard filter classes in details. I will pass the
 simplest ones, such as |AllHostsFilter|, |CoreFilter| and |RamFilter| are,
@@ -253,6 +272,24 @@ The value of this pair (``trusted``/``untrusted``) must match the
 integrity of a host (obtained from the Attestation service) before it is
 passed by the |TrustedFilter|.
 
+The |NUMATopologyFilter| considers the NUMA topology that was specified for the instance
+through the use of flavor extra_specs in combination with the image properties, as
+described in detail in the related nova-spec document:
+
+* http://git.openstack.org/cgit/openstack/nova-specs/tree/specs/juno/virt-driver-numa-placement.rst
+
+and try to match it with the topology exposed by the host, accounting for the
+``ram_allocation_ratio`` and ``cpu_allocation_ratio`` for over-subscription. The
+filtering is done in the following manner:
+
+* Filter will try to match the exact NUMA cells of the instance to those of
+  the host. It *will not* attempt to pack the instance onto the host.
+* It will consider the standard over-subscription limits for each host NUMA cell,
+  and provide limits to the compute host accordingly (as mentioned above).
+* If instance has no topology defined, it will be considered for any host.
+* If instance has a topology defined, it will be considered only for NUMA
+  capable hosts.
+
 To use filters you specify next two settings:
 
 * ``scheduler_available_filters`` - Defines filter classes made available to the
@@ -318,7 +355,7 @@ The Filter Scheduler weighs hosts based on the config option
 `scheduler_weight_classes`, this defaults to
 `nova.scheduler.weights.all_weighers`, which selects the following weighers:
 
-* |RamWeigher| Hosts are then weighted and sorted with the largest weight winning.
+* |RAMWeigher| Hosts are then weighted and sorted with the largest weight winning.
   If the multiplier is negative, the host with less RAM available will win (useful
   for stacking hosts, instead of spreading).
 * |MetricsWeigher| This weigher can compute the weight based on the compute node
@@ -326,6 +363,11 @@ The Filter Scheduler weighs hosts based on the config option
   are specified in the configuration file as the followings::
 
     metrics_weight_setting = name1=1.0, name2=-1.0
+
+* |IoOpsWeigher| The weigher can compute the weight based on the compute node
+  host's workload. The default is to preferably choose light workload compute
+  hosts. If the multiplier is positive, the weigher prefer choosing heavy
+  workload compute hosts, the weighing has the opposite effect of the default.
 
 Filter Scheduler finds local list of acceptable hosts by repeated filtering and
 weighing. Each time it chooses a host, it virtually consumes resources on it,
@@ -354,8 +396,11 @@ in :mod:``nova.tests.scheduler``.
 .. |RamFilter| replace:: :class:`RamFilter <nova.scheduler.filters.ram_filter.RamFilter>`
 .. |AggregateRamFilter| replace:: :class:`AggregateRamFilter <nova.scheduler.filters.ram_filter.AggregateRamFilter>`
 .. |DiskFilter| replace:: :class:`DiskFilter <nova.scheduler.filters.disk_filter.DiskFilter>`
+.. |AggregateDiskFilter| replace:: :class:`AggregateDiskFilter <nova.scheduler.filters.disk_filter.AggregateDiskFilter>`
 .. |NumInstancesFilter| replace:: :class:`NumInstancesFilter <nova.scheduler.filters.num_instances_filter.NumInstancesFilter>`
+.. |AggregateNumInstancesFilter| replace:: :class:`AggregateNumInstancesFilter <nova.scheduler.filters.num_instances_filter.AggregateNumInstancesFilter>`
 .. |IoOpsFilter| replace:: :class:`IoOpsFilter <nova.scheduler.filters.io_ops_filter.IoOpsFilter>`
+.. |AggregateIoOpsFilter| replace:: :class:`AggregateIoOpsFilter <nova.scheduler.filters.io_ops_filter.AggregateIoOpsFilter>`
 .. |PciPassthroughFilter| replace:: :class:`PciPassthroughFilter <nova.scheduler.filters.pci_passthrough_filter.PciPassthroughFilter>`
 .. |SimpleCIDRAffinityFilter| replace:: :class:`SimpleCIDRAffinityFilter <nova.scheduler.filters.affinity_filter.SimpleCIDRAffinityFilter>`
 .. |GroupAntiAffinityFilter| replace:: :class:`GroupAntiAffinityFilter <nova.scheduler.filters.affinity_filter.GroupAntiAffinityFilter>`
@@ -370,7 +415,9 @@ in :mod:``nova.tests.scheduler``.
 .. |ServerGroupAffinityFilter| replace:: :class:`ServerGroupAffinityFilter <nova.scheduler.filters.affinity_filter.ServerGroupAffinityFilter>`
 .. |AggregateInstanceExtraSpecsFilter| replace:: :class:`AggregateInstanceExtraSpecsFilter <nova.scheduler.filters.aggregate_instance_extra_specs.AggregateInstanceExtraSpecsFilter>`
 .. |AggregateMultiTenancyIsolation| replace:: :class:`AggregateMultiTenancyIsolation <nova.scheduler.filters.aggregate_multitenancy_isolation.AggregateMultiTenancyIsolation>`
-.. |RamWeigher| replace:: :class:`RamWeigher <nova.scheduler.weights.all_weighers.RamWeigher>`
+.. |NUMATopologyFilter| replace:: :class:`NUMATopologyFilter <nova.scheduler.filters.numa_topology_filter.NUMATopologyFilter>`
+.. |RAMWeigher| replace:: :class:`RAMWeigher <nova.scheduler.weights.ram.RAMWeigher>`
 .. |AggregateImagePropertiesIsolation| replace:: :class:`AggregateImagePropertiesIsolation <nova.scheduler.filters.aggregate_image_properties_isolation.AggregateImagePropertiesIsolation>`
 .. |MetricsFilter| replace:: :class:`MetricsFilter <nova.scheduler.filters.metrics_filter.MetricsFilter>`
 .. |MetricsWeigher| replace:: :class:`MetricsWeigher <nova.scheduler.weights.metrics.MetricsWeigher>`
+.. |IoOpsWeigher| replace:: :class:`IoOpsWeigher <nova.scheduler.weights.io_ops.IoOpsWeigher>`

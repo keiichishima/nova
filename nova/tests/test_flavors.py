@@ -124,7 +124,7 @@ class InstanceTypeTestCase(test.TestCase):
                                                                  ctxt)
         self.assertEqual([], projects)
 
-    def test_remove_flavor_access_doesnt_exists(self):
+    def test_remove_flavor_access_does_not_exist(self):
         user_id = 'fake'
         project_id = 'fake'
         ctxt = context.RequestContext(user_id, project_id, is_admin=True)
@@ -141,7 +141,7 @@ class InstanceTypeTestCase(test.TestCase):
         inst_types = flavors.get_all_flavors()
         self.assertEqual(total_instance_types, len(inst_types))
 
-    def test_non_existent_inst_type_shouldnt_delete(self):
+    def test_non_existent_inst_type_should_not_delete(self):
         # Ensures that flavor creation fails with invalid args.
         self.assertRaises(exception.FlavorNotFoundByName,
                           flavors.destroy,
@@ -343,6 +343,27 @@ class InstanceTypeToolsTest(test.TestCase):
         flavors.save_flavor_info(metadata, instance_type, '_')
         flavors.delete_flavor_info(metadata, '', '_')
         self.assertEqual(metadata, {})
+
+    def test_flavor_numa_extras_are_saved(self):
+        instance_type = flavors.get_default_flavor()
+        instance_type['extra_specs'] = {
+            'hw:numa_mem.0': '123',
+            'hw:numa_cpus.0': '456',
+            'hw:numa_mem.1': '789',
+            'hw:numa_cpus.1': 'ABC',
+            'foo': 'bar',
+        }
+        sysmeta = flavors.save_flavor_info({}, instance_type)
+        _instance_type = flavors.extract_flavor({'system_metadata': sysmeta})
+        expected_extra_specs = {
+            'hw:numa_mem.0': '123',
+            'hw:numa_cpus.0': '456',
+            'hw:numa_mem.1': '789',
+            'hw:numa_cpus.1': 'ABC',
+        }
+        self.assertEqual(expected_extra_specs, _instance_type['extra_specs'])
+        flavors.delete_flavor_info(sysmeta, '')
+        self.assertEqual({}, sysmeta)
 
 
 class InstanceTypeFilteringTest(test.TestCase):

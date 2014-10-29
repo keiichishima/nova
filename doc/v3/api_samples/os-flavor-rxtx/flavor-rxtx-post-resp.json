@@ -1,9 +1,9 @@
 {
     "flavor": {
-        "disabled": false,
+        "OS-FLV-DISABLED:disabled": false,
         "disk": 10,
-        "ephemeral": 0,
-        "flavor-access:is_public": true,
+        "OS-FLV-EXT-DATA:ephemeral": 0,
+        "os-flavor-access:is_public": true,
         "id": "100",
         "links": [
             {
@@ -17,8 +17,8 @@
         ],
         "name": "flavortest",
         "ram": 1024,
-        "os-flavor-rxtx:rxtx_factor": 2.0,
-        "swap": 0,
+        "rxtx_factor": 2.0,
+        "swap": "",
         "vcpus": 2
     }
 }

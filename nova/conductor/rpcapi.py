@@ -17,9 +17,9 @@
 
 from oslo.config import cfg
 from oslo import messaging
+from oslo.serialization import jsonutils
 
 from nova.objects import base as objects_base
-from nova.openstack.common import jsonutils
 from nova import rpc
 
 CONF = cfg.CONF
@@ -151,12 +151,17 @@ class ConductorAPI(object):
     * Remove instance_get_by_uuid()
     * Remove agent_build_get_by_triple()
 
+    ... Juno supports message version 2.0.  So, any changes to
+    existing methods in 2.x after that point should be done such
+    that they can handle the version_cap being set to 2.0.
+
     """
 
     VERSION_ALIASES = {
         'grizzly': '1.48',
         'havana': '1.58',
         'icehouse': '2.0',
+        'juno': '2.0',
     }
 
     def __init__(self):
@@ -276,7 +281,20 @@ class ConductorAPI(object):
 
     def service_update(self, context, service, values):
         service_p = jsonutils.to_primitive(service)
-        cctxt = self.client.prepare()
+
+        # (NOTE:jichenjc)If we're calling this periodically, it makes no
+        # sense for the RPC timeout to be more than the service
+        # report interval. Select 5 here is only find a reaonable long
+        # interval as threshold.
+        timeout = CONF.report_interval
+        if timeout and timeout > 5:
+            timeout -= 1
+
+        if timeout:
+            cctxt = self.client.prepare(timeout=timeout)
+        else:
+            cctxt = self.client.prepare()
+
         return cctxt.call(context, 'service_update',
                           service=service_p, values=values)
 
@@ -365,6 +383,7 @@ class ComputeTaskAPI(object):
     1.6 - Made migrate_server use instance objects
     1.7 - Do not send block_device_mapping and legacy_bdm to build_instances
     1.8 - Add rebuild_instance
+    1.9 - Converted requested_networks to NetworkRequestList object
 
     """
 
@@ -405,12 +424,15 @@ class ComputeTaskAPI(object):
                'requested_networks': requested_networks,
                'security_groups': security_groups}
 
-        if self.client.can_send_version('1.7'):
-            version = '1.7'
-        else:
+        version = '1.9'
+        if not self.client.can_send_version('1.9'):
+            version = '1.8'
+            kw['requested_networks'] = kw['requested_networks'].as_tuples()
+        if not self.client.can_send_version('1.7'):
             version = '1.5'
             kw.update({'block_device_mapping': block_device_mapping,
                        'legacy_bdm': legacy_bdm})
+
         cctxt = self.client.prepare(version=version)
         cctxt.cast(context, 'build_instances', **kw)
 

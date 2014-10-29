@@ -148,7 +148,8 @@ def get_next_device_name(instance, device_name_list,
         root_device_name = block_device.DEFAULT_ROOT_DEV_NAME
 
     try:
-        prefix = block_device.match_device(root_device_name)[0]
+        prefix = block_device.match_device(
+                block_device.prepend_dev(root_device_name))[0]
     except (TypeError, AttributeError, ValueError):
         raise exception.InvalidDevicePath(path=root_device_name)
 
@@ -195,19 +196,22 @@ def _get_unused_letter(used_letters):
 
 
 def get_image_metadata(context, image_api, image_id_or_uri, instance):
-    # If the base image is still available, get its metadata
-    try:
-        image = image_api.get(context, image_id_or_uri)
-    except (exception.ImageNotAuthorized,
-            exception.ImageNotFound,
-            exception.Invalid) as e:
-        LOG.warning(_LW("Can't access image %(image_id)s: %(error)s"),
-                    {"image_id": image_id_or_uri, "error": e},
-                    instance=instance)
-        image_system_meta = {}
-    else:
-        flavor = flavors.extract_flavor(instance)
-        image_system_meta = utils.get_system_metadata_from_image(image, flavor)
+    image_system_meta = {}
+    # In case of boot from volume, image_id_or_uri may be None
+    if image_id_or_uri is not None:
+        # If the base image is still available, get its metadata
+        try:
+            image = image_api.get(context, image_id_or_uri)
+        except (exception.ImageNotAuthorized,
+                exception.ImageNotFound,
+                exception.Invalid) as e:
+            LOG.warning(_LW("Can't access image %(image_id)s: %(error)s"),
+                        {"image_id": image_id_or_uri, "error": e},
+                        instance=instance)
+        else:
+            flavor = flavors.extract_flavor(instance)
+            image_system_meta = utils.get_system_metadata_from_image(image,
+                                                                     flavor)
 
     # Get the system metadata from the instance
     system_meta = utils.instance_sys_meta(instance)
@@ -312,6 +316,17 @@ def notify_about_instance_usage(notifier, context, instance, event_suffix,
         method = notifier.info
 
     method(context, 'compute.instance.%s' % event_suffix, usage_info)
+
+
+def notify_about_server_group_update(context, event_suffix, sg_payload):
+    """Send a notification about server group update.
+
+    :param event_suffix: Event type like "create.start" or "create.end"
+    :param sg_payload: payload for server group update
+    """
+    notifier = rpc.get_notifier(service='servergroup')
+
+    notifier.info(context, 'servergroup.%s' % event_suffix, sg_payload)
 
 
 def notify_about_aggregate_update(context, event_suffix, aggregate_payload):

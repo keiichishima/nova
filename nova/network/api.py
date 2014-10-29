@@ -18,6 +18,8 @@
 
 import functools
 
+from oslo.config import cfg
+
 from nova.compute import flavors
 from nova import exception
 from nova.i18n import _
@@ -30,6 +32,8 @@ from nova.objects import base as obj_base
 from nova.openstack.common import log as logging
 from nova import policy
 from nova import utils
+
+CONF = cfg.CONF
 
 LOG = logging.getLogger(__name__)
 
@@ -73,12 +77,19 @@ class API(base_api.NetworkAPI):
     def get_all(self, context):
         """Get all the networks.
 
-        If it is an admin user, api will return all the networks,
-        if it is a normal user, api will only return the networks which
+        If it is an admin user then api will return all the
+        networks. If it is a normal user and nova Flat or FlatDHCP
+        networking is being used then api will return all
+        networks. Otherwise api will only return the networks which
         belong to the user's project.
         """
+        if "nova.network.manager.Flat" in CONF.network_manager:
+            project_only = "allow_none"
+        else:
+            project_only = True
         try:
-            return objects.NetworkList.get_all(context, project_only=True)
+            return objects.NetworkList.get_all(context,
+                                               project_only=project_only)
         except exception.NoNetworksFound:
             return []
 
@@ -174,6 +185,26 @@ class API(base_api.NetworkAPI):
         """Removes (deallocates) a floating ip with address from a project."""
         return self.floating_manager.deallocate_floating_ip(context, address,
                  affect_auto_assigned)
+
+    def disassociate_and_release_floating_ip(self, context, instance,
+                                           floating_ip):
+        """Removes (deallocates) and deletes the floating ip.
+
+        This api call was added to allow this to be done in one operation
+        if using neutron.
+        """
+
+        address = floating_ip['address']
+        if floating_ip.get('fixed_ip_id'):
+            try:
+                self.disassociate_floating_ip(context, instance, address)
+            except exception.FloatingIpNotAssociated:
+                msg = ("Floating ip %s has already been disassociated, "
+                       "perhaps by another concurrent action.") % address
+                LOG.debug(msg)
+
+        # release ip from project
+        return self.release_floating_ip(context, address)
 
     @wrap_check_policy
     @base_api.refresh_cache
@@ -293,7 +324,9 @@ class API(base_api.NetworkAPI):
                 'rxtx_factor': flavor['rxtx_factor'],
                 'host': instance['host'],
                 'network_id': network_id}
-        return self.network_rpcapi.add_fixed_ip_to_instance(context, **args)
+        nw_info = self.network_rpcapi.add_fixed_ip_to_instance(
+            context, **args)
+        return network_model.NetworkInfo.hydrate(nw_info)
 
     @wrap_check_policy
     @base_api.refresh_cache
@@ -305,8 +338,9 @@ class API(base_api.NetworkAPI):
                 'rxtx_factor': flavor['rxtx_factor'],
                 'host': instance['host'],
                 'address': address}
-        return self.network_rpcapi.remove_fixed_ip_from_instance(context,
-                                                                 **args)
+        nw_info = self.network_rpcapi.remove_fixed_ip_from_instance(
+            context, **args)
+        return network_model.NetworkInfo.hydrate(nw_info)
 
     @wrap_check_policy
     def add_network_to_project(self, context, project_id, network_uuid=None):
@@ -374,6 +408,17 @@ class API(base_api.NetworkAPI):
         # this is part of the subsequent quota check, so we just return
         # the requested number in this case.
         return num_instances
+
+    def create_pci_requests_for_sriov_ports(self, context,
+                                            pci_requests,
+                                            requested_networks):
+        """Check requested networks for any SR-IOV port request.
+
+        Create a PCI request object for each SR-IOV port, and add it to the
+        pci_requests object that contains a list of PCI request object.
+        """
+        # This is NOOP for Nova network since it doesn't support SR-IOV.
+        pass
 
     @wrap_check_policy
     def get_instance_uuids_by_ip_filter(self, context, filters):
@@ -458,20 +503,17 @@ class API(base_api.NetworkAPI):
 
         self.network_rpcapi.setup_networks_on_host(context, **args)
 
-    def _is_multi_host(self, context, instance):
+    def _get_multi_addresses(self, context, instance):
         try:
             fixed_ips = objects.FixedIPList.get_by_instance_uuid(
                 context, instance['uuid'])
         except exception.FixedIpNotFoundForInstance:
-            return False
-        network = objects.Network.get_by_id(context,
-                                            fixed_ips[0].network_id,
-                                            project_only='allow_none')
-        return network.multi_host
-
-    def _get_floating_ip_addresses(self, context, instance):
-        return objects.FloatingIP.get_addresses_by_instance(
-            context, instance)
+            return False, []
+        addresses = []
+        for fixed in fixed_ips:
+            for floating in fixed.floating_ips:
+                addresses.append(floating.address)
+        return fixed_ips[0].network.multi_host, addresses
 
     @wrap_check_policy
     def migrate_instance_start(self, context, instance, migration):
@@ -486,9 +528,9 @@ class API(base_api.NetworkAPI):
             floating_addresses=None,
         )
 
-        if self._is_multi_host(context, instance):
-            args['floating_addresses'] = \
-                self._get_floating_ip_addresses(context, instance)
+        multi_host, addresses = self._get_multi_addresses(context, instance)
+        if multi_host:
+            args['floating_addresses'] = addresses
             args['host'] = migration['source_compute']
 
         self.network_rpcapi.migrate_instance_start(context, **args)
@@ -506,9 +548,9 @@ class API(base_api.NetworkAPI):
             floating_addresses=None,
         )
 
-        if self._is_multi_host(context, instance):
-            args['floating_addresses'] = \
-                self._get_floating_ip_addresses(context, instance)
+        multi_host, addresses = self._get_multi_addresses(context, instance)
+        if multi_host:
+            args['floating_addresses'] = addresses
             args['host'] = migration['dest_compute']
 
         self.network_rpcapi.migrate_instance_finish(context, **args)

@@ -19,7 +19,7 @@ import datetime
 import uuid
 
 from oslo.config import cfg
-import webob
+from oslo.serialization import jsonutils
 
 from nova.api.openstack.compute import plugins
 from nova.api.openstack.compute.plugins.v3 import servers
@@ -27,8 +27,8 @@ from nova.api.openstack.compute.plugins.v3 import user_data
 from nova.compute import api as compute_api
 from nova.compute import flavors
 from nova import db
+from nova import exception
 from nova.network import manager
-from nova.openstack.common import jsonutils
 from nova import test
 from nova.tests.api.openstack import fakes
 from nova.tests import fake_instance
@@ -75,7 +75,7 @@ class ServersControllerCreateTest(test.TestCase):
                 'id': self.instance_cache_num,
                 'display_name': inst['display_name'] or 'test',
                 'uuid': FAKE_UUID,
-                'instance_type': dict(inst_type),
+                'instance_type': inst_type,
                 'access_ip_v4': '1.2.3.4',
                 'access_ip_v6': 'fead::1234',
                 'image_ref': inst.get('image_ref', def_image_ref),
@@ -191,5 +191,5 @@ class ServersControllerCreateTest(test.TestCase):
     def test_create_instance_with_bad_user_data(self):
         value = "A random string"
         params = {user_data.ATTRIBUTE_NAME: value}
-        self.assertRaises(webob.exc.HTTPBadRequest,
+        self.assertRaises(exception.ValidationError,
                           self._test_create_extra, params)

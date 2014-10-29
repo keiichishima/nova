@@ -38,12 +38,12 @@ A driver for XenServer or Xen Cloud Platform.
 import math
 
 from oslo.config import cfg
+from oslo.serialization import jsonutils
+from oslo.utils import units
 import six.moves.urllib.parse as urlparse
 
 from nova.i18n import _
-from nova.openstack.common import jsonutils
 from nova.openstack.common import log as logging
-from nova.openstack.common import units
 from nova import utils
 from nova.virt import driver
 from nova.virt.xenapi.client import session
@@ -389,7 +389,7 @@ class XenAPIDriver(driver.ComputeDriver):
     def get_volume_connector(self, instance):
         """Return volume connector information."""
         if not self._initiator or not self._hypervisor_hostname:
-            stats = self.get_host_stats(refresh=True)
+            stats = self.host_state.get_host_stats(refresh=True)
             try:
                 self._initiator = stats['host_other-config']['iscsi_iqn']
                 self._hypervisor_hostname = stats['host_hostname']
@@ -438,7 +438,7 @@ class XenAPIDriver(driver.ComputeDriver):
         :returns: dictionary describing resources
 
         """
-        host_stats = self.get_host_stats(refresh=True)
+        host_stats = self.host_state.get_host_stats(refresh=True)
 
         # Updating host information
         total_ram_mb = host_stats['host_memory_total'] / units.Mi
@@ -465,7 +465,8 @@ class XenAPIDriver(driver.ComputeDriver):
                'supported_instances': jsonutils.dumps(
                    host_stats['supported_instances']),
                'pci_passthrough_devices': jsonutils.dumps(
-                   host_stats['pci_passthrough_devices'])}
+                   host_stats['pci_passthrough_devices']),
+               'numa_topology': None}
 
         return dic
 
@@ -501,7 +502,7 @@ class XenAPIDriver(driver.ComputeDriver):
         pass
 
     def check_can_live_migrate_source(self, context, instance,
-                                      dest_check_data):
+                                      dest_check_data, block_device_info=None):
         """Check if it is possible to execute live migration.
 
         This checks if the live migration can succeed, based on the
@@ -511,6 +512,7 @@ class XenAPIDriver(driver.ComputeDriver):
         :param instance: nova.db.sqlalchemy.models.Instance
         :param dest_check_data: result of check_can_live_migrate_destination
                                 includes the block_migration flag
+        :param block_device_info: result of _get_instance_block_device_info
         """
         return self._vmops.check_can_live_migrate_source(context, instance,
                                                          dest_check_data)
@@ -628,12 +630,9 @@ class XenAPIDriver(driver.ComputeDriver):
     def refresh_provider_fw_rules(self):
         return self._vmops.refresh_provider_fw_rules()
 
-    def get_host_stats(self, refresh=False):
-        """Return the current state of the host.
-
-           If 'refresh' is True, run the update first.
-         """
-        return self.host_state.get_host_stats(refresh=refresh)
+    def get_available_nodes(self, refresh=False):
+        stats = self.host_state.get_host_stats(refresh=refresh)
+        return [stats["hypervisor_hostname"]]
 
     def host_power_action(self, host, action):
         """The only valid values for 'action' on XenServer are 'reboot' or

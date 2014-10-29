@@ -21,9 +21,11 @@ import xml.dom.minidom as minidom
 
 from lxml import etree
 import mock
+import six
 from testtools import matchers
 import webob
 import webob.exc
+import webob.multidict
 
 from nova.api.openstack import common
 from nova.api.openstack import xmlutil
@@ -159,6 +161,75 @@ class LimiterTest(test.TestCase):
         req = webob.Request.blank('/?offset=-30')
         self.assertRaises(
             webob.exc.HTTPBadRequest, common.limited, self.tiny, req)
+
+
+class SortParamUtilsTest(test.TestCase):
+
+    def test_get_sort_params_defaults(self):
+        '''Verifies the default sort key and direction.'''
+        sort_keys, sort_dirs = common.get_sort_params({})
+        self.assertEqual(['created_at'], sort_keys)
+        self.assertEqual(['desc'], sort_dirs)
+
+    def test_get_sort_params_override_defaults(self):
+        '''Verifies that the defaults can be overriden.'''
+        sort_keys, sort_dirs = common.get_sort_params({}, default_key='key1',
+                                                      default_dir='dir1')
+        self.assertEqual(['key1'], sort_keys)
+        self.assertEqual(['dir1'], sort_dirs)
+
+        sort_keys, sort_dirs = common.get_sort_params({}, default_key=None,
+                                                      default_dir=None)
+        self.assertEqual([], sort_keys)
+        self.assertEqual([], sort_dirs)
+
+    def test_get_sort_params_single_value(self):
+        '''Verifies a single sort key and direction.'''
+        params = webob.multidict.MultiDict()
+        params.add('sort_key', 'key1')
+        params.add('sort_dir', 'dir1')
+        sort_keys, sort_dirs = common.get_sort_params(params)
+        self.assertEqual(['key1'], sort_keys)
+        self.assertEqual(['dir1'], sort_dirs)
+
+    def test_get_sort_params_single_with_default(self):
+        '''Verifies a single sort value with a default.'''
+        params = webob.multidict.MultiDict()
+        params.add('sort_key', 'key1')
+        sort_keys, sort_dirs = common.get_sort_params(params)
+        self.assertEqual(['key1'], sort_keys)
+        # sort_key was supplied, sort_dir should be defaulted
+        self.assertEqual(['desc'], sort_dirs)
+
+        params = webob.multidict.MultiDict()
+        params.add('sort_dir', 'dir1')
+        sort_keys, sort_dirs = common.get_sort_params(params)
+        self.assertEqual(['created_at'], sort_keys)
+        # sort_dir was supplied, sort_key should be defaulted
+        self.assertEqual(['dir1'], sort_dirs)
+
+    def test_get_sort_params_multiple_values(self):
+        '''Verifies multiple sort parameter values.'''
+        params = webob.multidict.MultiDict()
+        params.add('sort_key', 'key1')
+        params.add('sort_key', 'key2')
+        params.add('sort_key', 'key3')
+        params.add('sort_dir', 'dir1')
+        params.add('sort_dir', 'dir2')
+        params.add('sort_dir', 'dir3')
+        sort_keys, sort_dirs = common.get_sort_params(params)
+        self.assertEqual(['key1', 'key2', 'key3'], sort_keys)
+        self.assertEqual(['dir1', 'dir2', 'dir3'], sort_dirs)
+        # Also ensure that the input parameters are not modified
+        sort_key_vals = []
+        sort_dir_vals = []
+        while 'sort_key' in params:
+            sort_key_vals.append(params.pop('sort_key'))
+        while 'sort_dir' in params:
+            sort_dir_vals.append(params.pop('sort_dir'))
+        self.assertEqual(['key1', 'key2', 'key3'], sort_key_vals)
+        self.assertEqual(['dir1', 'dir2', 'dir3'], sort_dir_vals)
+        self.assertEqual(0, len(params))
 
 
 class PaginationParamsTest(test.TestCase):
@@ -308,10 +379,11 @@ class MiscFunctionsTest(test.TestCase):
                 instance_uuid='fake')
         try:
             common.raise_http_conflict_for_instance_invalid_state(exc,
-                    'meow')
+                    'meow', 'fake_server_id')
         except webob.exc.HTTPConflict as e:
-            self.assertEqual(unicode(e),
-                "Cannot 'meow' while instance is in fake_attr fake_state")
+            self.assertEqual(six.text_type(e),
+                "Cannot 'meow' instance fake_server_id while it is in "
+                "fake_attr fake_state")
         else:
             self.fail("webob.exc.HTTPConflict was not raised")
 
@@ -358,6 +430,16 @@ class MiscFunctionsTest(test.TestCase):
                                task_states.RESIZE_FINISH):
                 actual = common.status_from_state(vm_state, task_state)
                 expected = 'RESIZE'
+                self.assertEqual(expected, actual)
+
+    def test_status_rebuild_from_state(self):
+        for vm_state in (vm_states.ACTIVE, vm_states.STOPPED,
+                         vm_states.ERROR):
+            for task_state in (task_states.REBUILDING,
+                               task_states.REBUILD_BLOCK_DEVICE_MAPPING,
+                               task_states.REBUILD_SPAWNING):
+                actual = common.status_from_state(vm_state, task_state)
+                expected = 'REBUILD'
                 self.assertEqual(expected, actual)
 
     def test_task_and_vm_state_from_status(self):
@@ -661,3 +743,22 @@ class MetadataXMLSerializationTest(test.TestCase):
                 exception.MalformedRequestBody,
                 deserializer.deserialize,
                 utils.killer_xml_body())
+
+
+class LinkPrefixTest(test.NoDBTestCase):
+
+    def test_update_link_prefix(self):
+        vb = common.ViewBuilder()
+        result = vb._update_link_prefix("http://192.168.0.243:24/",
+                                        "http://127.0.0.1/compute")
+        self.assertEqual("http://127.0.0.1/compute", result)
+
+        result = vb._update_link_prefix("http://foo.x.com/v1",
+                                        "http://new.prefix.com")
+        self.assertEqual("http://new.prefix.com/v1", result)
+
+        result = vb._update_link_prefix(
+                "http://foo.x.com/v1",
+                "http://new.prefix.com:20455/new_extra_prefix")
+        self.assertEqual("http://new.prefix.com:20455/new_extra_prefix/v1",
+                         result)

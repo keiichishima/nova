@@ -12,18 +12,19 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
+from oslo.utils import timeutils
+
 from nova.cells import opts as cells_opts
 from nova.cells import rpcapi as cells_rpcapi
 from nova.compute import flavors
 from nova import db
 from nova import exception
-from nova.i18n import _
+from nova.i18n import _LE
 from nova import notifications
 from nova import objects
 from nova.objects import base
 from nova.objects import fields
 from nova.openstack.common import log as logging
-from nova.openstack.common import timeutils
 from nova import utils
 
 from oslo.config import cfg
@@ -38,7 +39,8 @@ _INSTANCE_OPTIONAL_JOINED_FIELDS = ['metadata', 'system_metadata',
                                     'info_cache', 'security_groups',
                                     'pci_devices']
 # These are fields that are optional but don't translate to db columns
-_INSTANCE_OPTIONAL_NON_COLUMN_FIELDS = ['fault']
+_INSTANCE_OPTIONAL_NON_COLUMN_FIELDS = ['fault', 'numa_topology',
+                                        'pci_requests']
 
 # These are fields that can be specified as expected_attrs
 INSTANCE_OPTIONAL_ATTRS = (_INSTANCE_OPTIONAL_JOINED_FIELDS +
@@ -72,7 +74,10 @@ class Instance(base.NovaPersistentObject, base.NovaObject):
     # Version 1.11: Update instance from database during destroy
     # Version 1.12: Added ephemeral_key_uuid
     # Version 1.13: Added delete_metadata_key()
-    VERSION = '1.13'
+    # Version 1.14: Added numa_topology
+    # Version 1.15: PciDeviceList 1.1
+    # Version 1.16: Added pci_requests
+    VERSION = '1.16'
 
     fields = {
         'id': fields.IntegerField(),
@@ -158,6 +163,10 @@ class Instance(base.NovaPersistentObject, base.NovaObject):
         'cleaned': fields.BooleanField(default=False),
 
         'pci_devices': fields.ObjectField('PciDeviceList', nullable=True),
+        'numa_topology': fields.ObjectField('InstanceNUMATopology',
+                                            nullable=True),
+        'pci_requests': fields.ObjectField('InstancePCIRequests',
+                                           nullable=True),
         }
 
     obj_extra_fields = ['name']
@@ -206,10 +215,12 @@ class Instance(base.NovaPersistentObject, base.NovaObject):
                               'default_ephemeral_device',
                               'default_swap_device', 'config_drive',
                               'cell_name']
+        if target_version < (1, 14) and 'numa_topology' in primitive:
+            del primitive['numa_topology']
         if target_version < (1, 10) and 'info_cache' in primitive:
             # NOTE(danms): Instance <= 1.9 (havana) had info_cache 1.4
-            self.info_cache.obj_make_compatible(primitive['info_cache'],
-                                                '1.4')
+            self.info_cache.obj_make_compatible(
+                    primitive['info_cache']['nova_object.data'], '1.4')
             primitive['info_cache']['nova_object.version'] = '1.4'
         if target_version < (1, 7):
             # NOTE(danms): Before 1.7, we couldn't handle unicode in
@@ -217,10 +228,17 @@ class Instance(base.NovaPersistentObject, base.NovaObject):
             for field in [x for x in unicode_attributes if x in primitive
                           and primitive[x] is not None]:
                 primitive[field] = primitive[field].encode('ascii', 'replace')
+        if target_version < (1, 15) and 'pci_devices' in primitive:
+            # NOTE(baoli): Instance <= 1.14 (icehouse) had PciDeviceList 1.0
+            self.pci_devices.obj_make_compatible(
+                    primitive['pci_devices']['nova_object.data'], '1.0')
+            primitive['pci_devices']['nova_object.version'] = '1.0'
         if target_version < (1, 6):
             # NOTE(danms): Before 1.6 there was no pci_devices list
             if 'pci_devices' in primitive:
                 del primitive['pci_devices']
+        if target_version < (1, 16) and 'pci_requests' in primitive:
+            del primitive['pci_requests']
 
     @property
     def name(self):
@@ -251,6 +269,7 @@ class Instance(base.NovaPersistentObject, base.NovaObject):
 
         Converts a database entity to a formal object.
         """
+        instance._context = context
         if expected_attrs is None:
             expected_attrs = []
         # Most of the field names match right now, so be quick
@@ -272,12 +291,11 @@ class Instance(base.NovaPersistentObject, base.NovaObject):
             instance['fault'] = (
                 objects.InstanceFault.get_latest_for_instance(
                     context, instance.uuid))
+        if 'numa_topology' in expected_attrs:
+            instance._load_numa_topology()
+        if 'pci_requests' in expected_attrs:
+            instance._load_pci_requests()
 
-        if 'pci_devices' in expected_attrs:
-            pci_devices = base.obj_make_list(
-                    context, objects.PciDeviceList(context),
-                    objects.PciDevice, db_inst['pci_devices'])
-            instance['pci_devices'] = pci_devices
         if 'info_cache' in expected_attrs:
             if db_inst['info_cache'] is None:
                 instance.info_cache = None
@@ -289,13 +307,21 @@ class Instance(base.NovaPersistentObject, base.NovaObject):
                 instance.info_cache._from_db_object(context,
                                                     instance.info_cache,
                                                     db_inst['info_cache'])
+
+        # TODO(danms): If we are updating these on a backlevel instance,
+        # we'll end up sending back new versions of these objects (see
+        # above note for new info_caches
+        if 'pci_devices' in expected_attrs:
+            pci_devices = base.obj_make_list(
+                    context, objects.PciDeviceList(context),
+                    objects.PciDevice, db_inst['pci_devices'])
+            instance['pci_devices'] = pci_devices
         if 'security_groups' in expected_attrs:
             sec_groups = base.obj_make_list(
                     context, objects.SecurityGroupList(context),
                     objects.SecurityGroup, db_inst['security_groups'])
             instance['security_groups'] = sec_groups
 
-        instance._context = context
         instance.obj_reset_changes()
         return instance
 
@@ -335,7 +361,12 @@ class Instance(base.NovaPersistentObject, base.NovaObject):
             updates['info_cache'] = {
                 'network_info': updates['info_cache'].network_info.json()
                 }
+        numa_topology = updates.pop('numa_topology', None)
         db_inst = db.instance_create(context, updates)
+        if numa_topology:
+            expected_attrs.append('numa_topology')
+            numa_topology.instance_uuid = db_inst['uuid']
+            numa_topology.create(context)
         self._from_db_object(context, self, db_inst, expected_attrs)
 
     @base.remotable
@@ -371,6 +402,14 @@ class Instance(base.NovaPersistentObject, base.NovaObject):
 
     def _save_fault(self, context):
         # NOTE(danms): I don't think we need to worry about this, do we?
+        pass
+
+    def _save_numa_topology(self, context):
+        # NOTE(ndipanov): No need for this yet.
+        pass
+
+    def _save_pci_requests(self, context):
+        # NOTE(danms): No need for this yet.
         pass
 
     def _save_pci_devices(self, context):
@@ -429,7 +468,7 @@ class Instance(base.NovaPersistentObject, base.NovaObject):
                 try:
                     getattr(self, '_save_%s' % field)(context)
                 except AttributeError:
-                    LOG.exception(_('No save handler for %s') % field,
+                    LOG.exception(_LE('No save handler for %s'), field,
                                   instance=self)
             elif field in changes:
                 updates[field] = self[field]
@@ -460,6 +499,10 @@ class Instance(base.NovaPersistentObject, base.NovaObject):
 
         expected_attrs = [attr for attr in _INSTANCE_OPTIONAL_JOINED_FIELDS
                                if self.obj_attr_is_set(attr)]
+        if 'pci_devices' in expected_attrs:
+            # NOTE(danms): We don't refresh pci_devices on save right now
+            expected_attrs.remove('pci_devices')
+
         # NOTE(alaski): We need to pull system_metadata for the
         # notification.send_update() below.  If we don't there's a KeyError
         # when it tries to extract the flavor.
@@ -475,7 +518,8 @@ class Instance(base.NovaPersistentObject, base.NovaObject):
             cells_api = cells_rpcapi.CellsAPI()
             cells_api.instance_update_at_top(context, inst_ref)
 
-        self._from_db_object(context, self, inst_ref, expected_attrs)
+        self._from_db_object(context, self, inst_ref,
+                             expected_attrs=expected_attrs)
         notifications.send_update(context, old_ref, inst_ref)
         self.obj_reset_changes()
 
@@ -518,6 +562,19 @@ class Instance(base.NovaPersistentObject, base.NovaObject):
         self.fault = objects.InstanceFault.get_latest_for_instance(
             self._context, self.uuid)
 
+    def _load_numa_topology(self):
+        try:
+            self.numa_topology = \
+                objects.InstanceNUMATopology.get_by_instance_uuid(
+                    self._context, self.uuid)
+        except exception.NumaTopologyNotFound:
+            self.numa_topology = None
+
+    def _load_pci_requests(self):
+        self.pci_requests = \
+            objects.InstancePCIRequests.get_by_instance_uuid(
+                self._context, self.uuid)
+
     def obj_load_attr(self, attrname):
         if attrname not in INSTANCE_OPTIONAL_ATTRS:
             raise exception.ObjectActionError(
@@ -532,12 +589,17 @@ class Instance(base.NovaPersistentObject, base.NovaObject):
                    'name': self.obj_name(),
                    'uuid': self.uuid,
                    })
-        # FIXME(comstud): This should be optimized to only load the attr.
+
+        # NOTE(danms): We handle some fields differently here so that we
+        # can be more efficient
         if attrname == 'fault':
-            # NOTE(danms): We handle fault differently here so that we
-            # can be more efficient
             self._load_fault()
+        elif attrname == 'numa_topology':
+            self._load_numa_topology()
+        elif attrname == 'pci_requests':
+            self._load_pci_requests()
         else:
+            # FIXME(comstud): This should be optimized to only load the attr.
             self._load_generic(attrname)
         self.obj_reset_changes([attrname])
 
@@ -616,7 +678,10 @@ class InstanceList(base.ObjectListBase, base.NovaObject):
     # Version 1.5: Added method get_active_by_window_joined.
     # Version 1.6: Instance <= version 1.13
     # Version 1.7: Added use_slave to get_active_by_window_joined
-    VERSION = '1.7'
+    # Version 1.8: Instance <= version 1.14
+    # Version 1.9: Instance <= version 1.15
+    # Version 1.10: Instance <= version 1.16
+    VERSION = '1.10'
 
     fields = {
         'objects': fields.ListOfObjectsField('Instance'),
@@ -630,6 +695,9 @@ class InstanceList(base.ObjectListBase, base.NovaObject):
         '1.5': '1.12',
         '1.6': '1.13',
         '1.7': '1.13',
+        '1.8': '1.14',
+        '1.9': '1.15',
+        '1.10': '1.16',
         }
 
     @base.remotable_classmethod

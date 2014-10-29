@@ -14,12 +14,12 @@
 import collections
 import re
 
-from nova.openstack.common import units
+from oslo.utils import units
+
 from nova import test
 from nova.virt.vmwareapi import ds_util
 
 ResultSet = collections.namedtuple('ResultSet', ['objects'])
-ResultSetToken = collections.namedtuple('ResultSet', ['objects', 'token'])
 ObjectContent = collections.namedtuple('ObjectContent', ['obj', 'propSet'])
 DynamicProperty = collections.namedtuple('Property', ['name', 'val'])
 MoRef = collections.namedtuple('ManagedObjectReference', ['value'])

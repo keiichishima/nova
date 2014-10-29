@@ -21,6 +21,9 @@ the system.
 import datetime
 
 from oslo.config import cfg
+from oslo.utils import excutils
+from oslo.utils import timeutils
+import six
 
 from nova.compute import flavors
 import nova.context
@@ -31,9 +34,7 @@ from nova import network
 from nova.network import model as network_model
 from nova.objects import base as obj_base
 from nova.openstack.common import context as common_context
-from nova.openstack.common import excutils
 from nova.openstack.common import log
-from nova.openstack.common import timeutils
 from nova import rpc
 from nova import utils
 
@@ -97,7 +98,8 @@ def send_api_fault(url, status, exception):
     if not CONF.notify_api_faults:
         return
 
-    payload = {'url': url, 'exception': str(exception), 'status': status}
+    payload = {'url': url, 'exception': six.text_type(exception),
+               'status': status}
 
     rpc.get_notifier('api').error(None, 'api.fault', payload)
 
@@ -187,6 +189,34 @@ def send_update_with_states(context, instance, old_vm_state, new_vm_state,
                     instance=instance)
 
 
+def _compute_states_payload(instance, old_vm_state=None,
+            old_task_state=None, new_vm_state=None, new_task_state=None):
+    # If the states were not specified we assume the current instance
+    # states are the correct information. This is important to do for
+    # both old and new states because otherwise we create some really
+    # confusing nofications like:
+    #
+    #   None(None) => Building(none)
+    #
+    # When we really were just continuing to build
+    if new_vm_state is None:
+        new_vm_state = instance["vm_state"]
+    if new_task_state is None:
+        new_task_state = instance["task_state"]
+    if old_vm_state is None:
+        old_vm_state = instance["vm_state"]
+    if old_task_state is None:
+        old_task_state = instance["task_state"]
+
+    states_payload = {
+        "old_state": old_vm_state,
+        "state": new_vm_state,
+        "old_task_state": old_task_state,
+        "new_task_state": new_task_state,
+    }
+    return states_payload
+
+
 def _send_instance_update_notification(context, instance, old_vm_state=None,
             old_task_state=None, new_vm_state=None, new_task_state=None,
             service="compute", host=None, old_display_name=None):
@@ -196,19 +226,11 @@ def _send_instance_update_notification(context, instance, old_vm_state=None,
 
     payload = info_from_instance(context, instance, None, None)
 
-    if not new_vm_state:
-        new_vm_state = instance["vm_state"]
-    if not new_task_state:
-        new_task_state = instance["task_state"]
-
-    states_payload = {
-        "old_state": old_vm_state,
-        "state": new_vm_state,
-        "old_task_state": old_task_state,
-        "new_task_state": new_task_state,
-    }
-
-    payload.update(states_payload)
+    # determine how we'll report states
+    payload.update(
+        _compute_states_payload(
+            instance, old_vm_state, old_task_state,
+            new_vm_state, new_task_state))
 
     # add audit fields:
     (audit_start, audit_end) = audit_period_bounds(current_period=True)
@@ -333,6 +355,9 @@ def info_from_instance(context, instance_ref, network_info,
     def null_safe_str(s):
         return str(s) if s else ''
 
+    def null_safe_int(s):
+        return int(s) if s else ''
+
     def null_safe_isotime(s):
         if isinstance(s, datetime.datetime):
             return timeutils.strtime(s)
@@ -379,6 +404,7 @@ def info_from_instance(context, instance_ref, network_info,
         host=instance_ref['host'],
         node=instance_ref['node'],
         availability_zone=instance_ref['availability_zone'],
+        cell_name=null_safe_str(instance_ref['cell_name']),
 
         # Date properties
         created_at=str(instance_ref['created_at']),
@@ -398,6 +424,7 @@ def info_from_instance(context, instance_ref, network_info,
         # Status properties
         state=instance_ref['vm_state'],
         state_description=null_safe_str(instance_ref.get('task_state')),
+        progress=null_safe_int(instance_ref['progress']),
 
         # accessIPs
         access_ip_v4=instance_ref['access_ip_v4'],

@@ -17,12 +17,15 @@
 Claim objects for use with resource tracking.
 """
 
+from oslo.serialization import jsonutils
+
+from nova import context
 from nova import exception
 from nova.i18n import _
+from nova import objects
 from nova.objects import base as obj_base
-from nova.openstack.common import jsonutils
 from nova.openstack.common import log as logging
-from nova.pci import pci_request
+from nova.virt import hardware
 
 
 LOG = logging.getLogger(__name__)
@@ -68,7 +71,7 @@ class Claim(NopClaim):
     correct decisions with respect to host selection.
     """
 
-    def __init__(self, instance, tracker, resources, overhead=None,
+    def __init__(self, context, instance, tracker, resources, overhead=None,
                  limits=None):
         super(Claim, self).__init__()
         # Stash a copy of the instance at the current point of time
@@ -79,12 +82,14 @@ class Claim(NopClaim):
             # a sqlalchemy model, and it's best to make sure we have
             # the primitive form.
             self.instance = jsonutils.to_primitive(instance)
+        self._numa_topology_loaded = False
         self.tracker = tracker
 
         if not overhead:
             overhead = {'memory_mb': 0}
 
         self.overhead = overhead
+        self.context = context
 
         # Check claim at constructor to avoid mess code
         # Raise exception ComputeResourcesUnavailable if claim failed
@@ -98,12 +103,30 @@ class Claim(NopClaim):
     def memory_mb(self):
         return self.instance['memory_mb'] + self.overhead['memory_mb']
 
+    @property
+    def numa_topology(self):
+        if self._numa_topology_loaded:
+            return self._numa_topology
+        else:
+            if isinstance(self.instance, obj_base.NovaObject):
+                self._numa_topology = self.instance.numa_topology
+            else:
+                try:
+                    self._numa_topology = (
+                        objects.InstanceNUMATopology.get_by_instance_uuid(
+                            context.get_admin_context(), self.instance['uuid'])
+                        )
+                except exception.NumaTopologyNotFound:
+                    self._numa_topology = None
+            self._numa_topology_loaded = True
+            return self._numa_topology
+
     def abort(self):
         """Compute operation requiring claimed resources has failed or
         been aborted.
         """
         LOG.debug("Aborting claim: %s" % self, instance=self.instance)
-        self.tracker.abort_instance_claim(self.instance)
+        self.tracker.abort_instance_claim(self.context, self.instance)
 
     def _claim_test(self, resources, limits=None):
         """Test if this claim can be satisfied given available resources and
@@ -122,6 +145,10 @@ class Claim(NopClaim):
         # unlimited:
         memory_mb_limit = limits.get('memory_mb')
         disk_gb_limit = limits.get('disk_gb')
+        numa_topology_limit = limits.get('numa_topology')
+        if numa_topology_limit:
+            numa_topology_limit = hardware.VirtNUMALimitTopology.from_json(
+                numa_topology_limit)
 
         msg = _("Attempting claim: memory %(memory_mb)d MB, disk %(disk_gb)d "
                 "GB")
@@ -130,6 +157,7 @@ class Claim(NopClaim):
 
         reasons = [self._test_memory(resources, memory_mb_limit),
                    self._test_disk(resources, disk_gb_limit),
+                   self._test_numa_topology(resources, numa_topology_limit),
                    self._test_pci()]
         reasons = reasons + self._test_ext_resources(limits)
         reasons = [r for r in reasons if r is not None]
@@ -158,17 +186,28 @@ class Claim(NopClaim):
         return self._test(type_, unit, total, used, requested, limit)
 
     def _test_pci(self):
-        pci_requests = pci_request.get_instance_pci_requests(self.instance)
+        pci_requests = objects.InstancePCIRequests.get_by_instance_uuid(
+            self.context, self.instance['uuid'])
 
-        if pci_requests:
+        if pci_requests.requests:
             can_claim = self.tracker.pci_tracker.stats.support_requests(
-                pci_requests)
+                pci_requests.requests)
             if not can_claim:
                 return _('Claim pci failed.')
 
     def _test_ext_resources(self, limits):
         return self.tracker.ext_resources_handler.test_resources(
             self.instance, limits)
+
+    def _test_numa_topology(self, resources, limit):
+        host_topology = resources.get('numa_topology')
+        if host_topology and limit:
+            host_topology = hardware.VirtNUMAHostTopology.from_json(
+                    host_topology)
+            instances_topology = (
+                    [self.numa_topology] if self.numa_topology else [])
+            return hardware.VirtNUMAHostTopology.claim_test(
+                    host_topology, instances_topology, limit)
 
     def _test(self, type_, unit, total, used, requested, limit):
         """Test if the given type of resource needed for a claim can be safely
@@ -204,11 +243,14 @@ class ResizeClaim(Claim):
     """Claim used for holding resources for an incoming resize/migration
     operation.
     """
-    def __init__(self, instance, instance_type, tracker, resources,
-                 overhead=None, limits=None):
+    def __init__(self, context, instance, instance_type, image_meta, tracker,
+                 resources, overhead=None, limits=None):
+        self.context = context
         self.instance_type = instance_type
-        super(ResizeClaim, self).__init__(instance, tracker, resources,
-                                          overhead=overhead, limits=limits)
+        self.image_meta = image_meta
+        super(ResizeClaim, self).__init__(context, instance, tracker,
+                                          resources, overhead=overhead,
+                                          limits=limits)
         self.migration = None
 
     @property
@@ -220,12 +262,18 @@ class ResizeClaim(Claim):
     def memory_mb(self):
         return self.instance_type['memory_mb'] + self.overhead['memory_mb']
 
+    @property
+    def numa_topology(self):
+        return hardware.VirtNUMAInstanceTopology.get_constraints(
+                    self.instance_type, self.image_meta)
+
     def _test_pci(self):
-        pci_requests = pci_request.get_instance_pci_requests(
-            self.instance, 'new_')
-        if pci_requests:
+        pci_requests = objects.InstancePCIRequests.\
+                       get_by_instance_uuid_and_newness(
+                           self.context, self.instance['uuid'], True)
+        if pci_requests.requests:
             claim = self.tracker.pci_tracker.stats.support_requests(
-                pci_requests)
+                pci_requests.requests)
             if not claim:
                 return _('Claim pci failed.')
 
@@ -238,4 +286,7 @@ class ResizeClaim(Claim):
         been aborted.
         """
         LOG.debug("Aborting claim: %s" % self, instance=self.instance)
-        self.tracker.drop_resize_claim(self.instance, self.instance_type)
+        self.tracker.drop_resize_claim(
+            self.context,
+            self.instance, instance_type=self.instance_type,
+            image_meta=self.image_meta)

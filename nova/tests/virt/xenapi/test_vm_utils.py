@@ -21,6 +21,9 @@ import fixtures
 import mock
 import mox
 from oslo.config import cfg
+from oslo.utils import timeutils
+from oslo.utils import units
+import six
 
 from nova.compute import flavors
 from nova.compute import power_state
@@ -29,11 +32,7 @@ from nova import context
 from nova import exception
 from nova.i18n import _
 from nova.openstack.common import processutils
-from nova.openstack.common import timeutils
-from nova.openstack.common import units
-from nova.openstack.common import uuidutils
 from nova import test
-from nova.tests import fake_instance
 from nova.tests.virt.xenapi import stubs
 from nova.tests.virt.xenapi import test_xenapi
 from nova import utils
@@ -41,7 +40,6 @@ from nova.virt.xenapi.client import session as xenapi_session
 from nova.virt.xenapi import driver as xenapi_conn
 from nova.virt.xenapi import fake
 from nova.virt.xenapi import vm_utils
-from nova.virt.xenapi import volume_utils
 
 CONF = cfg.CONF
 XENSM_TYPE = 'xensm'
@@ -435,7 +433,7 @@ class FetchVhdImageTestCase(VMUtilsTestBase):
 
         self.mox.VerifyAll()
 
-    def test_default_handler_doesnt_fallback_to_itself(self):
+    def test_default_handler_does_not_fallback_to_itself(self):
         cfg.CONF.import_opt('torrent_base_url',
                             'nova.virt.xenapi.image.bittorrent',
                             group='xenserver')
@@ -637,49 +635,6 @@ class CheckVDISizeTestCase(VMUtilsTestBase):
                 self.vdi_uuid)
 
 
-class GetVdisForInstanceTestCase(VMUtilsTestBase):
-    """Tests get_vdis_for_instance utility method."""
-    def setUp(self):
-        super(GetVdisForInstanceTestCase, self).setUp()
-        self.context = context.get_admin_context()
-        self.context.auth_token = 'auth_token'
-        self.session = FakeSession()
-        self.instance = fake_instance.fake_instance_obj(self.context)
-        self.name_label = 'name'
-        self.image = 'fake_image_id'
-
-    @mock.patch.object(vm_utils, 'get_vdi_uuid_for_volume',
-                       return_value=uuidutils.generate_uuid())
-    def test_vdis_for_instance_bdi_password_scrubbed(self, get_uuid_mock):
-        # setup fake data
-        data = {'name_label': self.name_label,
-                'sr_uuid': 'fake',
-                'auth_password': 'scrubme'}
-        bdm = [{'mount_device': '/dev/vda',
-                'connection_info': {'data': data}}]
-        bdi = {'root_device_name': 'vda',
-               'block_device_mapping': bdm}
-
-        # Tests that the parameters to the to_xml method are sanitized for
-        # passwords when logged.
-        def fake_debug(*args, **kwargs):
-            if 'auth_password' in args[0]:
-                self.assertNotIn('scrubme', args[0])
-
-        with mock.patch.object(vm_utils.LOG, 'debug',
-                               side_effect=fake_debug) as debug_mock:
-            vdis = vm_utils.get_vdis_for_instance(self.context, self.session,
-                                                  self.instance,
-                                                  self.name_label, self.image,
-                                                  image_type=4,
-                                                  block_device_info=bdi)
-            self.assertEqual(1, len(vdis))
-            get_uuid_mock.assert_called_once_with(self.session, data)
-            # we don't care what the log message is, we just want to make sure
-            # our stub method is called which asserts the password is scrubbed
-            self.assertTrue(debug_mock.called)
-
-
 class GetInstanceForVdisForSrTestCase(VMUtilsTestBase):
     def setUp(self):
         super(GetInstanceForVdisForSrTestCase, self).setUp()
@@ -720,37 +675,6 @@ class GetInstanceForVdisForSrTestCase(VMUtilsTestBase):
             driver._session, vm_ref, sr_ref))
 
         self.assertEqual([], result)
-
-    def test_get_vdi_uuid_for_volume_with_sr_uuid(self):
-        connection_data = get_fake_connection_data(XENSM_TYPE)
-        stubs.stubout_session(self.stubs, fake.SessionBase)
-        driver = xenapi_conn.XenAPIDriver(False)
-
-        vdi_uuid = vm_utils.get_vdi_uuid_for_volume(
-                driver._session, connection_data)
-        self.assertEqual(vdi_uuid, 'falseVDI')
-
-    def test_get_vdi_uuid_for_volume_failure(self):
-        stubs.stubout_session(self.stubs, fake.SessionBase)
-        driver = xenapi_conn.XenAPIDriver(False)
-
-        def bad_introduce_sr(session, sr_uuid, label, sr_params):
-            return None
-
-        self.stubs.Set(volume_utils, 'introduce_sr', bad_introduce_sr)
-        connection_data = get_fake_connection_data(XENSM_TYPE)
-        self.assertRaises(exception.NovaException,
-                          vm_utils.get_vdi_uuid_for_volume,
-                          driver._session, connection_data)
-
-    def test_get_vdi_uuid_for_volume_from_iscsi_vol_missing_sr_uuid(self):
-        connection_data = get_fake_connection_data(ISCSI_TYPE)
-        stubs.stubout_session(self.stubs, fake.SessionBase)
-        driver = xenapi_conn.XenAPIDriver(False)
-
-        vdi_uuid = vm_utils.get_vdi_uuid_for_volume(
-                driver._session, connection_data)
-        self.assertIsNotNone(vdi_uuid)
 
 
 class VMRefOrRaiseVMFoundTestCase(VMUtilsTestBase):
@@ -802,7 +726,7 @@ class VMRefOrRaiseVMNotFoundTestCase(VMUtilsTestBase):
         try:
             vm_utils.vm_ref_or_raise('session', 'somename')
         except exception.InstanceNotFound as e:
-            self.assertIn('somename', str(e))
+            self.assertIn('somename', six.text_type(e))
         mock.VerifyAll()
 
 
@@ -885,8 +809,8 @@ class BittorrentTestCase(VMUtilsTestBase):
         self.stubs.Set(vm_utils, '_fetch_image',
                        fake_fetch_image)
 
-        vm_utils._create_image(self.context, None, instance,
-                               'foo', 'bar', 'baz')
+        vm_utils.create_image(self.context, None, instance,
+                              'foo', 'bar', 'baz')
 
         self.assertEqual(was['called'], cache_type)
 
@@ -1114,7 +1038,7 @@ class VDIOtherConfigTestCase(VMUtilsTestBase):
         self.session.VDI_add_to_other_config = VDI_add_to_other_config
         self.session.VDI_get_other_config = lambda vdi: {}
 
-        vm_utils._create_image(self.context, self.session, self.fake_instance,
+        vm_utils.create_image(self.context, self.session, self.fake_instance,
                 'myvdi', 'image1', vm_utils.ImageType.DISK_VHD)
 
         expected = {'nova_disk_type': 'root',
@@ -1888,6 +1812,7 @@ class SnapshotAttachedHereTestCase(VMUtilsTestBase):
         mock_impl.assert_called_once_with("session", "instance", "vm_ref",
                                           "label", '0', None)
 
+    @mock.patch.object(vm_utils, '_delete_snapshots_in_vdi_chain')
     @mock.patch.object(vm_utils, 'safe_destroy_vdis')
     @mock.patch.object(vm_utils, '_walk_vdi_chain')
     @mock.patch.object(vm_utils, '_wait_for_vhd_coalesce')
@@ -1897,7 +1822,7 @@ class SnapshotAttachedHereTestCase(VMUtilsTestBase):
     def test_snapshot_attached_here_impl(self, mock_get_vdi_for_vm_safely,
             mock_vdi_snapshot, mock_vdi_get_uuid,
             mock_wait_for_vhd_coalesce, mock_walk_vdi_chain,
-            mock_safe_destroy_vdis):
+            mock_safe_destroy_vdis, mock_delete_snapshots_in_vdi_chain):
         session = "session"
         instance = {"uuid": "uuid"}
         mock_callback = mock.Mock()
@@ -1929,114 +1854,70 @@ class SnapshotAttachedHereTestCase(VMUtilsTestBase):
         mock_callback.assert_called_once_with(
                 task_state="image_pending_upload")
         mock_safe_destroy_vdis.assert_called_once_with(session, ["snap_ref"])
+        mock_delete_snapshots_in_vdi_chain.assert_called_once_with(session,
+                instance, ['a', 'b'], "sr_ref")
+
+    @mock.patch.object(greenthread, 'sleep')
+    def test_wait_for_vhd_coalesce_leaf_node(self, mock_sleep):
+        instance = {"uuid": "fake"}
+        vm_utils._wait_for_vhd_coalesce("session", instance,
+                "sr_ref", "vdi_ref", ["uuid"])
+        self.assertFalse(mock_sleep.called)
+
+    @mock.patch.object(vm_utils, '_count_children')
+    @mock.patch.object(greenthread, 'sleep')
+    def test_wait_for_vhd_coalesce_parent_snapshot(self, mock_sleep,
+                                                   mock_count):
+        mock_count.return_value = 2
+        instance = {"uuid": "fake"}
+
+        vm_utils._wait_for_vhd_coalesce("session", instance,
+                "sr_ref", "vdi_ref", ["uuid1", "uuid2"])
+
+        self.assertFalse(mock_sleep.called)
+        self.assertTrue(mock_count.called)
 
     @mock.patch.object(greenthread, 'sleep')
     @mock.patch.object(vm_utils, '_get_vhd_parent_uuid')
-    @mock.patch.object(vm_utils, '_count_parents_children')
+    @mock.patch.object(vm_utils, '_count_children')
     @mock.patch.object(vm_utils, '_scan_sr')
-    def test_wait_for_vhd_coalesce(self, mock_scan_sr,
-            mock_count_parents_children, mock_get_vhd_parent_uuid,
-            mock_sleep):
+    def test_wait_for_vhd_coalesce_raises(self, mock_scan_sr,
+            mock_count, mock_get_vhd_parent_uuid, mock_sleep):
+        mock_count.return_value = 1
+        instance = {"uuid": "fake"}
 
-        cfg.CONF.import_opt('vhd_coalesce_max_attempts',
-                            'nova.virt.xenapi.driver', group="xenserver")
-        max_sr_scan_count = cfg.CONF.xenserver.vhd_coalesce_max_attempts - 1
+        self.assertRaises(exception.NovaException,
+                vm_utils._wait_for_vhd_coalesce, "session", instance,
+                "sr_ref", "vdi_ref", ["uuid1", "uuid2"])
 
-        vhd_chain = ['vdi_base_ref', 'vdi_coalescable_ref', 'vdi_leaf_ref']
-        instance = {"uuid": "uuid"}
-        sr_ref = 'sr_ref'
-        session = mock.Mock()
-
-        def fake_scan_sr(session, sr_ref):
-            fake_scan_sr.count += 1
-            if fake_scan_sr.count == max_sr_scan_count:
-                vhd_chain.remove('vdi_coalescable_ref')
-
-        def fake_get_vhd_parent_uuid(session, vdi_ref):
-            index = vhd_chain.index(vdi_ref)
-            if index > 0:
-                return vhd_chain[index - 1].replace('ref', 'uuid')
-            return None
-
-        def fake_call_xenapi(method, *args):
-            if method == 'VDI.get_by_uuid':
-                return args[0].replace('uuid', 'ref')
-
-        fake_scan_sr.count = 0
-        fake_scan_sr.running = True
-        mock_scan_sr.side_effect = fake_scan_sr
-        session.call_xenapi.side_effect = fake_call_xenapi
-        mock_get_vhd_parent_uuid.side_effect = fake_get_vhd_parent_uuid
-
-        mock_count_parents_children.return_value = 1
-
-        vm_utils._wait_for_vhd_coalesce(session, instance, sr_ref,
-                                        'vdi_leaf_ref', ['vdi_base_uuid'])
-        self.assertEqual(max_sr_scan_count, mock_scan_sr.call_count)
-        session.call_plugin_serialized.has_calls(session, "vdi_ref")
-        # We'll sleep one fewer times than we scan the SR due to
-        # the scan at the start
-        self.assertEqual(max_sr_scan_count - 1, mock_sleep.call_count)
+        self.assertTrue(mock_count.called)
+        self.assertEqual(20, mock_sleep.call_count)
+        self.assertEqual(20, mock_scan_sr.call_count)
 
     @mock.patch.object(greenthread, 'sleep')
     @mock.patch.object(vm_utils, '_get_vhd_parent_uuid')
-    @mock.patch.object(vm_utils, '_count_parents_children')
+    @mock.patch.object(vm_utils, '_count_children')
     @mock.patch.object(vm_utils, '_scan_sr')
-    def test_wait_for_vhd_coalesce_1317792(self, mock_scan_sr,
-                                           mock_count_parents_children,
-                                           mock_get_vhd_parent_uuid,
-                                           mock_sleep):
+    def test_wait_for_vhd_coalesce_success(self, mock_scan_sr,
+            mock_count, mock_get_vhd_parent_uuid, mock_sleep):
+        mock_count.return_value = 1
+        instance = {"uuid": "fake"}
+        mock_get_vhd_parent_uuid.side_effect = ["bad", "uuid2"]
 
-        cfg.CONF.import_opt('vhd_coalesce_max_attempts',
-                            'nova.virt.xenapi.driver', group="xenserver")
+        vm_utils._wait_for_vhd_coalesce("session", instance,
+                "sr_ref", "vdi_ref", ["uuid1", "uuid2"])
 
-        vhd_chain = ['vdi_base_ref', 'vdi_coalescable_ref1',
-                     'vdi_coalescable_ref2', 'vdi_leaf_ref']
-        instance = {"uuid": "uuid"}
-        sr_ref = 'sr_ref'
-        session = mock.Mock()
-
-        def fake_scan_sr(session, sr_ref):
-            fake_scan_sr.count += 1
-            if fake_scan_sr.count == 1:
-                vhd_chain.remove('vdi_coalescable_ref1')
-            elif fake_scan_sr.count == 2:
-                vhd_chain.remove('vdi_coalescable_ref2')
-
-        def fake_get_vhd_parent_uuid(session, vdi_ref):
-            index = vhd_chain.index(vdi_ref)
-            if index > 0:
-                return vhd_chain[index - 1].replace('ref', 'uuid')
-            return None
-
-        def fake_call_xenapi(method, *args):
-            if method == 'VDI.get_by_uuid':
-                return args[0].replace('uuid', 'ref')
-
-        fake_scan_sr.count = 0
-        fake_scan_sr.running = True
-        mock_scan_sr.side_effect = fake_scan_sr
-        session.call_xenapi.side_effect = fake_call_xenapi
-        mock_get_vhd_parent_uuid.side_effect = fake_get_vhd_parent_uuid
-
-        mock_count_parents_children.return_value = 1
-
-        vm_utils._wait_for_vhd_coalesce(
-            session, instance, sr_ref,
-            'vdi_leaf_ref', ['vdi_base_uuid', 'vdi_coalescable_uuid1'])
-        session.call_plugin_serialized.has_calls(session, "vdi_ref")
+        self.assertEqual(1, mock_sleep.call_count)
+        self.assertEqual(2, mock_scan_sr.call_count)
 
     @mock.patch.object(vm_utils, '_get_all_vdis_in_sr')
-    @mock.patch.object(vm_utils, '_get_vhd_parent_uuid')
-    def test_count_parents_children(self, mock_get_parent_uuid,
-                                mock_get_all_vdis_in_sr):
-        mock_get_parent_uuid.return_value = 'parent1'
+    def test_count_children(self, mock_get_all_vdis_in_sr):
         vdis = [('child1', {'sm_config': {'vhd-parent': 'parent1'}}),
                 ('child2', {'sm_config': {'vhd-parent': 'parent2'}}),
                 ('child3', {'sm_config': {'vhd-parent': 'parent1'}})]
         mock_get_all_vdis_in_sr.return_value = vdis
-        self.assertEqual(2, vm_utils._count_parents_children('session',
-                                                             'child3', 'sr'))
+        self.assertEqual(2, vm_utils._count_children('session',
+                                                     'parent1', 'sr'))
 
 
 class ImportMigratedDisksTestCase(VMUtilsTestBase):
@@ -2333,7 +2214,7 @@ class ChildVHDsTestCase(test.NoDBTestCase):
     def test_child_vhds_defaults(self, mock_get_all):
         mock_get_all.return_value = self.all_vdis
 
-        result = vm_utils._child_vhds("session", "sr_ref", "my-uuid")
+        result = vm_utils._child_vhds("session", "sr_ref", ["my-uuid"])
 
         self.assertEqual(['uuid-child', 'uuid-child-snap'], result)
 
@@ -2341,8 +2222,17 @@ class ChildVHDsTestCase(test.NoDBTestCase):
     def test_child_vhds_only_snapshots(self, mock_get_all):
         mock_get_all.return_value = self.all_vdis
 
-        result = vm_utils._child_vhds("session", "sr_ref", "my-uuid",
+        result = vm_utils._child_vhds("session", "sr_ref", ["my-uuid"],
                                       old_snapshots_only=True)
+
+        self.assertEqual(['uuid-child-snap'], result)
+
+    @mock.patch.object(vm_utils, '_get_all_vdis_in_sr')
+    def test_child_vhds_chain(self, mock_get_all):
+        mock_get_all.return_value = self.all_vdis
+
+        result = vm_utils._child_vhds("session", "sr_ref",
+                ["my-uuid", "other-uuid"], old_snapshots_only=True)
 
         self.assertEqual(['uuid-child-snap'], result)
 
@@ -2367,43 +2257,60 @@ class ChildVHDsTestCase(test.NoDBTestCase):
 
 class RemoveOldSnapshotsTestCase(test.NoDBTestCase):
 
-    @mock.patch.object(vm_utils, '_child_vhds')
-    @mock.patch.object(vm_utils, '_get_vhd_parent_uuid')
     @mock.patch.object(vm_utils, 'get_vdi_for_vm_safely')
-    @mock.patch.object(vm_utils, 'safe_find_sr')
-    def test_get_snapshots_for_vm(self, mock_find, mock_get_vdi,
-                                  mock_parent, mock_child_vhds):
-        session = mock.Mock()
-        instance = {"uuid": "uuid"}
-        mock_find.return_value = "sr_ref"
-        mock_get_vdi.return_value = ("vm_vdi_ref", "vm_vdi_rec")
-        mock_parent.return_value = "parent_uuid"
-        mock_child_vhds.return_value = []
+    @mock.patch.object(vm_utils, '_walk_vdi_chain')
+    @mock.patch.object(vm_utils, '_delete_snapshots_in_vdi_chain')
+    def test_remove_old_snapshots(self, mock_delete, mock_walk, mock_get):
+        instance = {"uuid": "fake"}
+        mock_get.return_value = ("ref", {"uuid": "vdi", "SR": "sr_ref"})
+        mock_walk.return_value = [{"uuid": "uuid1"}, {"uuid": "uuid2"}]
 
-        result = vm_utils._get_snapshots_for_vm(session, instance, "vm_ref")
+        vm_utils.remove_old_snapshots("session", instance, "vm_ref")
 
-        self.assertEqual([], result)
-        mock_find.assert_called_once_with(session)
-        mock_get_vdi.assert_called_once_with(session, "vm_ref")
-        mock_parent.assert_called_once_with(session, "vm_vdi_ref")
-        mock_child_vhds.assert_called_once_with(session, "sr_ref",
-                "parent_uuid", old_snapshots_only=True)
+        mock_delete.assert_called_once_with("session", instance,
+                ["uuid1", "uuid2"], "sr_ref")
+        mock_get.assert_called_once_with("session", "vm_ref")
+        mock_walk.assert_called_once_with("session", "vdi")
 
-    @mock.patch.object(vm_utils, 'scan_default_sr')
+    @mock.patch.object(vm_utils, '_child_vhds')
+    def test_delete_snapshots_in_vdi_chain_no_chain(self, mock_child):
+        instance = {"uuid": "fake"}
+
+        vm_utils._delete_snapshots_in_vdi_chain("session", instance,
+                ["uuid"], "sr")
+
+        self.assertFalse(mock_child.called)
+
+    @mock.patch.object(vm_utils, '_child_vhds')
+    def test_delete_snapshots_in_vdi_chain_no_snapshots(self, mock_child):
+        instance = {"uuid": "fake"}
+        mock_child.return_value = []
+
+        vm_utils._delete_snapshots_in_vdi_chain("session", instance,
+                ["uuid1", "uuid2"], "sr")
+
+        mock_child.assert_called_once_with("session", "sr", ["uuid2"],
+                old_snapshots_only=True)
+
+    @mock.patch.object(vm_utils, '_scan_sr')
     @mock.patch.object(vm_utils, 'safe_destroy_vdis')
-    @mock.patch.object(vm_utils, '_get_snapshots_for_vm')
-    def test_remove_old_snapshots(self, mock_get, mock_destroy, mock_scan):
+    @mock.patch.object(vm_utils, '_child_vhds')
+    def test_delete_snapshots_in_vdi_chain_calls_destroy(self, mock_child,
+                mock_destroy, mock_scan):
+        instance = {"uuid": "fake"}
+        mock_child.return_value = ["suuid1", "suuid2"]
         session = mock.Mock()
-        instance = {"uuid": "uuid"}
-        mock_get.return_value = ["vdi_uuid1", "vdi_uuid2"]
-        session.VDI.get_by_uuid.return_value = "vdi_ref"
+        session.VDI.get_by_uuid.side_effect = ["ref1", "ref2"]
 
-        vm_utils.remove_old_snapshots(session, instance, "vm_ref")
+        vm_utils._delete_snapshots_in_vdi_chain(session, instance,
+                ["uuid1", "uuid2"], "sr")
 
-        self.assertTrue(mock_scan.called)
-        session.VDI.get_by_uuid.assert_called_once_with("vdi_uuid1")
-        mock_destroy.assert_called_once_with(session, ["vdi_ref"])
-        mock_scan.assert_called_once_with(session)
+        mock_child.assert_called_once_with(session, "sr", ["uuid2"],
+                old_snapshots_only=True)
+        session.VDI.get_by_uuid.assert_has_calls([
+                mock.call("suuid1"), mock.call("suuid2")])
+        mock_destroy.assert_called_once_with(session, ["ref1", "ref2"])
+        mock_scan.assert_called_once_with(session, "sr")
 
 
 class ResizeFunctionTestCase(test.NoDBTestCase):

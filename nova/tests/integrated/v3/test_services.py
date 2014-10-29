@@ -13,8 +13,9 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
+from oslo.utils import timeutils
+
 from nova import db
-from nova.openstack.common import timeutils
 from nova.tests.api.openstack.compute.plugins.v3 import test_services
 from nova.tests.integrated.v3 import api_sample_base
 
@@ -82,5 +83,5 @@ class ServicesJsonTest(api_sample_base.ApiSampleTestBaseV3):
     def test_service_delete(self):
         """Delete an existing service."""
         response = self._do_delete('os-services/1')
-        self.assertEqual(response.status, 204)
-        self.assertEqual(response.read(), "")
+        self.assertEqual(response.status_code, 204)
+        self.assertEqual(response.content, "")

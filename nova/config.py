@@ -16,27 +16,41 @@
 #    under the License.
 
 from oslo.config import cfg
+from oslo.db import options
 
 from nova import debugger
-from nova.openstack.common.db import options
 from nova.openstack.common import log
 from nova import paths
 from nova import rpc
 from nova import version
 
+
+CONF = cfg.CONF
+
 _DEFAULT_SQL_CONNECTION = 'sqlite:///' + paths.state_path_def('nova.sqlite')
+
+_DEFAULT_LOG_LEVELS = ['amqp=WARN', 'amqplib=WARN', 'boto=WARN',
+                       'qpid=WARN', 'sqlalchemy=WARN', 'suds=INFO',
+                       'oslo.messaging=INFO', 'iso8601=WARN',
+                       'requests.packages.urllib3.connectionpool=WARN',
+                       'urllib3.connectionpool=WARN', 'websocket=WARN',
+                       'keystonemiddleware=WARN', 'routes.middleware=WARN',
+                       'stevedore=WARN', 'glanceclient=WARN']
+
+_DEFAULT_LOGGING_CONTEXT_FORMAT = ('%(asctime)s.%(msecs)03d %(process)d '
+                                   '%(levelname)s %(name)s [%(request_id)s '
+                                   '%(user_identity)s] %(instance)s'
+                                   '%(message)s')
 
 
 def parse_args(argv, default_config_files=None):
-    options.set_defaults(sql_connection=_DEFAULT_SQL_CONNECTION,
+    log.set_defaults(_DEFAULT_LOGGING_CONTEXT_FORMAT, _DEFAULT_LOG_LEVELS)
+    options.set_defaults(CONF, connection=_DEFAULT_SQL_CONNECTION,
                          sqlite_db='nova.sqlite')
     rpc.set_defaults(control_exchange='nova')
-    nova_default_log_levels = (log.DEFAULT_LOG_LEVELS +
-            ["keystonemiddleware=WARN", "routes.middleware=WARN"])
-    log.set_defaults(default_log_levels=nova_default_log_levels)
     debugger.register_cli_opts()
-    cfg.CONF(argv[1:],
-             project='nova',
-             version=version.version_string(),
-             default_config_files=default_config_files)
-    rpc.init(cfg.CONF)
+    CONF(argv[1:],
+         project='nova',
+         version=version.version_string(),
+         default_config_files=default_config_files)
+    rpc.init(CONF)

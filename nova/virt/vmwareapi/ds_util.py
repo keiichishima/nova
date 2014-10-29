@@ -17,10 +17,11 @@ Datastore utility functions
 """
 import posixpath
 
+from oslo.vmware import exceptions as vexc
+
 from nova import exception
 from nova.i18n import _
 from nova.openstack.common import log as logging
-from nova.virt.vmwareapi import error_util
 from nova.virt.vmwareapi import vim_util
 from nova.virt.vmwareapi import vm_util
 
@@ -123,6 +124,10 @@ class DatastorePath(object):
             return "[%s] %s" % (self._datastore_name, self.rel_path)
         return "[%s]" % self._datastore_name
 
+    def __repr__(self):
+        return "%s(%s, %s)" % (self.__class__.__name__,
+                               self.datastore, self.rel_path)
+
     @property
     def datastore(self):
         return self._datastore_name
@@ -155,6 +160,9 @@ class DatastorePath(object):
         return (isinstance(other, DatastorePath) and
                 self._datastore_name == other._datastore_name and
                 self._rel_path == other._rel_path)
+
+    def __hash__(self):
+        return str(self).__hash__()
 
     @classmethod
     def parse(cls, datastore_path):
@@ -234,36 +242,24 @@ def _is_datastore_valid(propdict, datastore_regex):
              datastore_regex.match(propdict['summary.name'])))
 
 
-def get_datastore(session, cluster=None, host=None, datastore_regex=None):
+def get_datastore(session, cluster, datastore_regex=None):
     """Get the datastore list and choose the most preferable one."""
-    if cluster is None and host is None:
-        data_stores = session._call_method(vim_util, "get_objects",
-                    "Datastore", ["summary.type", "summary.name",
-                                  "summary.capacity", "summary.freeSpace",
-                                  "summary.accessible",
-                                  "summary.maintenanceMode"])
-    else:
-        if cluster is not None:
-            datastore_ret = session._call_method(
-                                        vim_util,
-                                        "get_dynamic_property", cluster,
-                                        "ClusterComputeResource", "datastore")
-        else:
-            datastore_ret = session._call_method(
-                                        vim_util,
-                                        "get_dynamic_property", host,
-                                        "HostSystem", "datastore")
+    datastore_ret = session._call_method(
+                                vim_util,
+                                "get_dynamic_property", cluster,
+                                "ClusterComputeResource", "datastore")
+    if datastore_ret is None:
+        raise exception.DatastoreNotFound()
 
-        if not datastore_ret:
-            raise exception.DatastoreNotFound()
-        data_store_mors = datastore_ret.ManagedObjectReference
-        data_stores = session._call_method(vim_util,
-                                "get_properties_for_a_collection_of_objects",
-                                "Datastore", data_store_mors,
-                                ["summary.type", "summary.name",
-                                 "summary.capacity", "summary.freeSpace",
-                                 "summary.accessible",
-                                 "summary.maintenanceMode"])
+    data_store_mors = datastore_ret.ManagedObjectReference
+    data_stores = session._call_method(vim_util,
+                            "get_properties_for_a_collection_of_objects",
+                            "Datastore", data_store_mors,
+                            ["summary.type", "summary.name",
+                             "summary.capacity", "summary.freeSpace",
+                             "summary.accessible",
+                             "summary.maintenanceMode"])
+
     best_match = None
     while data_stores:
         best_match = _select_datastore(data_stores, best_match,
@@ -334,11 +330,11 @@ def get_available_datastores(session, cluster=None, datastore_regex=None):
 
 def file_delete(session, ds_path, dc_ref):
     LOG.debug("Deleting the datastore file %s", ds_path)
-    vim = session._get_vim()
+    vim = session.vim
     file_delete_task = session._call_method(
-            session._get_vim(),
+            vim,
             "DeleteDatastoreFile_Task",
-            vim.get_service_content().fileManager,
+            vim.service_content.fileManager,
             name=str(ds_path),
             datacenter=dc_ref)
     session._wait_for_task(file_delete_task)
@@ -371,11 +367,11 @@ def file_move(session, dc_ref, src_file, dst_file):
     """
     LOG.debug("Moving file from %(src)s to %(dst)s.",
               {'src': src_file, 'dst': dst_file})
-    vim = session._get_vim()
+    vim = session.vim
     move_task = session._call_method(
-            session._get_vim(),
+            vim,
             "MoveDatastoreFile_Task",
-            vim.get_service_content().fileManager,
+            vim.service_content.fileManager,
             sourceName=str(src_file),
             sourceDatacenter=dc_ref,
             destinationName=str(dst_file),
@@ -393,16 +389,16 @@ def search_datastore_spec(client_factory, file_name):
 
 def file_exists(session, ds_browser, ds_path, file_name):
     """Check if the file exists on the datastore."""
-    client_factory = session._get_vim().client.factory
+    client_factory = session.vim.client.factory
     search_spec = search_datastore_spec(client_factory, file_name)
-    search_task = session._call_method(session._get_vim(),
+    search_task = session._call_method(session.vim,
                                              "SearchDatastore_Task",
                                              ds_browser,
                                              datastorePath=str(ds_path),
                                              searchSpec=search_spec)
     try:
         task_info = session._wait_for_task(search_task)
-    except error_util.FileNotFoundException:
+    except vexc.FileNotFoundException:
         return False
 
     file_exists = (getattr(task_info.result, 'file', False) and
@@ -416,8 +412,8 @@ def mkdir(session, ds_path, dc_ref):
     DataStore.
     """
     LOG.debug("Creating directory with path %s", ds_path)
-    session._call_method(session._get_vim(), "MakeDirectory",
-            session._get_vim().get_service_content().fileManager,
+    session._call_method(session.vim, "MakeDirectory",
+            session.vim.service_content.fileManager,
             name=str(ds_path), datacenter=dc_ref,
             createParentDirectories=True)
     LOG.debug("Created directory with path %s", ds_path)
@@ -429,13 +425,13 @@ def get_sub_folders(session, ds_browser, ds_path):
     If the path does not exist then an empty set is returned.
     """
     search_task = session._call_method(
-            session._get_vim(),
+            session.vim,
             "SearchDatastore_Task",
             ds_browser,
             datastorePath=str(ds_path))
     try:
         task_info = session._wait_for_task(search_task)
-    except error_util.FileNotFoundException:
+    except vexc.FileNotFoundException:
         return set()
     # populate the folder entries
     if hasattr(task_info.result, 'file'):

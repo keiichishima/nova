@@ -28,6 +28,7 @@ import uuid
 import mock
 import mox
 from oslo.config import cfg
+from oslo.utils import units
 
 from nova.api.metadata import base as instance_metadata
 from nova.compute import power_state
@@ -37,14 +38,13 @@ from nova import db
 from nova import exception
 from nova.i18n import _
 from nova.image import glance
-from nova.openstack.common import units
+from nova.openstack.common import fileutils
 from nova import test
 from nova.tests import fake_network
 from nova.tests.image import fake as fake_image
 from nova.tests import matchers
 from nova.tests.virt.hyperv import db_fakes
 from nova.tests.virt.hyperv import fake
-from nova.tests.virt import test_driver
 from nova import utils
 from nova.virt import configdrive
 from nova.virt import driver
@@ -53,6 +53,7 @@ from nova.virt.hyperv import constants
 from nova.virt.hyperv import driver as driver_hyperv
 from nova.virt.hyperv import hostops
 from nova.virt.hyperv import hostutils
+from nova.virt.hyperv import ioutils
 from nova.virt.hyperv import livemigrationutils
 from nova.virt.hyperv import networkutils
 from nova.virt.hyperv import networkutilsv2
@@ -138,7 +139,15 @@ class HyperVAPIBaseTestCase(test.NoDBTestCase):
             pass
         self.stubs.Set(time, 'sleep', fake_sleep)
 
+        class FakeIOThread(object):
+            def __init__(self, src, dest, max_bytes):
+                pass
+
+            def start(self):
+                pass
+
         self.stubs.Set(pathutils, 'PathUtils', fake.PathUtils)
+        self.stubs.Set(ioutils, 'IOThread', FakeIOThread)
         self._mox.StubOutWithMock(fake.PathUtils, 'open')
         self._mox.StubOutWithMock(fake.PathUtils, 'copyfile')
         self._mox.StubOutWithMock(fake.PathUtils, 'rmtree')
@@ -149,6 +158,7 @@ class HyperVAPIBaseTestCase(test.NoDBTestCase):
         self._mox.StubOutWithMock(fake.PathUtils,
                                   'get_instance_migr_revert_dir')
         self._mox.StubOutWithMock(fake.PathUtils, 'get_instance_dir')
+        self._mox.StubOutWithMock(fake.PathUtils, 'get_vm_console_log_paths')
 
         self._mox.StubOutWithMock(vmutils.VMUtils, 'vm_exists')
         self._mox.StubOutWithMock(vmutils.VMUtils, 'create_vm')
@@ -176,6 +186,8 @@ class HyperVAPIBaseTestCase(test.NoDBTestCase):
         self._mox.StubOutWithMock(vmutils.VMUtils,
                                   'enable_vm_metrics_collection')
         self._mox.StubOutWithMock(vmutils.VMUtils, 'get_vm_id')
+        self._mox.StubOutWithMock(vmutils.VMUtils,
+                                  'get_vm_serial_port_connection')
 
         self._mox.StubOutWithMock(vhdutils.VHDUtils, 'create_differencing_vhd')
         self._mox.StubOutWithMock(vhdutils.VHDUtils, 'reconnect_parent_vhd')
@@ -245,6 +257,7 @@ class HyperVAPIBaseTestCase(test.NoDBTestCase):
         self._mox.StubOutWithMock(configdrive, 'ConfigDriveBuilder')
         self._mox.StubOutWithMock(configdrive.ConfigDriveBuilder, 'make_drive')
 
+        self._mox.StubOutWithMock(fileutils, 'delete_if_exists')
         self._mox.StubOutWithMock(utils, 'execute')
 
     def tearDown(self):
@@ -252,12 +265,11 @@ class HyperVAPIBaseTestCase(test.NoDBTestCase):
         super(HyperVAPIBaseTestCase, self).tearDown()
 
 
-class HyperVAPITestCase(HyperVAPIBaseTestCase,
-                        test_driver.DriverAPITestHelper):
+class HyperVAPITestCase(HyperVAPIBaseTestCase):
     """Unit tests for Hyper-V driver calls."""
 
     def test_public_api_signatures(self):
-        self.assertPublicAPISignatures(self._conn)
+        self.assertPublicAPISignatures(driver.ComputeDriver(None), self._conn)
 
     def test_get_available_resource(self):
         cpu_info = {'Architecture': 'fake',
@@ -303,35 +315,6 @@ class HyperVAPITestCase(HyperVAPIBaseTestCase,
                          windows_version.replace('.', ''))
         self.assertEqual(dic['supported_instances'],
                 '[["i686", "hyperv", "hvm"], ["x86_64", "hyperv", "hvm"]]')
-
-    def test_get_host_stats(self):
-        tot_mem_kb = 2000000L
-        free_mem_kb = 1000000L
-
-        tot_hdd_b = 4L * 1024 ** 3
-        free_hdd_b = 3L * 1024 ** 3
-
-        hostutils.HostUtils.get_memory_info().AndReturn((tot_mem_kb,
-                                                        free_mem_kb))
-
-        m = hostutils.HostUtils.get_volume_info(mox.IsA(str))
-        m.AndReturn((tot_hdd_b, free_hdd_b))
-
-        self._mox.ReplayAll()
-        dic = self._conn.get_host_stats(True)
-        self._mox.VerifyAll()
-
-        self.assertEqual(dic['disk_total'], tot_hdd_b / 1024 ** 3)
-        self.assertEqual(dic['disk_available'], free_hdd_b / 1024 ** 3)
-
-        self.assertEqual(dic['host_memory_total'], tot_mem_kb / 1024)
-        self.assertEqual(dic['host_memory_free'], free_mem_kb / 1024)
-
-        self.assertEqual(dic['disk_total'],
-                         dic['disk_used'] + dic['disk_available'])
-        self.assertEqual(dic['host_memory_total'],
-                         dic['host_memory_overhead'] +
-                         dic['host_memory_free'])
 
     def test_list_instances(self):
         fake_instances = ['fake1', 'fake2']
@@ -544,6 +527,13 @@ class HyperVAPITestCase(HyperVAPIBaseTestCase,
         vmutils.VMUtils.set_vm_state(mox.Func(self._check_instance_name),
                                      to_state)
 
+        if to_state in (constants.HYPERV_VM_STATE_DISABLED,
+                        constants.HYPERV_VM_STATE_REBOOT):
+            self._setup_delete_vm_log_mocks()
+        if to_state in (constants.HYPERV_VM_STATE_ENABLED,
+                        constants.HYPERV_VM_STATE_REBOOT):
+            self._setup_log_vm_output_mocks()
+
         self._mox.ReplayAll()
         action(self._instance_data)
         self._mox.VerifyAll()
@@ -595,20 +585,39 @@ class HyperVAPITestCase(HyperVAPIBaseTestCase,
                                    constants.HYPERV_VM_STATE_DISABLED,
                                    constants.HYPERV_VM_STATE_DISABLED)
 
-    def test_power_on(self):
+    def _test_power_on(self, block_device_info):
         self._instance_data = self._get_instance_data()
         network_info = fake_network.fake_get_instance_nw_info(self.stubs)
+
         vmutils.VMUtils.set_vm_state(mox.Func(self._check_instance_name),
                                      constants.HYPERV_VM_STATE_ENABLED)
+        if block_device_info:
+            self._mox.StubOutWithMock(volumeops.VolumeOps,
+                                      'fix_instance_volume_disk_paths')
+            volumeops.VolumeOps.fix_instance_volume_disk_paths(
+                mox.Func(self._check_instance_name), block_device_info)
+
+        self._setup_log_vm_output_mocks()
+
         self._mox.ReplayAll()
-        self._conn.power_on(self._context, self._instance_data, network_info)
+        self._conn.power_on(self._context, self._instance_data, network_info,
+                            block_device_info=block_device_info)
         self._mox.VerifyAll()
+
+    def test_power_on_having_block_devices(self):
+        block_device_info = db_fakes.get_fake_block_device_info(
+            self._volume_target_portal, self._volume_id)
+        self._test_power_on(block_device_info=block_device_info)
+
+    def test_power_on_without_block_devices(self):
+        self._test_power_on(block_device_info=None)
 
     def test_power_on_already_running(self):
         self._instance_data = self._get_instance_data()
         network_info = fake_network.fake_get_instance_nw_info(self.stubs)
         vmutils.VMUtils.set_vm_state(mox.Func(self._check_instance_name),
                                      constants.HYPERV_VM_STATE_ENABLED)
+        self._setup_log_vm_output_mocks()
         self._mox.ReplayAll()
         self._conn.power_on(self._context, self._instance_data, network_info)
         self._mox.VerifyAll()
@@ -621,6 +630,9 @@ class HyperVAPITestCase(HyperVAPIBaseTestCase,
         vmutils.VMUtils.set_vm_state(mox.Func(self._check_instance_name),
                                      constants.HYPERV_VM_STATE_REBOOT)
 
+        self._setup_delete_vm_log_mocks()
+        self._setup_log_vm_output_mocks()
+
         self._mox.ReplayAll()
         self._conn.reboot(self._context, self._instance_data, network_info,
                           None)
@@ -632,6 +644,8 @@ class HyperVAPITestCase(HyperVAPIBaseTestCase,
 
         func = mox.Func(self._check_instance_name)
         vmutils.VMUtils.set_vm_state(func, constants.HYPERV_VM_STATE_DISABLED)
+
+        self._setup_delete_vm_log_mocks()
 
         m = vmutils.VMUtils.get_vm_storage_paths(func)
         m.AndReturn(([], []))
@@ -689,6 +703,22 @@ class HyperVAPITestCase(HyperVAPIBaseTestCase,
             fake_target_lun = 1
 
         if not unsupported_os:
+            m = fake.PathUtils.get_vm_console_log_paths(mox.IsA(str))
+            m.AndReturn(('fake_local_vm_log_path', 'fake_vm_log_path.1'))
+
+            m = fake.PathUtils.get_vm_console_log_paths(
+                mox.IsA(str), remote_server=mox.IsA(str))
+            m.AndReturn(('fake_remote_vm_log_path',
+                         'fake_remote_vm_log_path.1'))
+
+            self._mox.StubOutWithMock(fake.PathUtils, 'exists')
+            m = fake.PathUtils.exists(mox.IsA(str))
+            m.AndReturn(True)
+            m = fake.PathUtils.exists(mox.IsA(str))
+            m.AndReturn(False)
+
+            fake.PathUtils.copy(mox.IsA(str), mox.IsA(str))
+
             m = livemigrationutils.LiveMigrationUtils.live_migrate_vm(
                 instance_data['name'], dest_server)
             if test_failure:
@@ -738,10 +768,6 @@ class HyperVAPITestCase(HyperVAPIBaseTestCase,
         m.AndReturn(True)
 
         if cow:
-            m = basevolumeutils.BaseVolumeUtils.volume_in_mapping(mox.IsA(str),
-                                                                  None)
-            m.AndReturn(False)
-
             self._setup_get_cached_image_mocks(cow)
 
         if with_volumes:
@@ -928,7 +954,8 @@ class HyperVAPITestCase(HyperVAPIBaseTestCase,
                                      ephemeral_storage=False):
         vmutils.VMUtils.create_vm(mox.Func(self._check_vm_name), mox.IsA(int),
                                   mox.IsA(int), mox.IsA(bool),
-                                  CONF.hyperv.dynamic_memory_ratio)
+                                  CONF.hyperv.dynamic_memory_ratio,
+                                  mox.IsA(list))
 
         if not boot_from_volume:
             m = vmutils.VMUtils.attach_ide_drive(mox.Func(self._check_vm_name),
@@ -970,6 +997,9 @@ class HyperVAPITestCase(HyperVAPIBaseTestCase,
             vmutils.VMUtils.enable_vm_metrics_collection(
                 mox.Func(self._check_vm_name))
 
+        vmutils.VMUtils.get_vm_serial_port_connection(
+            mox.IsA(str), update_connection=mox.IsA(str))
+
     def _set_vm_name(self, vm_name):
         self._test_vm_name = vm_name
 
@@ -985,6 +1015,18 @@ class HyperVAPITestCase(HyperVAPIBaseTestCase,
         else:
             m.AndRaise(vmutils.HyperVAuthorizationException(_(
                                                 'Simulated failure')))
+
+    def _setup_log_vm_output_mocks(self):
+        m = fake.PathUtils.get_vm_console_log_paths(mox.IsA(str))
+        m.AndReturn(('fake_vm_log_path', 'fake_vm_log_path.1'))
+        ioutils.IOThread('fake_pipe', 'fake_vm_log_path',
+                         units.Mi).start()
+
+    def _setup_delete_vm_log_mocks(self):
+        m = fake.PathUtils.get_vm_console_log_paths(mox.IsA(str))
+        m.AndReturn(('fake_vm_log_path', 'fake_vm_log_path.1'))
+        fileutils.delete_if_exists(mox.IsA(str))
+        fileutils.delete_if_exists(mox.IsA(str))
 
     def _setup_get_cached_image_mocks(self, cow=True,
                                       vhd_format=constants.DISK_FORMAT_VHD):
@@ -1029,9 +1071,10 @@ class HyperVAPITestCase(HyperVAPIBaseTestCase,
                                             remove_dir=True)
         m.AndReturn(self._test_instance_dir)
 
-        m = basevolumeutils.BaseVolumeUtils.volume_in_mapping(
-            mox.IsA(str), block_device_info)
-        m.AndReturn(boot_from_volume)
+        if block_device_info:
+            m = basevolumeutils.BaseVolumeUtils.volume_in_mapping(
+                'fake_root_device_name', block_device_info)
+            m.AndReturn(boot_from_volume)
 
         if not boot_from_volume:
             m = fake.PathUtils.get_instance_dir(mox.Func(self._check_vm_name))
@@ -1086,6 +1129,7 @@ class HyperVAPITestCase(HyperVAPIBaseTestCase,
         else:
             vmutils.VMUtils.set_vm_state(mox.Func(self._check_vm_name),
                                          constants.HYPERV_VM_STATE_ENABLED)
+            self._setup_log_vm_output_mocks()
 
     def _test_spawn_instance(self, cow=True,
                              expected_ide_disks=1,
@@ -1442,6 +1486,8 @@ class HyperVAPITestCase(HyperVAPIBaseTestCase,
             vmutils.VMUtils.set_vm_state(func,
                                          constants.HYPERV_VM_STATE_DISABLED)
 
+            self._setup_delete_vm_log_mocks()
+
             m = vmutils.VMUtils.get_vm_storage_paths(func)
             m.AndReturn(([fake_root_vhd_path], []))
 
@@ -1566,10 +1612,6 @@ class HyperVAPITestCase(HyperVAPIBaseTestCase,
         instance['system_metadata'] = {}
         network_info = fake_network.fake_get_instance_nw_info(self.stubs)
 
-        m = basevolumeutils.BaseVolumeUtils.volume_in_mapping(mox.IsA(str),
-                                                              None)
-        m.AndReturn(False)
-
         m = fake.PathUtils.get_instance_dir(mox.IsA(str))
         m.AndReturn(self._test_instance_dir)
 
@@ -1608,6 +1650,7 @@ class HyperVAPITestCase(HyperVAPIBaseTestCase,
         if power_on:
             vmutils.VMUtils.set_vm_state(mox.Func(self._check_instance_name),
                                          constants.HYPERV_VM_STATE_ENABLED)
+            self._setup_log_vm_output_mocks()
 
         if config_drive:
             self._mock_attach_config_drive(instance, config_drive_format)
@@ -1658,10 +1701,6 @@ class HyperVAPITestCase(HyperVAPIBaseTestCase,
         fake_revert_path = ('C:\\FakeInstancesPath\\%s\\_revert' %
                             instance['name'])
 
-        m = basevolumeutils.BaseVolumeUtils.volume_in_mapping(mox.IsA(str),
-                                                              None)
-        m.AndReturn(False)
-
         m = fake.PathUtils.get_instance_dir(mox.IsA(str),
                                             create_dir=False,
                                             remove_dir=True)
@@ -1687,6 +1726,7 @@ class HyperVAPITestCase(HyperVAPIBaseTestCase,
         if power_on:
             vmutils.VMUtils.set_vm_state(mox.Func(self._check_instance_name),
                                          constants.HYPERV_VM_STATE_ENABLED)
+            self._setup_log_vm_output_mocks()
 
         if config_drive:
             self._mock_attach_config_drive(instance, config_drive_format)
@@ -1768,9 +1808,9 @@ class HyperVAPITestCase(HyperVAPIBaseTestCase,
         connect_info = self._conn.get_rdp_console(self._context, instance)
         self._mox.VerifyAll()
 
-        self.assertEqual(CONF.my_ip, connect_info['host'])
-        self.assertEqual(fake_port, connect_info['port'])
-        self.assertEqual(fake_vm_id, connect_info['internal_access_path'])
+        self.assertEqual(CONF.my_ip, connect_info.host)
+        self.assertEqual(fake_port, connect_info.port)
+        self.assertEqual(fake_vm_id, connect_info.internal_access_path)
 
 
 class VolumeOpsTestCase(HyperVAPIBaseTestCase):
@@ -1837,6 +1877,38 @@ class VolumeOpsTestCase(HyperVAPIBaseTestCase):
             self.assertRaises(vmutils.HyperVException,
                               self.volumeops._get_free_controller_slot,
                               fake_scsi_controller_path)
+
+    def test_fix_instance_volume_disk_paths(self):
+        block_device_info = db_fakes.get_fake_block_device_info(
+            self._volume_target_portal, self._volume_id)
+
+        with contextlib.nested(
+            mock.patch.object(self.volumeops,
+                              '_get_mounted_disk_from_lun'),
+            mock.patch.object(self.volumeops._vmutils,
+                              'get_vm_scsi_controller'),
+            mock.patch.object(self.volumeops._vmutils,
+                              'set_disk_host_resource'),
+            mock.patch.object(self.volumeops,
+                              'ebs_root_in_block_devices')
+            ) as (mock_get_mounted_disk_from_lun,
+                  mock_get_vm_scsi_controller,
+                  mock_set_disk_host_resource,
+                  mock_ebs_in_block_devices):
+
+            mock_ebs_in_block_devices.return_value = False
+            mock_get_mounted_disk_from_lun.return_value = "fake_mounted_path"
+            mock_set_disk_host_resource.return_value = "fake_controller_path"
+
+            self.volumeops.fix_instance_volume_disk_paths(
+                "test_vm_name",
+                block_device_info)
+
+            mock_get_mounted_disk_from_lun.assert_called_with(
+                'iqn.2010-10.org.openstack:volume-' + self._volume_id, 1, True)
+            mock_get_vm_scsi_controller.assert_called_with("test_vm_name")
+            mock_set_disk_host_resource("test_vm_name", "fake_controller_path",
+                                        0, "fake_mounted_path")
 
 
 class HostOpsTestCase(HyperVAPIBaseTestCase):

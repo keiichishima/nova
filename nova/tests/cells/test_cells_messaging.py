@@ -23,9 +23,12 @@ import mock
 import mox
 from oslo.config import cfg
 from oslo import messaging as oslo_messaging
+from oslo.serialization import jsonutils
+from oslo.utils import timeutils
 
 from nova.cells import messaging
 from nova.cells import utils as cells_utils
+from nova.compute import delete_types
 from nova.compute import task_states
 from nova.compute import vm_states
 from nova import context
@@ -35,8 +38,6 @@ from nova.network import model as network_model
 from nova import objects
 from nova.objects import base as objects_base
 from nova.objects import fields as objects_fields
-from nova.openstack.common import jsonutils
-from nova.openstack.common import timeutils
 from nova.openstack.common import uuidutils
 from nova import rpc
 from nova import test
@@ -1247,6 +1248,7 @@ class CellsTargetedMethodsTestCase(test.TestCase):
                                'confirm_resize': 'confirm_resize',
                                'reset_network': 'reset_network',
                                'inject_network_info': 'inject_network_info',
+                               'set_admin_password': 'set_admin_password',
                               }
         tgt_method = method_translations.get(method,
                                              '%s_instance' % method)
@@ -1296,7 +1298,7 @@ class CellsTargetedMethodsTestCase(test.TestCase):
                                           (), {}, (), {}, False)
 
     def test_soft_delete_instance(self):
-        self._test_instance_action_method('soft_delete',
+        self._test_instance_action_method(delete_types.SOFT_DELETE,
                                           (), {}, (), {}, False)
 
     def test_pause_instance(self):
@@ -1399,6 +1401,11 @@ class CellsTargetedMethodsTestCase(test.TestCase):
                                  image_id='image-id',
                                  backup_type='backup-type',
                                  rotation='rotation')
+
+    def test_set_admin_password(self):
+        args = ['fake-password']
+        self._test_instance_action_method('set_admin_password', args, {}, args,
+                {}, False)
 
 
 class CellsBroadcastMethodsTestCase(test.TestCase):
@@ -1536,7 +1543,7 @@ class CellsBroadcastMethodsTestCase(test.TestCase):
     def test_instance_update_at_top_netinfo_model(self):
         self._test_instance_update_at_top(network_model.NetworkInfo())
 
-    def test_instance_update_at_top_doesnt_already_exist(self):
+    def test_instance_update_at_top_does_not_already_exist(self):
         self._test_instance_update_at_top([], exists=False)
 
     def test_instance_update_at_top_with_building_state(self):
@@ -1610,10 +1617,10 @@ class CellsBroadcastMethodsTestCase(test.TestCase):
         instance = {'uuid': 'meow'}
 
         # Should not be called in src (API cell)
-        self.mox.StubOutWithMock(self.src_compute_api, 'delete')
+        self.mox.StubOutWithMock(self.src_compute_api, delete_types.DELETE)
 
-        self.mox.StubOutWithMock(self.mid_compute_api, 'delete')
-        self.mox.StubOutWithMock(self.tgt_compute_api, 'delete')
+        self.mox.StubOutWithMock(self.mid_compute_api, delete_types.DELETE)
+        self.mox.StubOutWithMock(self.tgt_compute_api, delete_types.DELETE)
 
         self.mid_compute_api.delete(self.ctxt, instance)
         self.tgt_compute_api.delete(self.ctxt, instance)
@@ -1621,7 +1628,7 @@ class CellsBroadcastMethodsTestCase(test.TestCase):
         self.mox.ReplayAll()
 
         self.src_msg_runner.instance_delete_everywhere(self.ctxt,
-                instance, 'hard')
+                instance, delete_types.DELETE)
 
     def test_instance_soft_delete_everywhere(self):
         # Reset this, as this is a broadcast down.
@@ -1629,10 +1636,13 @@ class CellsBroadcastMethodsTestCase(test.TestCase):
         instance = {'uuid': 'meow'}
 
         # Should not be called in src (API cell)
-        self.mox.StubOutWithMock(self.src_compute_api, 'soft_delete')
+        self.mox.StubOutWithMock(self.src_compute_api,
+                                 delete_types.SOFT_DELETE)
 
-        self.mox.StubOutWithMock(self.mid_compute_api, 'soft_delete')
-        self.mox.StubOutWithMock(self.tgt_compute_api, 'soft_delete')
+        self.mox.StubOutWithMock(self.mid_compute_api,
+                                 delete_types.SOFT_DELETE)
+        self.mox.StubOutWithMock(self.tgt_compute_api,
+                                 delete_types.SOFT_DELETE)
 
         self.mid_compute_api.soft_delete(self.ctxt, instance)
         self.tgt_compute_api.soft_delete(self.ctxt, instance)
@@ -1640,7 +1650,7 @@ class CellsBroadcastMethodsTestCase(test.TestCase):
         self.mox.ReplayAll()
 
         self.src_msg_runner.instance_delete_everywhere(self.ctxt,
-                instance, 'soft')
+                instance, delete_types.SOFT_DELETE)
 
     def test_instance_fault_create_at_top(self):
         fake_instance_fault = {'id': 1,

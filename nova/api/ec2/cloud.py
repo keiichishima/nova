@@ -24,6 +24,7 @@ import base64
 import time
 
 from oslo.config import cfg
+from oslo.utils import timeutils
 
 from nova.api.ec2 import ec2utils
 from nova.api.ec2 import inst_state
@@ -45,7 +46,6 @@ from nova.network.security_group import neutron_driver
 from nova import objects
 from nova.objects import base as obj_base
 from nova.openstack.common import log as logging
-from nova.openstack.common import timeutils
 from nova import quota
 from nova import servicegroup
 from nova import utils
@@ -210,7 +210,7 @@ def _format_mappings(properties, result):
     # NOTE(yamahata): overwrite mappings with block_device_mapping
     for bdm in block_device_mapping:
         for i in range(len(mappings)):
-            if bdm['deviceName'] == mappings[i]['deviceName']:
+            if bdm.get('deviceName') == mappings[i].get('deviceName'):
                 del mappings[i]
                 break
         mappings.append(bdm)
@@ -1060,8 +1060,8 @@ class CloudController(object):
                 i['currentState'] = _state_description(instance['vm_state'],
                                             instance['shutdown_terminate'])
             except exception.NotFound:
-                i['currentState'] = _state_description(vm_states.DELETED,
-                                                        True)
+                i['currentState'] = _state_description(
+                                            inst_state.SHUTTING_DOWN, True)
             instances_set.append(i)
         return {'instancesSet': instances_set}
 
@@ -1072,7 +1072,7 @@ class CloudController(object):
             i['instanceId'] = ec2_id
             i['previousState'] = _state_description(previous_state['vm_state'],
                                         previous_state['shutdown_terminate'])
-            i['currentState'] = _state_description(vm_states.STOPPED, True)
+            i['currentState'] = _state_description(inst_state.STOPPING, True)
             instances_set.append(i)
         return {'instancesSet': instances_set}
 
@@ -1083,7 +1083,7 @@ class CloudController(object):
             i['instanceId'] = ec2_id
             i['previousState'] = _state_description(previous_state['vm_state'],
                                         previous_state['shutdown_terminate'])
-            i['currentState'] = _state_description(vm_states.ACTIVE, True)
+            i['currentState'] = _state_description(None, True)
             instances_set.append(i)
         return {'instancesSet': instances_set}
 
@@ -1091,6 +1091,9 @@ class CloudController(object):
                              result):
         """Format InstanceBlockDeviceMappingResponseItemType."""
         root_device_type = 'instance-store'
+        root_device_short_name = block_device.strip_dev(root_device_name)
+        if root_device_name == root_device_short_name:
+            root_device_name = block_device.prepend_dev(root_device_name)
         mapping = []
         bdms = objects.BlockDeviceMappingList.get_by_instance_uuid(
                 context, instance_uuid)
@@ -1099,7 +1102,9 @@ class CloudController(object):
             if volume_id is None or bdm.no_device:
                 continue
 
-            if bdm.device_name == root_device_name and bdm.is_volume:
+            if (bdm.is_volume and
+                    (bdm.device_name == root_device_name or
+                     bdm.device_name == root_device_short_name)):
                 root_device_type = 'ebs'
 
             vol = self.volume_api.get(context, volume_id)
@@ -1318,6 +1323,9 @@ class CloudController(object):
             LOG.audit(_("Disassociate address %s"), public_ip, context=context)
             self.network_api.disassociate_floating_ip(context, instance,
                                                       address=public_ip)
+        else:
+            msg = _('Floating ip is not associated.')
+            raise exception.InvalidAssociation(message=msg)
         return {'return': "true"}
 
     def run_instances(self, context, **kwargs):

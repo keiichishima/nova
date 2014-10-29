@@ -15,13 +15,14 @@
 import functools
 import operator
 
+from oslo.serialization import jsonutils
+from oslo.utils import excutils
+
 from nova import block_device
 from nova.i18n import _
 from nova.i18n import _LI
 from nova import objects
 from nova.objects import base as obj_base
-from nova.openstack.common import excutils
-from nova.openstack.common import jsonutils
 from nova.openstack.common import log as logging
 from nova.volume import encryptors
 
@@ -360,17 +361,14 @@ class DriverBlankBlockDevice(DriverVolumeBlockDevice):
 
 
 def _convert_block_devices(device_type, block_device_mapping):
-    def _is_transformable(bdm):
+    devices = []
+    for bdm in block_device_mapping:
         try:
-            device_type(bdm)
+            devices.append(device_type(bdm))
         except _NotTransformable:
-            return False
-        return True
+            pass
 
-    return [device_type(bdm)
-            for bdm in block_device_mapping
-            if _is_transformable(bdm)]
-
+    return devices
 
 convert_swap = functools.partial(_convert_block_devices,
                                  DriverSwapBlockDevice)
@@ -446,7 +444,7 @@ def get_swap(transformed_list):
     if not all(isinstance(device, DriverSwapBlockDevice) or
                'swap_size' in device
                 for device in transformed_list):
-        return transformed_list
+        return None
     try:
         return transformed_list.pop()
     except IndexError:

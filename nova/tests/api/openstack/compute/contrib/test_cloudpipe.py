@@ -13,15 +13,18 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
+import uuid as uuid_lib
+
 from lxml import etree
 from oslo.config import cfg
+from oslo.utils import timeutils
 from webob import exc
 
-from nova.api.openstack.compute.contrib import cloudpipe
+from nova.api.openstack.compute.contrib import cloudpipe as cloudpipe_v2
+from nova.api.openstack.compute.plugins.v3 import cloudpipe as cloudpipe_v21
 from nova.api.openstack import wsgi
 from nova.compute import utils as compute_utils
 from nova import exception
-from nova.openstack.common import timeutils
 from nova import test
 from nova.tests.api.openstack import fakes
 from nova.tests import fake_network
@@ -32,11 +35,15 @@ CONF = cfg.CONF
 CONF.import_opt('vpn_image_id', 'nova.cloudpipe.pipelib')
 
 
+project_id = str(uuid_lib.uuid4().hex)
+uuid = str(uuid_lib.uuid4())
+
+
 def fake_vpn_instance():
     return {
         'id': 7, 'image_ref': CONF.vpn_image_id, 'vm_state': 'active',
         'created_at': timeutils.parse_strtime('1981-10-20T00:00:00.000000'),
-        'uuid': 7777, 'project_id': 'other',
+        'uuid': uuid, 'project_id': project_id,
     }
 
 
@@ -52,11 +59,13 @@ def utils_vpn_ping(addr, port, timoeout=0.05, session_id=None):
     return True
 
 
-class CloudpipeTest(test.NoDBTestCase):
+class CloudpipeTestV21(test.NoDBTestCase):
+    cloudpipe = cloudpipe_v21
+    url = '/v2/fake/os-cloudpipe'
 
     def setUp(self):
-        super(CloudpipeTest, self).setUp()
-        self.controller = cloudpipe.CloudpipeController()
+        super(CloudpipeTestV21, self).setUp()
+        self.controller = self.cloudpipe.CloudpipeController()
         self.stubs.Set(self.controller.compute_api, "get_all",
                        compute_api_get_all_empty)
         self.stubs.Set(utils, 'vpn_ping', utils_vpn_ping)
@@ -70,17 +79,17 @@ class CloudpipeTest(test.NoDBTestCase):
                        fake_get_nw_info_for_instance)
         self.stubs.Set(self.controller.compute_api, "get_all",
                        compute_api_get_all)
-        req = fakes.HTTPRequest.blank('/v2/fake/os-cloudpipe')
+        req = fakes.HTTPRequest.blank(self.url)
         res_dict = self.controller.index(req)
-        response = {'cloudpipes': [{'project_id': 'other',
-                                    'instance_id': 7777,
+        response = {'cloudpipes': [{'project_id': project_id,
+                                    'instance_id': uuid,
                                     'created_at': '1981-10-20T00:00:00Z'}]}
         self.assertEqual(res_dict, response)
 
     def test_cloudpipe_list(self):
 
         def network_api_get(context, network_id):
-            self.assertEqual(context.project_id, 'other')
+            self.assertEqual(context.project_id, project_id)
             return {'vpn_public_address': '127.0.0.1',
                     'vpn_public_port': 22}
 
@@ -93,14 +102,14 @@ class CloudpipeTest(test.NoDBTestCase):
                        network_api_get)
         self.stubs.Set(self.controller.compute_api, "get_all",
                        compute_api_get_all)
-        req = fakes.HTTPRequest.blank('/v2/fake/os-cloudpipe')
+        req = fakes.HTTPRequest.blank(self.url)
         res_dict = self.controller.index(req)
-        response = {'cloudpipes': [{'project_id': 'other',
+        response = {'cloudpipes': [{'project_id': project_id,
                                     'internal_ip': '192.168.1.100',
                                     'public_ip': '127.0.0.1',
                                     'public_port': 22,
                                     'state': 'running',
-                                    'instance_id': 7777,
+                                    'instance_id': uuid,
                                     'created_at': '1981-10-20T00:00:00Z'}]}
         self.assertThat(res_dict, matchers.DictMatches(response))
 
@@ -110,11 +119,11 @@ class CloudpipeTest(test.NoDBTestCase):
 
         self.stubs.Set(self.controller.cloudpipe, 'launch_vpn_instance',
                        launch_vpn_instance)
-        body = {'cloudpipe': {'project_id': 1}}
-        req = fakes.HTTPRequest.blank('/v2/fake/os-cloudpipe')
-        res_dict = self.controller.create(req, body)
+        body = {'cloudpipe': {'project_id': project_id}}
+        req = fakes.HTTPRequest.blank(self.url)
+        res_dict = self.controller.create(req, body=body)
 
-        response = {'instance_id': 7777}
+        response = {'instance_id': uuid}
         self.assertEqual(res_dict, response)
 
     def test_cloudpipe_create_no_networks(self):
@@ -123,10 +132,10 @@ class CloudpipeTest(test.NoDBTestCase):
 
         self.stubs.Set(self.controller.cloudpipe, 'launch_vpn_instance',
                        launch_vpn_instance)
-        body = {'cloudpipe': {'project_id': 1}}
-        req = fakes.HTTPRequest.blank('/v2/fake/os-cloudpipe')
+        body = {'cloudpipe': {'project_id': project_id}}
+        req = fakes.HTTPRequest.blank(self.url)
         self.assertRaises(exc.HTTPBadRequest,
-                          self.controller.create, req, body)
+                          self.controller.create, req, body=body)
 
     def test_cloudpipe_create_already_running(self):
         def launch_vpn_instance(*args, **kwargs):
@@ -136,16 +145,29 @@ class CloudpipeTest(test.NoDBTestCase):
                        launch_vpn_instance)
         self.stubs.Set(self.controller.compute_api, "get_all",
                        compute_api_get_all)
-        body = {'cloudpipe': {'project_id': 1}}
-        req = fakes.HTTPRequest.blank('/v2/fake/os-cloudpipe')
-        res_dict = self.controller.create(req, body)
-        response = {'instance_id': 7777}
+        body = {'cloudpipe': {'project_id': project_id}}
+        req = fakes.HTTPRequest.blank(self.url)
+        res_dict = self.controller.create(req, body=body)
+        response = {'instance_id': uuid}
         self.assertEqual(res_dict, response)
 
+    def test_cloudpipe_create_with_bad_project_id_failed(self):
+        body = {'cloudpipe': {'project_id': 'bad.project.id'}}
+        req = fakes.HTTPRequest.blank(self.url)
+        self.assertRaises(exception.ValidationError,
+                          self.controller.create, req, body=body)
 
-class CloudpipesXMLSerializerTest(test.NoDBTestCase):
+
+class CloudpipeTestV2(CloudpipeTestV21):
+    cloudpipe = cloudpipe_v2
+
+    def test_cloudpipe_create_with_bad_project_id_failed(self):
+        pass
+
+
+class CloudpipesXMLSerializerTestV2(test.NoDBTestCase):
     def test_default_serializer(self):
-        serializer = cloudpipe.CloudpipeTemplate()
+        serializer = cloudpipe_v2.CloudpipeTemplate()
         exemplar = dict(cloudpipe=dict(instance_id='1234-1234-1234-1234'))
         text = serializer.serialize(exemplar)
         tree = etree.fromstring(text)
@@ -155,7 +177,7 @@ class CloudpipesXMLSerializerTest(test.NoDBTestCase):
             self.assertEqual(child.text, exemplar['cloudpipe'][child.tag])
 
     def test_index_serializer(self):
-        serializer = cloudpipe.CloudpipesTemplate()
+        serializer = cloudpipe_v2.CloudpipesTemplate()
         exemplar = dict(cloudpipes=[
                 dict(
                         project_id='1234',

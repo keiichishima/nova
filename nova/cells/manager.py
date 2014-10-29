@@ -21,6 +21,8 @@ import time
 
 from oslo.config import cfg
 from oslo import messaging as oslo_messaging
+from oslo.utils import importutils
+from oslo.utils import timeutils
 
 from nova.cells import messaging
 from nova.cells import state as cells_state
@@ -31,10 +33,8 @@ from nova.i18n import _
 from nova import manager
 from nova import objects
 from nova.objects import base as base_obj
-from nova.openstack.common import importutils
 from nova.openstack.common import log as logging
 from nova.openstack.common import periodic_task
-from nova.openstack.common import timeutils
 
 cell_manager_opts = [
         cfg.StrOpt('driver',
@@ -73,7 +73,7 @@ class CellsManager(manager.Manager):
     Scheduling requests get passed to the scheduler class.
     """
 
-    target = oslo_messaging.Target(version='1.28')
+    target = oslo_messaging.Target(version='1.29')
 
     def __init__(self, *args, **kwargs):
         LOG.warn(_('The cells feature of Nova is considered experimental '
@@ -547,3 +547,6 @@ class CellsManager(manager.Manager):
         self.msg_runner.rebuild_instance(ctxt, instance, image_href,
                                          admin_password, files_to_inject,
                                          preserve_ephemeral, kwargs)
+
+    def set_admin_password(self, ctxt, instance, new_pass):
+        self.msg_runner.set_admin_password(ctxt, instance, new_pass)

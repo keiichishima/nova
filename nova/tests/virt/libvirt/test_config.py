@@ -13,8 +13,9 @@
 #    under the License.
 
 from lxml import etree
+from oslo.utils import units
 
-from nova.openstack.common import units
+from nova.compute import arch
 from nova import test
 from nova.tests import matchers
 from nova.virt.libvirt import config
@@ -48,6 +49,13 @@ class LibvirtConfigTest(LibvirtConfigBaseTest):
 
         xml = etree.tostring(root)
         self.assertXmlEqual(xml, "<demo><foo>bar</foo></demo>")
+
+    def test_config_text_unicode(self):
+        obj = config.LibvirtConfigObject(root_name='demo')
+        root = obj.format_dom()
+        root.append(obj._text_node('foo', u'\xF0\x9F\x92\xA9'))
+        self.assertXmlEqual('<demo><foo>&#240;&#159;&#146;&#169;</foo></demo>',
+                            etree.tostring(root))
 
     def test_config_parse(self):
         inxml = "<demo><foo/></demo>"
@@ -231,6 +239,19 @@ class LibvirtConfigGuestCPUFeatureTest(LibvirtConfigBaseTest):
 
 class LibvirtConfigGuestCPUNUMATest(LibvirtConfigBaseTest):
 
+    def test_parse_dom(self):
+        xml = """
+            <numa>
+              <cell id="0" cpus="0-1" memory="1000000"/>
+              <cell id="1" cpus="2-3" memory="1500000"/>
+            </numa>
+        """
+        xmldoc = etree.fromstring(xml)
+        obj = config.LibvirtConfigGuestCPUNUMA()
+        obj.parse_dom(xmldoc)
+
+        self.assertEqual(2, len(obj.cells))
+
     def test_config_simple(self):
         obj = config.LibvirtConfigGuestCPUNUMA()
 
@@ -274,7 +295,7 @@ class LibvirtConfigCPUTest(LibvirtConfigBaseTest):
         obj = config.LibvirtConfigCPU()
         obj.model = "Penryn"
         obj.vendor = "Intel"
-        obj.arch = "x86_64"
+        obj.arch = arch.X86_64
 
         obj.add_feature(config.LibvirtConfigCPUFeature("mtrr"))
         obj.add_feature(config.LibvirtConfigCPUFeature("apic"))
@@ -294,7 +315,7 @@ class LibvirtConfigCPUTest(LibvirtConfigBaseTest):
         obj = config.LibvirtConfigCPU()
         obj.model = "Penryn"
         obj.vendor = "Intel"
-        obj.arch = "x86_64"
+        obj.arch = arch.X86_64
 
         obj.add_feature(config.LibvirtConfigCPUFeature("mtrr"))
         obj.add_feature(config.LibvirtConfigCPUFeature("apic"))
@@ -345,7 +366,7 @@ class LibvirtConfigGuestCPUTest(LibvirtConfigBaseTest):
         obj = config.LibvirtConfigGuestCPU()
         obj.model = "Penryn"
         obj.vendor = "Intel"
-        obj.arch = "x86_64"
+        obj.arch = arch.X86_64
         obj.mode = "custom"
 
         obj.add_feature(config.LibvirtConfigGuestCPUFeature("mtrr"))
@@ -545,6 +566,42 @@ class LibvirtConfigGuestDiskTest(LibvirtConfigBaseTest):
 
         self.assertEqual(obj.source_type, 'file')
         self.assertEqual(obj.serial, '7a97c4a3-6f59-41d4-bf47-191d7f97f8e9')
+
+    def test_config_file_discard(self):
+        obj = config.LibvirtConfigGuestDisk()
+        obj.driver_name = "qemu"
+        obj.driver_format = "qcow2"
+        obj.driver_cache = "none"
+        obj.driver_discard = "unmap"
+        obj.source_type = "file"
+        obj.source_path = "/tmp/hello.qcow2"
+        obj.target_dev = "/dev/hda"
+        obj.target_bus = "ide"
+        obj.serial = "7a97c4a3-6f59-41d4-bf47-191d7f97f8e9"
+
+        xml = obj.to_xml()
+        self.assertXmlEqual("""
+            <disk type="file" device="disk">
+              <driver name="qemu" type="qcow2" cache="none" discard="unmap"/>
+              <source file="/tmp/hello.qcow2"/>
+              <target bus="ide" dev="/dev/hda"/>
+              <serial>7a97c4a3-6f59-41d4-bf47-191d7f97f8e9</serial>
+            </disk>""", xml)
+
+    def test_config_file_discard_parse(self):
+        xml = """
+            <disk type="file" device="disk">
+              <driver name="qemu" type="qcow2" cache="none" discard="unmap"/>
+              <source file="/tmp/hello.qcow2"/>
+              <target bus="ide" dev="/dev/hda"/>
+              <serial>7a97c4a3-6f59-41d4-bf47-191d7f97f8e9</serial>
+            </disk>"""
+        xmldoc = etree.fromstring(xml)
+
+        obj = config.LibvirtConfigGuestDisk()
+        obj.parse_dom(xmldoc)
+
+        self.assertEqual('unmap', obj.driver_discard)
 
     def test_config_block(self):
         obj = config.LibvirtConfigGuestDisk()
@@ -1129,6 +1186,47 @@ class LibvirtConfigGuestInterfaceTest(LibvirtConfigBaseTest):
               <source dev="eth0" mode="passthrough"/>
             </interface>""")
 
+    def test_config_8021Qbh_hostdev(self):
+        obj = config.LibvirtConfigGuestInterface()
+        obj.net_type = "hostdev"
+        obj.mac_addr = "DE:AD:BE:EF:CA:FE"
+        obj.source_dev = "0000:0a:00.1"
+        obj.vporttype = "802.1Qbh"
+        obj.add_vport_param("profileid", "MyPortProfile")
+
+        xml = obj.to_xml()
+        self.assertXmlEqual(xml, """
+            <interface type="hostdev" managed="yes">
+              <mac address="DE:AD:BE:EF:CA:FE"/>
+              <source>
+                <address type="pci" domain="0x0000"
+                   bus="0x0a" slot="0x00" function="0x1"/>
+              </source>
+              <virtualport type="802.1Qbh">
+                <parameters profileid="MyPortProfile"/>
+              </virtualport>
+            </interface>""")
+
+    def test_config_hw_veb_hostdev(self):
+        obj = config.LibvirtConfigGuestInterface()
+        obj.net_type = "hostdev"
+        obj.mac_addr = "DE:AD:BE:EF:CA:FE"
+        obj.source_dev = "0000:0a:00.1"
+        obj.vlan = "100"
+
+        xml = obj.to_xml()
+        self.assertXmlEqual(xml, """
+            <interface type="hostdev" managed="yes">
+              <mac address="DE:AD:BE:EF:CA:FE"/>
+              <source>
+                <address type="pci" domain="0x0000"
+                   bus="0x0a" slot="0x00" function="0x1"/>
+              </source>
+              <vlan>
+               <tag id="100"/>
+              </vlan>
+            </interface>""")
+
 
 class LibvirtConfigGuestTest(LibvirtConfigBaseTest):
 
@@ -1167,6 +1265,55 @@ class LibvirtConfigGuestTest(LibvirtConfigBaseTest):
                 </filesystem>
               </devices>
             </domain>""")
+
+    def test_config_lxc_with_idmap(self):
+        obj = config.LibvirtConfigGuest()
+        obj.virt_type = "lxc"
+        obj.memory = 100 * units.Mi
+        obj.vcpus = 2
+        obj.cpuset = set([0, 1, 3, 4, 5])
+        obj.name = "demo"
+        obj.uuid = "b38a3f43-4be2-4046-897f-b67c2f5e0147"
+        obj.os_type = "exe"
+        obj.os_init_path = "/sbin/init"
+
+        uidmap = config.LibvirtConfigGuestUIDMap()
+        uidmap.target = "10000"
+        uidmap.count = "1"
+        obj.idmaps.append(uidmap)
+        gidmap = config.LibvirtConfigGuestGIDMap()
+        gidmap.target = "10000"
+        gidmap.count = "1"
+        obj.idmaps.append(gidmap)
+
+        fs = config.LibvirtConfigGuestFilesys()
+        fs.source_dir = "/root/lxc"
+        fs.target_dir = "/"
+
+        obj.add_device(fs)
+
+        xml = obj.to_xml()
+        self.assertXmlEqual("""
+            <domain type="lxc">
+              <uuid>b38a3f43-4be2-4046-897f-b67c2f5e0147</uuid>
+              <name>demo</name>
+              <memory>104857600</memory>
+              <vcpu cpuset="0-1,3-5">2</vcpu>
+              <os>
+                <type>exe</type>
+                <init>/sbin/init</init>
+              </os>
+              <devices>
+                <filesystem type="mount">
+                  <source dir="/root/lxc"/>
+                  <target dir="/"/>
+                </filesystem>
+              </devices>
+              <idmap>
+                <uid start="0" target="10000" count="1"/>
+                <gid start="0" target="10000" count="1"/>
+              </idmap>
+            </domain>""", xml)
 
     def test_config_xen_pv(self):
         obj = config.LibvirtConfigGuest()
@@ -1222,6 +1369,7 @@ class LibvirtConfigGuestTest(LibvirtConfigBaseTest):
         obj.os_loader = '/usr/lib/xen/boot/hvmloader'
         obj.os_root = "root=xvda"
         obj.os_cmdline = "console=xvc0"
+        obj.pae = True
         obj.acpi = True
         obj.apic = True
 
@@ -1249,6 +1397,7 @@ class LibvirtConfigGuestTest(LibvirtConfigBaseTest):
               <features>
                 <acpi/>
                 <apic/>
+                <pae/>
               </features>
               <devices>
                 <disk type="file" device="disk">
@@ -1284,6 +1433,7 @@ class LibvirtConfigGuestTest(LibvirtConfigBaseTest):
         obj.os_type = "linux"
         obj.os_boot_dev = ["hd", "cdrom", "fd"]
         obj.os_smbios = config.LibvirtConfigGuestSMBIOS()
+        obj.pae = True
         obj.acpi = True
         obj.apic = True
 
@@ -1333,6 +1483,7 @@ class LibvirtConfigGuestTest(LibvirtConfigBaseTest):
               <features>
                 <acpi/>
                 <apic/>
+                <pae/>
               </features>
               <cputune>
                 <shares>100</shares>
@@ -1688,7 +1839,7 @@ class LibvirtConfigNodeDevicePciCapTest(LibvirtConfigBaseTest):
               <bus>10</bus>
               <slot>1</slot>
               <function>5</function>
-              <product id="0x8086-3">Intel 10 Gigabit Ethernet</product>
+              <product id="0x10bd">Intel 10 Gigabit Ethernet</product>
               <vendor id="0x8086">Intel Inc.</vendor>
               <capability type="virt_functions">
                <address domain="0000" bus="0x0a" slot="0x1" function="0x1"/>
@@ -1703,16 +1854,16 @@ class LibvirtConfigNodeDevicePciCapTest(LibvirtConfigBaseTest):
         self.assertEqual(obj.slot, 1)
         self.assertEqual(obj.function, 5)
         self.assertEqual(obj.product, "Intel 10 Gigabit Ethernet")
-        self.assertEqual(obj.product_id, '0x8086-3')
+        self.assertEqual(obj.product_id, 0x10bd)
         self.assertEqual(obj.vendor, "Intel Inc.")
-        self.assertEqual(obj.vendor_id, "0x8086")
+        self.assertEqual(obj.vendor_id, 0x8086)
         self.assertIsInstance(obj.fun_capability[0],
                               config.LibvirtConfigNodeDevicePciSubFunctionCap)
 
         self.assertEqual(obj.fun_capability[0].type, 'virt_functions')
         self.assertEqual(obj.fun_capability[0].device_addrs,
-                         [("0000", "0x0a", "0x1", "0x1"),
-                          ("0001", "0x0a", "0x02", "0x03"), ])
+                         [(0, 10, 1, 1),
+                          (1, 10, 2, 3), ])
 
     def test_config_device_pci_2cap(self):
         xmlin = """
@@ -1721,7 +1872,7 @@ class LibvirtConfigNodeDevicePciCapTest(LibvirtConfigBaseTest):
               <bus>10</bus>
               <slot>1</slot>
               <function>5</function>
-              <product id="0x8086-3">Intel 10 Gigabit Ethernet</product>
+              <product id="0x10bd">Intel 10 Gigabit Ethernet</product>
               <vendor id="0x8086">Intel Inc.</vendor>
               <capability type="virt_functions">
                <address domain="0000" bus="0x0a" slot="0x1" function="0x1"/>
@@ -1739,19 +1890,19 @@ class LibvirtConfigNodeDevicePciCapTest(LibvirtConfigBaseTest):
         self.assertEqual(obj.slot, 1)
         self.assertEqual(obj.function, 5)
         self.assertEqual(obj.product, "Intel 10 Gigabit Ethernet")
-        self.assertEqual(obj.product_id, '0x8086-3')
+        self.assertEqual(obj.product_id, 0x10bd)
         self.assertEqual(obj.vendor, "Intel Inc.")
-        self.assertEqual(obj.vendor_id, "0x8086")
+        self.assertEqual(obj.vendor_id, 0x8086)
         self.assertIsInstance(obj.fun_capability[0],
                               config.LibvirtConfigNodeDevicePciSubFunctionCap)
 
         self.assertEqual(obj.fun_capability[0].type, 'virt_functions')
         self.assertEqual(obj.fun_capability[0].device_addrs,
-                         [("0000", '0x0a', '0x1', "0x1"),
-                          ("0001", "0x0a", "0x02", "0x03"), ])
+                         [(0, 10, 1, 1),
+                          (1, 10, 2, 3), ])
         self.assertEqual(obj.fun_capability[1].type, 'phys_function')
         self.assertEqual(obj.fun_capability[1].device_addrs,
-                         [("0000", '0x0a', '0x1', "0x1"), ])
+                         [(0, 10, 1, 1), ])
 
         def test_config_read_only_disk(self):
             obj = config.LibvirtConfigGuestDisk()
@@ -1790,8 +1941,8 @@ class LibvirtConfigNodeDevicePciSubFunctionCap(LibvirtConfigBaseTest):
         fun_capability = config.LibvirtConfigNodeDevicePciSubFunctionCap()
         fun_capability.parse_str(xmlin)
         self.assertEqual('virt_functions', fun_capability.type)
-        self.assertEqual([("0000", "0x0a", "0x1", "0x1"),
-                          ("0001", "0x0a", "0x02", "0x03"), ],
+        self.assertEqual([(0, 10, 1, 1),
+                          (1, 10, 2, 3)],
                          fun_capability.device_addrs)
 
 
@@ -2033,3 +2184,75 @@ class LibvirtConfigGuestMetadataNovaTest(LibvirtConfigBaseTest):
       <nova:root type="image" uuid="fe55c69a-8b2e-4bbc-811a-9ad2023a0426"/>
     </nova:instance>
         """)
+
+
+class LibvirtConfigGuestIDMap(LibvirtConfigBaseTest):
+    def test_config_id_map_parse_start_not_int(self):
+        xmlin = "<uid start='a' target='20000' count='5'/>"
+        obj = config.LibvirtConfigGuestIDMap()
+
+        self.assertRaises(ValueError, obj.parse_str, xmlin)
+
+    def test_config_id_map_parse_target_not_int(self):
+        xmlin = "<uid start='2' target='a' count='5'/>"
+        obj = config.LibvirtConfigGuestIDMap()
+
+        self.assertRaises(ValueError, obj.parse_str, xmlin)
+
+    def test_config_id_map_parse_count_not_int(self):
+        xmlin = "<uid start='2' target='20000' count='a'/>"
+        obj = config.LibvirtConfigGuestIDMap()
+
+        self.assertRaises(ValueError, obj.parse_str, xmlin)
+
+    def test_config_uid_map(self):
+        obj = config.LibvirtConfigGuestUIDMap()
+        obj.start = 1
+        obj.target = 10000
+        obj.count = 2
+
+        xml = obj.to_xml()
+        self.assertXmlEqual("<uid start='1' target='10000' count='2'/>", xml)
+
+    def test_config_uid_map_parse(self):
+        xmlin = "<uid start='2' target='20000' count='5'/>"
+        obj = config.LibvirtConfigGuestUIDMap()
+        obj.parse_str(xmlin)
+
+        self.assertEqual(2, obj.start)
+        self.assertEqual(20000, obj.target)
+        self.assertEqual(5, obj.count)
+
+    def test_config_gid_map(self):
+        obj = config.LibvirtConfigGuestGIDMap()
+        obj.start = 1
+        obj.target = 10000
+        obj.count = 2
+
+        xml = obj.to_xml()
+        self.assertXmlEqual("<gid start='1' target='10000' count='2'/>", xml)
+
+    def test_config_gid_map_parse(self):
+        xmlin = "<gid start='2' target='20000' count='5'/>"
+        obj = config.LibvirtConfigGuestGIDMap()
+        obj.parse_str(xmlin)
+
+        self.assertEqual(2, obj.start)
+        self.assertEqual(20000, obj.target)
+        self.assertEqual(5, obj.count)
+
+
+class LibvirtConfigMemoryBalloonTest(LibvirtConfigBaseTest):
+
+    def test_config_memory_balloon_period(self):
+        balloon = config.LibvirtConfigMemoryBalloon()
+        balloon.model = 'fake_virtio'
+        balloon.period = 11
+
+        xml = balloon.to_xml()
+        expected_xml = """
+        <memballoon model='fake_virtio'>
+            <stats period='11'/>
+        </memballoon>"""
+
+        self.assertXmlEqual(expected_xml, xml)

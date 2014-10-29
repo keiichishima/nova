@@ -13,6 +13,7 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
+from oslo.utils import strutils
 import six.moves.urllib.parse as urlparse
 import webob
 
@@ -23,16 +24,16 @@ import nova.context
 from nova import exception
 from nova.i18n import _
 from nova import objects
-from nova.openstack.common import log as logging
-from nova.openstack.common import strutils
 from nova import quota
 from nova import utils
 
 
 QUOTAS = quota.QUOTAS
-LOG = logging.getLogger(__name__)
 NON_QUOTA_KEYS = ['tenant_id', 'id', 'force']
 
+# Quotas that are only enabled by specific extensions
+EXTENDED_QUOTAS = {'server_groups': 'os-server-group-quotas',
+                   'server_group_members': 'os-server-group-quotas'}
 
 authorize_update = extensions.extension_authorizer('compute', 'quotas:update')
 authorize_show = extensions.extension_authorizer('compute', 'quotas:show')
@@ -45,38 +46,56 @@ class QuotaTemplate(xmlutil.TemplateBuilder):
         root.set('id')
 
         for resource in QUOTAS.resources:
-            elem = xmlutil.SubTemplateElement(root, resource)
-            elem.text = resource
+            if resource not in EXTENDED_QUOTAS:
+                elem = xmlutil.SubTemplateElement(root, resource)
+                elem.text = resource
 
         return xmlutil.MasterTemplate(root, 1)
 
 
 class QuotaSetsController(wsgi.Controller):
 
+    supported_quotas = []
+
     def __init__(self, ext_mgr):
         self.ext_mgr = ext_mgr
+        self.supported_quotas = QUOTAS.resources
+        for resource, extension in EXTENDED_QUOTAS.items():
+            if not self.ext_mgr.is_loaded(extension):
+                self.supported_quotas.remove(resource)
 
     def _format_quota_set(self, project_id, quota_set):
         """Convert the quota object to a result dict."""
 
-        result = dict(id=str(project_id))
+        if project_id:
+            result = dict(id=str(project_id))
+        else:
+            result = {}
 
-        for resource in QUOTAS.resources:
-            result[resource] = quota_set[resource]
+        for resource in self.supported_quotas:
+            if resource in quota_set:
+                result[resource] = quota_set[resource]
 
         return dict(quota_set=result)
 
-    def _validate_quota_limit(self, limit, minimum, maximum):
+    def _validate_quota_limit(self, resource, limit, minimum, maximum):
         # NOTE: -1 is a flag value for unlimited
         if limit < -1:
-            msg = _("Quota limit must be -1 or greater.")
+            msg = (_("Quota limit %(limit)s for %(resource)s "
+                     "must be -1 or greater.") %
+                   {'limit': limit, 'resource': resource})
             raise webob.exc.HTTPBadRequest(explanation=msg)
         if ((limit < minimum) and
            (maximum != -1 or (maximum == -1 and limit != -1))):
-            msg = _("Quota limit must be greater than %s.") % minimum
+            msg = (_("Quota limit %(limit)s for %(resource)s must "
+                     "be greater than or equal to already used and "
+                     "reserved %(minimum)s.") %
+                   {'limit': limit, 'resource': resource, 'minimum': minimum})
             raise webob.exc.HTTPBadRequest(explanation=msg)
         if maximum != -1 and limit > maximum:
-            msg = _("Quota limit must be less than %s.") % maximum
+            msg = (_("Quota limit %(limit)s for %(resource)s must be "
+                     "less than or equal to %(maximum)s.") %
+                   {'limit': limit, 'resource': resource, 'maximum': maximum})
             raise webob.exc.HTTPBadRequest(explanation=msg)
 
     def _get_quotas(self, context, id, user_id=None, usages=False):
@@ -140,9 +159,10 @@ class QuotaSetsController(wsgi.Controller):
             msg = _("quota_set not specified")
             raise webob.exc.HTTPBadRequest(explanation=msg)
         quota_set = body['quota_set']
+
         for key, value in quota_set.items():
-            if (key not in QUOTAS and
-                    key not in NON_QUOTA_KEYS):
+            if (key not in self.supported_quotas
+                and key not in NON_QUOTA_KEYS):
                 bad_keys.append(key)
                 continue
             if key == 'force' and extended_loaded:
@@ -156,17 +176,9 @@ class QuotaSetsController(wsgi.Controller):
                     raise webob.exc.HTTPBadRequest(
                         explanation=e.format_message())
 
-        LOG.debug("force update quotas: %s", force_update)
-
-        if len(bad_keys) > 0:
+        if bad_keys:
             msg = _("Bad key(s) %s in quota_set") % ",".join(bad_keys)
             raise webob.exc.HTTPBadRequest(explanation=msg)
-
-        try:
-            quotas = self._get_quotas(context, id, user_id=user_id,
-                                      usages=True)
-        except exception.Forbidden:
-            raise webob.exc.HTTPForbidden()
 
         for key, value in quota_set.items():
             if key in NON_QUOTA_KEYS or (not value and value != 0):
@@ -175,26 +187,11 @@ class QuotaSetsController(wsgi.Controller):
             # quota, this check will be ignored if admin want to force
             # update
             value = int(value)
-            if force_update is not True and value >= 0:
-                quota_value = quotas.get(key)
-                if quota_value and quota_value['limit'] >= 0:
-                    quota_used = (quota_value['in_use'] +
-                                  quota_value['reserved'])
-                    LOG.debug("Quota %(key)s used: %(quota_used)s, "
-                              "value: %(value)s.",
-                              {'key': key, 'quota_used': quota_used,
-                               'value': value})
-                    if quota_used > value:
-                        msg = (_("Quota value %(value)s for %(key)s are "
-                                "less than already used and reserved "
-                                "%(quota_used)s") %
-                                {'value': value, 'key': key,
-                                 'quota_used': quota_used})
-                        raise webob.exc.HTTPBadRequest(explanation=msg)
+            if not force_update:
+                minimum = settable_quotas[key]['minimum']
+                maximum = settable_quotas[key]['maximum']
+                self._validate_quota_limit(key, value, minimum, maximum)
 
-            minimum = settable_quotas[key]['minimum']
-            maximum = settable_quotas[key]['maximum']
-            self._validate_quota_limit(value, minimum, maximum)
             try:
                 objects.Quotas.create_limit(context, project_id,
                                             key, value, user_id=user_id)
@@ -203,13 +200,15 @@ class QuotaSetsController(wsgi.Controller):
                                             key, value, user_id=user_id)
             except exception.AdminRequired:
                 raise webob.exc.HTTPForbidden()
-        return {'quota_set': self._get_quotas(context, id, user_id=user_id)}
+        values = self._get_quotas(context, id, user_id=user_id)
+        return self._format_quota_set(None, values)
 
     @wsgi.serializers(xml=QuotaTemplate)
     def defaults(self, req, id):
         context = req.environ['nova.context']
         authorize_show(context)
-        return self._format_quota_set(id, QUOTAS.get_defaults(context))
+        values = QUOTAS.get_defaults(context)
+        return self._format_quota_set(id, values)
 
     def delete(self, req, id):
         if self.ext_mgr.is_loaded('os-extended-quotas'):

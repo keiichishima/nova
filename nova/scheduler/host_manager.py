@@ -21,19 +21,19 @@ import collections
 import UserDict
 
 from oslo.config import cfg
+from oslo.serialization import jsonutils
+from oslo.utils import timeutils
 
 from nova.compute import task_states
 from nova.compute import vm_states
 from nova import db
 from nova import exception
-from nova.i18n import _
-from nova.openstack.common import jsonutils
+from nova.i18n import _, _LW
 from nova.openstack.common import log as logging
-from nova.openstack.common import timeutils
-from nova.pci import pci_request
-from nova.pci import pci_stats
+from nova.pci import stats as pci_stats
 from nova.scheduler import filters
 from nova.scheduler import weights
+from nova.virt import hardware
 
 host_manager_opts = [
     cfg.MultiStrOpt('scheduler_available_filters',
@@ -122,6 +122,7 @@ class HostState(object):
         self.free_disk_mb = 0
         self.vcpus_total = 0
         self.vcpus_used = 0
+        self.numa_topology = None
 
         # Additional host information from the compute node stats:
         self.num_instances = 0
@@ -166,7 +167,7 @@ class HostState(object):
             if name:
                 self.metrics[name] = item
             else:
-                LOG.warn(_("Metric name unknown of %r") % item)
+                LOG.warn(_LW("Metric name unknown of %r"), item)
 
     def update_from_compute_node(self, compute):
         """Update information about a host from its compute_node info."""
@@ -181,8 +182,8 @@ class HostState(object):
         if least_gb is not None:
             if least_gb > free_gb:
                 # can occur when an instance in database is not on host
-                LOG.warn(_("Host has more disk space than database expected"
-                           " (%(physical)sgb > %(database)sgb)") %
+                LOG.warn(_LW("Host has more disk space than database "
+                             "expected (%(physical)sgb > %(database)sgb)"),
                          {'physical': least_gb, 'database': free_gb})
             free_gb = min(least_gb, free_gb)
         free_disk_mb = free_gb * 1024
@@ -197,6 +198,7 @@ class HostState(object):
         self.vcpus_total = compute['vcpus']
         self.vcpus_used = compute['vcpus_used']
         self.updated = compute['updated_at']
+        self.numa_topology = compute['numa_topology']
         if 'pci_stats' in compute:
             self.pci_stats = pci_stats.PciDeviceStats(compute['pci_stats'])
         else:
@@ -239,9 +241,14 @@ class HostState(object):
         # Track number of instances on host
         self.num_instances += 1
 
-        pci_requests = pci_request.get_instance_pci_requests(instance)
-        if pci_requests and self.pci_stats:
-            self.pci_stats.apply_requests(pci_requests)
+        pci_requests = instance.get('pci_requests')
+        if pci_requests and pci_requests.requests and self.pci_stats:
+            self.pci_stats.apply_requests(pci_requests.requests)
+
+        # Calculate the numa usage
+        updated_numa_topology = hardware.get_host_numa_usage_from_instance(
+                self, instance)
+        self.numa_topology = updated_numa_topology
 
         vm_state = instance.get('vm_state', vm_states.BUILDING)
         task_state = instance.get('task_state')
@@ -262,7 +269,8 @@ class HostManager(object):
     """Base HostManager class."""
 
     # Can be overridden in a subclass
-    host_state_cls = HostState
+    def host_state_cls(self, host, node, **kwargs):
+        return HostState(host, node, **kwargs)
 
     def __init__(self):
         self.host_state_map = {}
@@ -387,7 +395,7 @@ class HostManager(object):
         for compute in compute_nodes:
             service = compute['service']
             if not service:
-                LOG.warn(_("No service for compute ID %s") % compute['id'])
+                LOG.warn(_LW("No service for compute ID %s"), compute['id'])
                 continue
             host = service['host']
             node = compute.get('hypervisor_hostname')

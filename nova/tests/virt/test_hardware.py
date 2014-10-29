@@ -12,13 +12,29 @@
 # License for the specific language governing permissions and limitations
 # under the License.
 
+import uuid
+
+import mock
+from oslo.serialization import jsonutils
+import six
+
+from nova import context
 from nova import exception
+from nova import objects
+from nova.objects import base as base_obj
 from nova import test
 from nova.tests import matchers
 from nova.virt import hardware as hw
 
 
-class FakeFlavor():
+class FakeFlavor(dict):
+    def __init__(self, vcpus, memory, extra_specs):
+        self['vcpus'] = vcpus
+        self['memory_mb'] = memory
+        self['extra_specs'] = extra_specs
+
+
+class FakeFlavorObject(object):
     def __init__(self, vcpus, memory, extra_specs):
         self.vcpus = vcpus
         self.memory_mb = memory
@@ -41,7 +57,7 @@ class CpuSetTestCase(test.NoDBTestCase):
     def test_get_vcpu_pin_set(self):
         self.flags(vcpu_pin_set="1-3,5,^2")
         cpuset_ids = hw.get_vcpu_pin_set()
-        self.assertEqual([1, 3, 5], cpuset_ids)
+        self.assertEqual(set([1, 3, 5]), cpuset_ids)
 
     def test_parse_cpu_spec_none_returns_none(self):
         self.flags(vcpu_pin_set=None)
@@ -183,7 +199,7 @@ class VCPUTopologyTest(test.NoDBTestCase):
     def test_validate_config(self):
         testdata = [
             {  # Flavor sets preferred topology only
-                "flavor": FakeFlavor(16, 2048, {
+                "flavor": FakeFlavorObject(16, 2048, {
                     "hw:cpu_sockets": "8",
                     "hw:cpu_cores": "2",
                     "hw:cpu_threads": "1",
@@ -196,7 +212,7 @@ class VCPUTopologyTest(test.NoDBTestCase):
                 )
             },
             {  # Image topology overrides flavor
-                "flavor": FakeFlavor(16, 2048, {
+                "flavor": FakeFlavorObject(16, 2048, {
                     "hw:cpu_sockets": "8",
                     "hw:cpu_cores": "2",
                     "hw:cpu_threads": "1",
@@ -214,7 +230,7 @@ class VCPUTopologyTest(test.NoDBTestCase):
                 )
             },
             {  # Partial image topology overrides flavor
-                "flavor": FakeFlavor(16, 2048, {
+                "flavor": FakeFlavorObject(16, 2048, {
                     "hw:cpu_sockets": "8",
                     "hw:cpu_cores": "2",
                     "hw:cpu_threads": "1",
@@ -229,7 +245,7 @@ class VCPUTopologyTest(test.NoDBTestCase):
                 )
             },
             {  # Restrict use of threads
-                "flavor": FakeFlavor(16, 2048, {
+                "flavor": FakeFlavorObject(16, 2048, {
                     "hw:cpu_max_threads": "2",
                 }),
                 "image": {
@@ -242,7 +258,7 @@ class VCPUTopologyTest(test.NoDBTestCase):
                 )
             },
             {  # Force use of at least two sockets
-                "flavor": FakeFlavor(16, 2048, {
+                "flavor": FakeFlavorObject(16, 2048, {
                     "hw:cpu_max_cores": "8",
                     "hw:cpu_max_threads": "1",
                 }),
@@ -254,7 +270,7 @@ class VCPUTopologyTest(test.NoDBTestCase):
                 )
             },
             {  # Image limits reduce flavor
-                "flavor": FakeFlavor(16, 2048, {
+                "flavor": FakeFlavorObject(16, 2048, {
                     "hw:cpu_max_cores": "8",
                     "hw:cpu_max_threads": "1",
                 }),
@@ -268,7 +284,7 @@ class VCPUTopologyTest(test.NoDBTestCase):
                 )
             },
             {  # Image limits kill flavor preferred
-                "flavor": FakeFlavor(16, 2048, {
+                "flavor": FakeFlavorObject(16, 2048, {
                     "hw:cpu_sockets": "2",
                     "hw:cpu_cores": "8",
                     "hw:cpu_threads": "1",
@@ -283,7 +299,7 @@ class VCPUTopologyTest(test.NoDBTestCase):
                 )
             },
             {  # Image limits cannot exceed flavor
-                "flavor": FakeFlavor(16, 2048, {
+                "flavor": FakeFlavorObject(16, 2048, {
                     "hw:cpu_max_cores": "8",
                     "hw:cpu_max_threads": "1",
                 }),
@@ -295,7 +311,7 @@ class VCPUTopologyTest(test.NoDBTestCase):
                 "expect": exception.ImageVCPULimitsRangeExceeded,
             },
             {  # Image preferred cannot exceed flavor
-                "flavor": FakeFlavor(16, 2048, {
+                "flavor": FakeFlavorObject(16, 2048, {
                     "hw:cpu_max_cores": "8",
                     "hw:cpu_max_threads": "1",
                 }),
@@ -531,7 +547,7 @@ class VCPUTopologyTest(test.NoDBTestCase):
         testdata = [
             {  # Flavor sets preferred topology only
                 "allow_threads": True,
-                "flavor": FakeFlavor(16, 2048, {
+                "flavor": FakeFlavorObject(16, 2048, {
                     "hw:cpu_sockets": "8",
                     "hw:cpu_cores": "2",
                     "hw:cpu_threads": "1"
@@ -543,7 +559,7 @@ class VCPUTopologyTest(test.NoDBTestCase):
             },
             {  # Image topology overrides flavor
                 "allow_threads": True,
-                "flavor": FakeFlavor(16, 2048, {
+                "flavor": FakeFlavorObject(16, 2048, {
                     "hw:cpu_sockets": "8",
                     "hw:cpu_cores": "2",
                     "hw:cpu_threads": "1",
@@ -560,7 +576,7 @@ class VCPUTopologyTest(test.NoDBTestCase):
             },
             {  # Image topology overrides flavor
                 "allow_threads": False,
-                "flavor": FakeFlavor(16, 2048, {
+                "flavor": FakeFlavorObject(16, 2048, {
                     "hw:cpu_sockets": "8",
                     "hw:cpu_cores": "2",
                     "hw:cpu_threads": "1",
@@ -577,7 +593,7 @@ class VCPUTopologyTest(test.NoDBTestCase):
             },
             {  # Partial image topology overrides flavor
                 "allow_threads": True,
-                "flavor": FakeFlavor(16, 2048, {
+                "flavor": FakeFlavorObject(16, 2048, {
                     "hw:cpu_sockets": "8",
                     "hw:cpu_cores": "2",
                     "hw:cpu_threads": "1"
@@ -591,7 +607,7 @@ class VCPUTopologyTest(test.NoDBTestCase):
             },
             {  # Restrict use of threads
                 "allow_threads": True,
-                "flavor": FakeFlavor(16, 2048, {
+                "flavor": FakeFlavorObject(16, 2048, {
                     "hw:cpu_max_threads": "1"
                 }),
                 "image": {
@@ -601,7 +617,7 @@ class VCPUTopologyTest(test.NoDBTestCase):
             },
             {  # Force use of at least two sockets
                 "allow_threads": True,
-                "flavor": FakeFlavor(16, 2048, {
+                "flavor": FakeFlavorObject(16, 2048, {
                     "hw:cpu_max_cores": "8",
                     "hw:cpu_max_threads": "1",
                 }),
@@ -612,7 +628,7 @@ class VCPUTopologyTest(test.NoDBTestCase):
             },
             {  # Image limits reduce flavor
                 "allow_threads": True,
-                "flavor": FakeFlavor(16, 2048, {
+                "flavor": FakeFlavorObject(16, 2048, {
                     "hw:cpu_max_sockets": "8",
                     "hw:cpu_max_cores": "8",
                     "hw:cpu_max_threads": "1",
@@ -626,7 +642,7 @@ class VCPUTopologyTest(test.NoDBTestCase):
             },
             {  # Image limits kill flavor preferred
                 "allow_threads": True,
-                "flavor": FakeFlavor(16, 2048, {
+                "flavor": FakeFlavorObject(16, 2048, {
                     "hw:cpu_sockets": "2",
                     "hw:cpu_cores": "8",
                     "hw:cpu_threads": "1",
@@ -822,6 +838,30 @@ class NUMATopologyTest(test.NoDBTestCase):
                     self.assertEqual(testitem["expect"].cells[i].memory,
                                      topology.cells[i].memory)
 
+    def test_can_fit_isntances(self):
+        hosttopo = hw.VirtNUMAHostTopology([
+            hw.VirtNUMATopologyCellUsage(0, set([0, 1, 2, 3]), 1024),
+            hw.VirtNUMATopologyCellUsage(1, set([4, 6]), 512)
+        ])
+        instance1 = hw.VirtNUMAInstanceTopology([
+            hw.VirtNUMATopologyCell(0, set([0, 1, 2]), 256),
+            hw.VirtNUMATopologyCell(1, set([4]), 256),
+        ])
+        instance2 = hw.VirtNUMAInstanceTopology([
+            hw.VirtNUMATopologyCell(0, set([0, 1]), 256),
+            hw.VirtNUMATopologyCell(1, set([4, 6]), 256),
+            hw.VirtNUMATopologyCell(2, set([7, 8]), 256),
+        ])
+
+        self.assertTrue(hw.VirtNUMAHostTopology.can_fit_instances(
+            hosttopo, []))
+        self.assertTrue(hw.VirtNUMAHostTopology.can_fit_instances(
+            hosttopo, [instance1]))
+        self.assertFalse(hw.VirtNUMAHostTopology.can_fit_instances(
+            hosttopo, [instance2]))
+        self.assertFalse(hw.VirtNUMAHostTopology.can_fit_instances(
+            hosttopo, [instance1, instance2]))
+
     def test_host_usage_contiguous(self):
         hosttopo = hw.VirtNUMAHostTopology([
             hw.VirtNUMATopologyCellUsage(0, set([0, 1, 2, 3]), 1024),
@@ -1008,11 +1048,8 @@ class NUMATopologyTest(test.NoDBTestCase):
         got_cell = cell_class._from_dict(data_dict)
         self.assertNUMACellMatches(expected_cell, got_cell)
 
-    def _test_topo_from_dict(self, data_dict, expected_topo, with_usage=False):
-        topology_class = (
-                hw.VirtNUMAHostTopology
-                if with_usage else hw.VirtNUMAInstanceTopology)
-        got_topo = topology_class._from_dict(
+    def _test_topo_from_dict(self, data_dict, expected_topo):
+        got_topo = expected_topo.__class__._from_dict(
                 data_dict)
         for got_cell, expected_cell in zip(
                 got_topo.cells, expected_topo.cells):
@@ -1022,6 +1059,14 @@ class NUMATopologyTest(test.NoDBTestCase):
         cell = hw.VirtNUMATopologyCell(1, set([1, 2]), 512)
         cell_dict = {'cpus': '1,2',
                      'mem': {'total': 512},
+                     'id': 1}
+        self._test_to_dict(cell, cell_dict)
+        self._test_cell_from_dict(cell_dict, cell)
+
+    def test_numa_limit_cell_dict(self):
+        cell = hw.VirtNUMATopologyCellLimit(1, set([1, 2]), 512, 4, 2048)
+        cell_dict = {'cpus': '1,2', 'cpu_limit': 4,
+                     'mem': {'total': 512, 'limit': 2048},
                      'id': 1}
         self._test_to_dict(cell, cell_dict)
         self._test_cell_from_dict(cell_dict, cell)
@@ -1047,7 +1092,24 @@ class NUMATopologyTest(test.NoDBTestCase):
                           'mem': {'total': 1024},
                           'id': 2}]}
         self._test_to_dict(topo, topo_dict)
-        self._test_topo_from_dict(topo_dict, topo, with_usage=False)
+        self._test_topo_from_dict(topo_dict, topo)
+
+    def test_numa_limits_topo_dict(self):
+        topo = hw.VirtNUMALimitTopology(
+                cells=[
+                    hw.VirtNUMATopologyCellLimit(
+                        1, set([1, 2]), 1024, 4, 2048),
+                    hw.VirtNUMATopologyCellLimit(
+                        2, set([3, 4]), 1024, 4, 2048)])
+        topo_dict = {'cells': [
+                        {'cpus': '1,2', 'cpu_limit': 4,
+                          'mem': {'total': 1024, 'limit': 2048},
+                          'id': 1},
+                        {'cpus': '3,4', 'cpu_limit': 4,
+                          'mem': {'total': 1024, 'limit': 2048},
+                          'id': 2}]}
+        self._test_to_dict(topo, topo_dict)
+        self._test_topo_from_dict(topo_dict, topo)
 
     def test_numa_topo_dict_with_usage(self):
         topo = hw.VirtNUMAHostTopology(
@@ -1064,7 +1126,7 @@ class NUMATopologyTest(test.NoDBTestCase):
                           'mem': {'total': 1024, 'used': 0},
                           'id': 2}]}
         self._test_to_dict(topo, topo_dict)
-        self._test_topo_from_dict(topo_dict, topo, with_usage=True)
+        self._test_topo_from_dict(topo_dict, topo)
 
     def test_json(self):
         expected = hw.VirtNUMAHostTopology(
@@ -1077,3 +1139,247 @@ class NUMATopologyTest(test.NoDBTestCase):
 
         for exp_cell, got_cell in zip(expected.cells, got.cells):
             self.assertNUMACellMatches(exp_cell, got_cell)
+
+
+class NumberOfSerialPortsTest(test.NoDBTestCase):
+    def test_flavor(self):
+        flavor = FakeFlavorObject(8, 2048, {"hw:serial_port_count": 3})
+        num_ports = hw.get_number_of_serial_ports(flavor, None)
+        self.assertEqual(3, num_ports)
+
+    def test_image_meta(self):
+        flavor = FakeFlavorObject(8, 2048, {})
+        image_meta = {"properties": {"hw_serial_port_count": 2}}
+        num_ports = hw.get_number_of_serial_ports(flavor, image_meta)
+        self.assertEqual(2, num_ports)
+
+    def test_flavor_invalid_value(self):
+        flavor = FakeFlavorObject(8, 2048, {"hw:serial_port_count": 'foo'})
+        image_meta = {"properties": {}}
+        self.assertRaises(exception.ImageSerialPortNumberInvalid,
+                          hw.get_number_of_serial_ports,
+                          flavor, image_meta)
+
+    def test_image_meta_invalid_value(self):
+        flavor = FakeFlavorObject(8, 2048, {})
+        image_meta = {"properties": {"hw_serial_port_count": 'bar'}}
+        self.assertRaises(exception.ImageSerialPortNumberInvalid,
+                          hw.get_number_of_serial_ports,
+                          flavor, image_meta)
+
+    def test_image_meta_smaller_than_flavor(self):
+        flavor = FakeFlavorObject(8, 2048, {"hw:serial_port_count": 3})
+        image_meta = {"properties": {"hw_serial_port_count": 2}}
+        num_ports = hw.get_number_of_serial_ports(flavor, image_meta)
+        self.assertEqual(2, num_ports)
+
+    def test_flavor_smaller_than_image_meta(self):
+        flavor = FakeFlavorObject(8, 2048, {"hw:serial_port_count": 3})
+        image_meta = {"properties": {"hw_serial_port_count": 4}}
+        self.assertRaises(exception.ImageSerialPortNumberExceedFlavorValue,
+                          hw.get_number_of_serial_ports,
+                          flavor, image_meta)
+
+
+class NUMATopologyClaimsTest(test.NoDBTestCase):
+    def setUp(self):
+        super(NUMATopologyClaimsTest, self).setUp()
+
+        self.host = hw.VirtNUMAHostTopology(
+                cells=[
+                    hw.VirtNUMATopologyCellUsage(
+                        1, set([1, 2, 3, 4]), 2048,
+                        cpu_usage=1, memory_usage=512),
+                    hw.VirtNUMATopologyCellUsage(
+                        2, set([5, 6]), 1024)])
+
+        self.limits = hw.VirtNUMALimitTopology(
+                cells=[
+                    hw.VirtNUMATopologyCellLimit(
+                        1, set([1, 2, 3, 4]), 2048,
+                        cpu_limit=8, memory_limit=4096),
+                    hw.VirtNUMATopologyCellLimit(
+                        2, set([5, 6]), 1024,
+                        cpu_limit=4, memory_limit=2048)])
+
+        self.large_instance = hw.VirtNUMAInstanceTopology(
+                cells=[
+                    hw.VirtNUMATopologyCell(1, set([1, 2, 3, 4, 5, 6]), 8192),
+                    hw.VirtNUMATopologyCell(2, set([7, 8]), 4096)])
+        self.medium_instance = hw.VirtNUMAInstanceTopology(
+                cells=[
+                    hw.VirtNUMATopologyCell(1, set([1, 2, 3, 4]), 1024),
+                    hw.VirtNUMATopologyCell(2, set([7, 8]), 2048)])
+        self.small_instance = hw.VirtNUMAInstanceTopology(
+                cells=[
+                    hw.VirtNUMATopologyCell(1, set([1]), 256),
+                    hw.VirtNUMATopologyCell(2, set([5]), 1024)])
+        self.no_fit_instance = hw.VirtNUMAInstanceTopology(
+                cells=[
+                    hw.VirtNUMATopologyCell(1, set([1]), 256),
+                    hw.VirtNUMATopologyCell(2, set([2]), 256),
+                    hw.VirtNUMATopologyCell(3, set([3]), 256)])
+
+    def test_claim_not_enough_info(self):
+
+        # No limits supplied
+        self.assertIsNone(
+                hw.VirtNUMAHostTopology.claim_test(
+                    self.host, [self.large_instance]))
+        # Empty topology
+        self.assertIsNone(
+                hw.VirtNUMAHostTopology.claim_test(
+                    hw.VirtNUMAHostTopology(), [self.large_instance],
+                    limits=self.limits))
+        # No instances to claim
+        self.assertIsNone(
+                hw.VirtNUMAHostTopology.claim_test(self.host, [], self.limits))
+
+    def test_claim_succeeds(self):
+        self.assertIsNone(
+                hw.VirtNUMAHostTopology.claim_test(
+                    self.host, [self.small_instance], self.limits))
+        self.assertIsNone(
+                hw.VirtNUMAHostTopology.claim_test(
+                    self.host, [self.medium_instance], self.limits))
+
+    def test_claim_fails(self):
+        self.assertIsInstance(
+                hw.VirtNUMAHostTopology.claim_test(
+                    self.host, [self.large_instance], self.limits),
+                six.text_type)
+
+        self.assertIsInstance(
+                hw.VirtNUMAHostTopology.claim_test(
+                     self.host, [self.medium_instance, self.small_instance],
+                     self.limits),
+                six.text_type)
+
+        # Instance fails if it won't fit the topology
+        self.assertIsInstance(
+                hw.VirtNUMAHostTopology.claim_test(
+                     self.host, [self.no_fit_instance], self.limits),
+                six.text_type)
+
+        # Instance fails if it won't fit the topology even with no limits
+        self.assertIsInstance(
+                hw.VirtNUMAHostTopology.claim_test(
+                     self.host, [self.no_fit_instance]), six.text_type)
+
+
+class HelperMethodsTestCase(test.NoDBTestCase):
+    def setUp(self):
+        super(HelperMethodsTestCase, self).setUp()
+        self.hosttopo = hw.VirtNUMAHostTopology([
+            hw.VirtNUMATopologyCellUsage(0, set([0, 1]), 512),
+            hw.VirtNUMATopologyCellUsage(1, set([2, 3]), 512),
+        ])
+        self.instancetopo = hw.VirtNUMAInstanceTopology([
+            hw.VirtNUMATopologyCell(0, set([0, 1]), 256),
+            hw.VirtNUMATopologyCell(1, set([2]), 256),
+        ])
+        self.context = context.RequestContext('fake-user',
+                                              'fake-project')
+
+    def _check_usage(self, host_usage):
+        self.assertEqual(2, host_usage.cells[0].cpu_usage)
+        self.assertEqual(256, host_usage.cells[0].memory_usage)
+        self.assertEqual(1, host_usage.cells[1].cpu_usage)
+        self.assertEqual(256, host_usage.cells[1].memory_usage)
+
+    def test_dicts_json(self):
+        host = {'numa_topology': self.hosttopo.to_json()}
+        instance = {'numa_topology': self.instancetopo.to_json()}
+
+        res = hw.get_host_numa_usage_from_instance(host, instance)
+        self.assertIsInstance(res, six.string_types)
+        self._check_usage(hw.VirtNUMAHostTopology.from_json(res))
+
+    def test_dicts_instance_json(self):
+        host = {'numa_topology': self.hosttopo}
+        instance = {'numa_topology': self.instancetopo.to_json()}
+
+        res = hw.get_host_numa_usage_from_instance(host, instance)
+        self.assertIsInstance(res, hw.VirtNUMAHostTopology)
+        self._check_usage(res)
+
+    def test_dicts_host_json(self):
+        host = {'numa_topology': self.hosttopo.to_json()}
+        instance = {'numa_topology': self.instancetopo}
+
+        res = hw.get_host_numa_usage_from_instance(host, instance)
+        self.assertIsInstance(res, six.string_types)
+        self._check_usage(hw.VirtNUMAHostTopology.from_json(res))
+
+    def test_object_host_instance_json(self):
+        host = objects.ComputeNode(numa_topology=self.hosttopo.to_json())
+        instance = {'numa_topology': self.instancetopo.to_json()}
+
+        res = hw.get_host_numa_usage_from_instance(host, instance)
+        self.assertIsInstance(res, six.string_types)
+        self._check_usage(hw.VirtNUMAHostTopology.from_json(res))
+
+    def test_object_host_instance(self):
+        host = objects.ComputeNode(numa_topology=self.hosttopo.to_json())
+        instance = {'numa_topology': self.instancetopo}
+
+        res = hw.get_host_numa_usage_from_instance(host, instance)
+        self.assertIsInstance(res, six.string_types)
+        self._check_usage(hw.VirtNUMAHostTopology.from_json(res))
+
+    def test_instance_with_fetch(self):
+        host = objects.ComputeNode(numa_topology=self.hosttopo.to_json())
+        fake_uuid = str(uuid.uuid4())
+        instance = {'uuid': fake_uuid}
+
+        with mock.patch.object(objects.InstanceNUMATopology,
+                'get_by_instance_uuid', return_value=None) as get_mock:
+            res = hw.get_host_numa_usage_from_instance(host, instance)
+            self.assertIsInstance(res, six.string_types)
+            self.assertTrue(get_mock.called)
+
+    def test_object_instance_with_load(self):
+        host = objects.ComputeNode(numa_topology=self.hosttopo.to_json())
+        fake_uuid = str(uuid.uuid4())
+        instance = objects.Instance(context=self.context, uuid=fake_uuid)
+
+        with mock.patch.object(objects.InstanceNUMATopology,
+                'get_by_instance_uuid', return_value=None) as get_mock:
+            res = hw.get_host_numa_usage_from_instance(host, instance)
+            self.assertIsInstance(res, six.string_types)
+            self.assertTrue(get_mock.called)
+
+    def test_instance_serialized_by_build_request_spec(self):
+        host = objects.ComputeNode(numa_topology=self.hosttopo.to_json())
+        fake_uuid = str(uuid.uuid4())
+        instance = objects.Instance(context=self.context, id=1, uuid=fake_uuid,
+                numa_topology=objects.InstanceNUMATopology.obj_from_topology(
+                    self.instancetopo))
+        # NOTE (ndipanov): This emulates scheduler.utils.build_request_spec
+        # We can remove this test once we no longer use that method.
+        instance_raw = jsonutils.to_primitive(
+                base_obj.obj_to_primitive(instance))
+        res = hw.get_host_numa_usage_from_instance(host, instance_raw)
+        self.assertIsInstance(res, six.string_types)
+        self._check_usage(hw.VirtNUMAHostTopology.from_json(res))
+
+    def test_attr_host(self):
+        class Host(object):
+            def __init__(obj):
+                obj.numa_topology = self.hosttopo.to_json()
+
+        host = Host()
+        instance = {'numa_topology': self.instancetopo.to_json()}
+
+        res = hw.get_host_numa_usage_from_instance(host, instance)
+        self.assertIsInstance(res, six.string_types)
+        self._check_usage(hw.VirtNUMAHostTopology.from_json(res))
+
+    def test_never_serialize_result(self):
+        host = {'numa_topology': self.hosttopo.to_json()}
+        instance = {'numa_topology': self.instancetopo}
+
+        res = hw.get_host_numa_usage_from_instance(host, instance,
+                                                  never_serialize_result=True)
+        self.assertIsInstance(res, hw.VirtNUMAHostTopology)
+        self._check_usage(res)

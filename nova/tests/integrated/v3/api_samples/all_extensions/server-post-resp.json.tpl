@@ -1,5 +1,6 @@
 {
     "server": {
+        "OS-DCF:diskConfig": "AUTO",
         "adminPass": "%(password)s",
         "id": "%(id)s",
         "links": [
@@ -12,12 +13,12 @@
                 "rel": "bookmark"
             }
         ],
-        "os-security-groups:security_groups": [
+        "security_groups": [
             {
                 "name": "default"
             }
         ],
-        "os-access-ips:access_ip_v4": "",
-        "os-access-ips:access_ip_v6": ""
+        "accessIPv4": "",
+        "accessIPv6": ""
     }
 }

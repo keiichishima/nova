@@ -12,12 +12,13 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
+from oslo.serialization import jsonutils
+
 from nova import db
 from nova import exception
 from nova import objects
 from nova.objects import base
 from nova.objects import fields
-from nova.openstack.common import jsonutils
 from nova import utils
 
 
@@ -27,7 +28,9 @@ class ComputeNode(base.NovaPersistentObject, base.NovaObject):
     # Version 1.2: String attributes updated to support unicode
     # Version 1.3: Added stats field
     # Version 1.4: Added host ip field
-    VERSION = '1.4'
+    # Version 1.5: Added numa_topology field
+    # Version 1.6: Added supported_instances
+    VERSION = '1.6'
 
     fields = {
         'id': fields.IntegerField(read_only=True),
@@ -50,10 +53,18 @@ class ComputeNode(base.NovaPersistentObject, base.NovaObject):
         'metrics': fields.StringField(nullable=True),
         'stats': fields.DictOfNullableStringsField(nullable=True),
         'host_ip': fields.IPAddressField(nullable=True),
+        'numa_topology': fields.StringField(nullable=True),
+        # NOTE(pmurray): the supported_hv_specs field maps to the
+        # supported_instances field in the database
+        'supported_hv_specs': fields.ListOfObjectsField('HVSpec'),
         }
 
     def obj_make_compatible(self, primitive, target_version):
         target_version = utils.convert_version_to_tuple(target_version)
+        if target_version < (1, 6) and 'supported_hv_specs' in primitive:
+            del primitive['supported_hv_specs']
+        if target_version < (1, 5) and 'numa_topology' in primitive:
+            del primitive['numa_topology']
         if target_version < (1, 4) and 'host_ip' in primitive:
             del primitive['host_ip']
         if target_version < (1, 3) and 'stats' in primitive:
@@ -63,13 +74,20 @@ class ComputeNode(base.NovaPersistentObject, base.NovaObject):
     @staticmethod
     def _from_db_object(context, compute, db_compute):
 
-        fields = set(compute.fields) - set(['stats'])
+        fields = set(compute.fields) - set(['stats', 'supported_hv_specs'])
         for key in fields:
             compute[key] = db_compute[key]
 
         stats = db_compute['stats']
         if stats:
             compute['stats'] = jsonutils.loads(stats)
+
+        sup_insts = db_compute.get('supported_instances')
+        if sup_insts:
+            hv_specs = jsonutils.loads(sup_insts)
+            hv_specs = [objects.HVSpec.from_list(hv_spec)
+                        for hv_spec in hv_specs]
+            compute['supported_hv_specs'] = hv_specs
 
         compute._context = context
         compute.obj_reset_changes()
@@ -95,6 +113,12 @@ class ComputeNode(base.NovaPersistentObject, base.NovaObject):
         if host_ip:
             updates['host_ip'] = str(host_ip)
 
+    def _convert_supported_instances_to_db_format(selfself, updates):
+        hv_specs = updates.pop('supported_hv_specs', None)
+        if hv_specs is not None:
+            hv_specs = [hv_spec.to_list() for hv_spec in hv_specs]
+            updates['supported_instances'] = jsonutils.dumps(hv_specs)
+
     @base.remotable
     def create(self, context):
         if self.obj_attr_is_set('id'):
@@ -103,6 +127,7 @@ class ComputeNode(base.NovaPersistentObject, base.NovaObject):
         updates = self.obj_get_changes()
         self._convert_stats_to_db_format(updates)
         self._convert_host_ip_to_db_format(updates)
+        self._convert_supported_instances_to_db_format(updates)
 
         db_compute = db.compute_node_create(context, updates)
         self._from_db_object(context, self, db_compute)
@@ -115,6 +140,7 @@ class ComputeNode(base.NovaPersistentObject, base.NovaObject):
         updates.pop('id', None)
         self._convert_stats_to_db_format(updates)
         self._convert_host_ip_to_db_format(updates)
+        self._convert_supported_instances_to_db_format(updates)
 
         db_compute = db.compute_node_update(context, self.id, updates)
         self._from_db_object(context, self, db_compute)
@@ -137,7 +163,10 @@ class ComputeNodeList(base.ObjectListBase, base.NovaObject):
     # Version 1.1 ComputeNode version 1.3
     # Version 1.2 Add get_by_service()
     # Version 1.3 ComputeNode version 1.4
-    VERSION = '1.3'
+    # Version 1.4 ComputeNode version 1.5
+    # Version 1.5 Add use_slave to get_by_service
+    # Version 1.6 ComputeNode version 1.6
+    VERSION = '1.6'
     fields = {
         'objects': fields.ListOfObjectsField('ComputeNode'),
         }
@@ -147,6 +176,9 @@ class ComputeNodeList(base.ObjectListBase, base.NovaObject):
         '1.1': '1.3',
         '1.2': '1.3',
         '1.3': '1.4',
+        '1.4': '1.5',
+        '1.5': '1.5',
+        '1.6': '1.6'
         }
 
     @base.remotable_classmethod
@@ -163,12 +195,13 @@ class ComputeNodeList(base.ObjectListBase, base.NovaObject):
                                   db_computes)
 
     @base.remotable_classmethod
-    def _get_by_service(cls, context, service_id):
+    def _get_by_service(cls, context, service_id, use_slave=False):
         db_service = db.service_get(context, service_id,
-                                    with_compute_node=True)
+                                    with_compute_node=True,
+                                    use_slave=use_slave)
         return base.obj_make_list(context, cls(context), objects.ComputeNode,
                                   db_service['compute_node'])
 
     @classmethod
-    def get_by_service(cls, context, service):
-        return cls._get_by_service(context, service.id)
+    def get_by_service(cls, context, service, use_slave=False):
+        return cls._get_by_service(context, service.id, use_slave=use_slave)

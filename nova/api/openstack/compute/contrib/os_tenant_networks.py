@@ -17,6 +17,7 @@
 import netaddr
 import netaddr.core as netexc
 from oslo.config import cfg
+import six
 import webob
 from webob import exc
 
@@ -25,7 +26,6 @@ from nova import context as nova_context
 from nova import exception
 from nova.i18n import _
 from nova.i18n import _LE
-from nova.i18n import _LI
 import nova.network
 from nova.openstack.common import log as logging
 from nova import quota
@@ -33,33 +33,23 @@ from nova import quota
 
 CONF = cfg.CONF
 
-try:
-    os_network_opts = [
-        cfg.BoolOpt("enable_network_quota",
-                    default=False,
-                    help=('Enables or disables quota checking for tenant '
-                          'networks')),
-        cfg.StrOpt('use_neutron_default_nets',
-                         default="False",
-                         help=('Control for checking for default networks')),
-        cfg.StrOpt('neutron_default_tenant_id',
-                         default="default",
-                         help=('Default tenant id when creating neutron '
-                               'networks'))
-    ]
-    CONF.register_opts(os_network_opts)
-except cfg.DuplicateOptError:
-    # NOTE(jkoelker) These options are verbatim elsewhere this is here
-    #                to make sure they are registered for our use.
-    pass
-
-if CONF.enable_network_quota:
-    opts = [
-        cfg.IntOpt('quota_networks',
-                   default=3,
-                   help='Number of private networks allowed per project'),
-        ]
-    CONF.register_opts(opts)
+os_network_opts = [
+    cfg.BoolOpt("enable_network_quota",
+                default=False,
+                help=('Enables or disables quota checking for tenant '
+                      'networks')),
+    cfg.StrOpt('use_neutron_default_nets',
+                     default="False",
+                     help=('Control for checking for default networks')),
+    cfg.StrOpt('neutron_default_tenant_id',
+                     default="default",
+                     help=('Default tenant id when creating neutron '
+                           'networks')),
+    cfg.IntOpt('quota_networks',
+               default=3,
+               help='Number of private networks allowed per project'),
+]
+CONF.register_opts(os_network_opts)
 
 QUOTAS = quota.QUOTAS
 LOG = logging.getLogger(__name__)
@@ -106,7 +96,7 @@ class NetworkController(object):
     def show(self, req, id):
         context = req.environ['nova.context']
         authorize(context)
-        LOG.debug("Showing network with id %s", id)
+
         try:
             network = self.network_api.get(context, id)
         except exception.NetworkNotFound:
@@ -126,8 +116,6 @@ class NetworkController(object):
             LOG.exception(_LE("Failed to update usages deallocating "
                               "network."))
 
-        LOG.info(_LI("Deleting network with id %s"), id)
-
         def _rollback_quota(reservation):
             if CONF.enable_network_quota and reservation:
                 QUOTAS.rollback(context, reservation)
@@ -136,7 +124,7 @@ class NetworkController(object):
             self.network_api.delete(context, id)
         except exception.PolicyNotAuthorized as e:
             _rollback_quota(reservation)
-            raise exc.HTTPForbidden(explanation=str(e))
+            raise exc.HTTPForbidden(explanation=six.text_type(e))
         except exception.NetworkInUse as e:
             _rollback_quota(reservation)
             raise exc.HTTPConflict(explanation=e.format_message())
@@ -196,7 +184,7 @@ class NetworkController(object):
             if CONF.enable_network_quota:
                 QUOTAS.commit(context, reservation)
         except exception.PolicyNotAuthorized as e:
-            raise exc.HTTPForbidden(explanation=str(e))
+            raise exc.HTTPForbidden(explanation=six.text_type(e))
         except Exception:
             if CONF.enable_network_quota:
                 QUOTAS.rollback(context, reservation)

@@ -20,6 +20,8 @@ import re
 
 from oslo.config import cfg
 from oslo import messaging
+from oslo.utils import strutils
+from oslo.utils import timeutils
 import six
 import webob
 from webob import exc
@@ -37,8 +39,6 @@ from nova.i18n import _
 from nova.i18n import _LW
 from nova import objects
 from nova.openstack.common import log as logging
-from nova.openstack.common import strutils
-from nova.openstack.common import timeutils
 from nova.openstack.common import uuidutils
 from nova import policy
 from nova import utils
@@ -582,7 +582,7 @@ class Controller(wsgi.Controller):
                 if not strutils.bool_from_string(all_tenants, True):
                     del search_opts['all_tenants']
             except ValueError as err:
-                raise exception.InvalidInput(str(err))
+                raise exception.InvalidInput(six.text_type(err))
 
         if 'all_tenants' in search_opts:
             policy.enforce(context, 'compute:get_all_tenants',
@@ -607,8 +607,7 @@ class Controller(wsgi.Controller):
             raise exc.HTTPBadRequest(explanation=msg)
         except exception.FlavorNotFound:
             LOG.debug("Flavor '%s' could not be found", search_opts['flavor'])
-            # TODO(mriedem): Move to ObjectListBase.__init__ for empty lists.
-            instance_list = objects.InstanceList(objects=[])
+            instance_list = objects.InstanceList()
 
         if is_detail:
             instance_list.fill_faults()
@@ -669,55 +668,52 @@ class Controller(wsgi.Controller):
     def _get_requested_networks(self, requested_networks):
         """Create a list of requested networks from the networks attribute."""
         networks = []
+        network_uuids = []
         for network in requested_networks:
+            request = objects.NetworkRequest()
             try:
-                port_id = network.get('port', None)
-                if port_id:
-                    network_uuid = None
+                try:
+                    request.port_id = network.get('port', None)
+                except ValueError:
+                    msg = _("Bad port format: port uuid is "
+                            "not in proper format "
+                            "(%s)") % network.get('port')
+                    raise exc.HTTPBadRequest(explanation=msg)
+                if request.port_id:
+                    request.network_id = None
                     if not utils.is_neutron():
                         # port parameter is only for neutron v2.0
                         msg = _("Unknown argument : port")
                         raise exc.HTTPBadRequest(explanation=msg)
-                    if not uuidutils.is_uuid_like(port_id):
-                        msg = _("Bad port format: port uuid is "
-                                "not in proper format "
-                                "(%s)") % port_id
-                        raise exc.HTTPBadRequest(explanation=msg)
                 else:
-                    network_uuid = network['uuid']
+                    request.network_id = network['uuid']
 
-                if not port_id and not uuidutils.is_uuid_like(network_uuid):
-                    br_uuid = network_uuid.split('-', 1)[-1]
+                if (not request.port_id and not
+                        uuidutils.is_uuid_like(request.network_id)):
+                    br_uuid = request.network_id.split('-', 1)[-1]
                     if not uuidutils.is_uuid_like(br_uuid):
                         msg = _("Bad networks format: network uuid is "
                                 "not in proper format "
-                                "(%s)") % network_uuid
+                                "(%s)") % request.network_id
                         raise exc.HTTPBadRequest(explanation=msg)
 
                 # fixed IP address is optional
                 # if the fixed IP address is not provided then
                 # it will use one of the available IP address from the network
-                address = network.get('fixed_ip', None)
-                if address is not None and not utils.is_valid_ip_address(
-                        address):
-                    msg = _("Invalid fixed IP address (%s)") % address
+                try:
+                    request.address = network.get('fixed_ip', None)
+                except ValueError:
+                    msg = _("Invalid fixed IP address (%s)") % request.address
                     raise exc.HTTPBadRequest(explanation=msg)
 
-                # For neutronv2, requested_networks
-                # should be tuple of (network_uuid, fixed_ip, port_id)
-                if utils.is_neutron():
-                    networks.append((network_uuid, address, port_id))
-                else:
-                    # check if the network id is already present in the list,
-                    # we don't want duplicate networks to be passed
-                    # at the boot time
-                    for id, ip in networks:
-                        if id == network_uuid:
-                            expl = (_("Duplicate networks"
-                                      " (%s) are not allowed") %
-                                    network_uuid)
-                            raise exc.HTTPBadRequest(explanation=expl)
-                    networks.append((network_uuid, address))
+                if (request.network_id and
+                        request.network_id in network_uuids):
+                    expl = (_("Duplicate networks"
+                              " (%s) are not allowed") %
+                            request.network_id)
+                    raise exc.HTTPBadRequest(explanation=expl)
+                network_uuids.append(request.network_id)
+                networks.append(request)
             except KeyError as key:
                 expl = _('Bad network format: missing %s') % key
                 raise exc.HTTPBadRequest(explanation=expl)
@@ -725,7 +721,7 @@ class Controller(wsgi.Controller):
                 expl = _('Bad networks format')
                 raise exc.HTTPBadRequest(explanation=expl)
 
-        return networks
+        return objects.NetworkRequestList(objects=networks)
 
     # NOTE(vish): Without this regex, b64decode will happily
     #             ignore illegal bytes in the base64 encoded
@@ -861,6 +857,9 @@ class Controller(wsgi.Controller):
         legacy_bdm = True
         if self.ext_mgr.is_loaded('os-volumes'):
             block_device_mapping = server_dict.get('block_device_mapping', [])
+            if not isinstance(block_device_mapping, list):
+                msg = _('block_device_mapping must be a list')
+                raise exc.HTTPBadRequest(explanation=msg)
             for bdm in block_device_mapping:
                 try:
                     block_device.validate_device_name(bdm.get("device_name"))
@@ -882,6 +881,10 @@ class Controller(wsgi.Controller):
                     expl = _('Using different block_device_mapping syntaxes '
                              'is not allowed in the same request.')
                     raise exc.HTTPBadRequest(explanation=expl)
+
+                if not isinstance(block_device_mapping_v2, list):
+                    msg = _('block_device_mapping_v2 must be a list')
+                    raise exc.HTTPBadRequest(explanation=msg)
 
                 # Assume legacy format
                 legacy_bdm = not bool(block_device_mapping_v2)
@@ -928,33 +931,37 @@ class Controller(wsgi.Controller):
         if self.ext_mgr.is_loaded('OS-SCH-HNT'):
             scheduler_hints = server_dict.get('scheduler_hints', {})
 
+        check_server_group_quota = \
+            self.ext_mgr.is_loaded('os-server-group-quotas')
+
         try:
             _get_inst_type = flavors.get_flavor_by_flavor_id
             inst_type = _get_inst_type(flavor_id, ctxt=context,
                                        read_deleted="no")
 
             (instances, resv_id) = self.compute_api.create(context,
-                            inst_type,
-                            image_uuid,
-                            display_name=name,
-                            display_description=name,
-                            key_name=key_name,
-                            metadata=server_dict.get('metadata', {}),
-                            access_ip_v4=access_ip_v4,
-                            access_ip_v6=access_ip_v6,
-                            injected_files=injected_files,
-                            admin_password=password,
-                            min_count=min_count,
-                            max_count=max_count,
-                            requested_networks=requested_networks,
-                            security_group=sg_names,
-                            user_data=user_data,
-                            availability_zone=availability_zone,
-                            config_drive=config_drive,
-                            block_device_mapping=block_device_mapping,
-                            auto_disk_config=auto_disk_config,
-                            scheduler_hints=scheduler_hints,
-                            legacy_bdm=legacy_bdm)
+                        inst_type,
+                        image_uuid,
+                        display_name=name,
+                        display_description=name,
+                        key_name=key_name,
+                        metadata=server_dict.get('metadata', {}),
+                        access_ip_v4=access_ip_v4,
+                        access_ip_v6=access_ip_v6,
+                        injected_files=injected_files,
+                        admin_password=password,
+                        min_count=min_count,
+                        max_count=max_count,
+                        requested_networks=requested_networks,
+                        security_group=sg_names,
+                        user_data=user_data,
+                        availability_zone=availability_zone,
+                        config_drive=config_drive,
+                        block_device_mapping=block_device_mapping,
+                        auto_disk_config=auto_disk_config,
+                        scheduler_hints=scheduler_hints,
+                        legacy_bdm=legacy_bdm,
+                        check_server_group_quota=check_server_group_quota)
         except (exception.QuotaError,
                 exception.PortLimitExceeded) as error:
             raise exc.HTTPForbidden(
@@ -980,7 +987,7 @@ class Controller(wsgi.Controller):
                                                  'err_msg': err.value}
             raise exc.HTTPBadRequest(explanation=msg)
         except UnicodeDecodeError as error:
-            msg = "UnicodeError: %s" % unicode(error)
+            msg = "UnicodeError: %s" % error
             raise exc.HTTPBadRequest(explanation=msg)
         except (exception.ImageNotActive,
                 exception.FlavorDiskTooSmall,
@@ -992,7 +999,16 @@ class Controller(wsgi.Controller):
                 exception.InstanceUserDataTooLarge,
                 exception.InstanceUserDataMalformed) as error:
             raise exc.HTTPBadRequest(explanation=error.format_message())
+        except (exception.ImageNUMATopologyIncomplete,
+                exception.ImageNUMATopologyForbidden,
+                exception.ImageNUMATopologyAsymmetric,
+                exception.ImageNUMATopologyCPUOutOfRange,
+                exception.ImageNUMATopologyCPUDuplicates,
+                exception.ImageNUMATopologyCPUsUnassigned,
+                exception.ImageNUMATopologyMemoryOutOfRange) as error:
+            raise exc.HTTPBadRequest(explanation=error.format_message())
         except (exception.PortInUse,
+                exception.InstanceExists,
                 exception.NoUniqueMatch) as error:
             raise exc.HTTPConflict(explanation=error.format_message())
         except exception.Invalid as error:
@@ -1080,7 +1096,7 @@ class Controller(wsgi.Controller):
 
         return self._view_builder.show(req, instance)
 
-    @wsgi.response(202)
+    @wsgi.response(204)
     @wsgi.serializers(xml=FullServerTemplate)
     @wsgi.deserializers(xml=ActionDeserializer)
     @wsgi.action('confirmResize')
@@ -1096,8 +1112,7 @@ class Controller(wsgi.Controller):
             raise exc.HTTPConflict(explanation=e.format_message())
         except exception.InstanceInvalidState as state_error:
             common.raise_http_conflict_for_instance_invalid_state(state_error,
-                    'confirmResize')
-        return exc.HTTPNoContent()
+                    'confirmResize', id)
 
     @wsgi.response(202)
     @wsgi.serializers(xml=FullServerTemplate)
@@ -1118,7 +1133,7 @@ class Controller(wsgi.Controller):
             raise exc.HTTPConflict(explanation=e.format_message())
         except exception.InstanceInvalidState as state_error:
             common.raise_http_conflict_for_instance_invalid_state(state_error,
-                    'revertResize')
+                    'revertResize', id)
         return webob.Response(status_int=202)
 
     @wsgi.response(202)
@@ -1151,7 +1166,7 @@ class Controller(wsgi.Controller):
             raise exc.HTTPConflict(explanation=e.format_message())
         except exception.InstanceInvalidState as state_error:
             common.raise_http_conflict_for_instance_invalid_state(state_error,
-                    'reboot')
+                    'reboot', id)
         return webob.Response(status_int=202)
 
     def _resize(self, req, instance_id, flavor_id, **kwargs):
@@ -1176,7 +1191,7 @@ class Controller(wsgi.Controller):
             raise exc.HTTPConflict(explanation=e.format_message())
         except exception.InstanceInvalidState as state_error:
             common.raise_http_conflict_for_instance_invalid_state(state_error,
-                    'resize')
+                    'resize', instance_id)
         except exception.ImageNotAuthorized:
             msg = _("You are not authorized to access the image "
                     "the instance was started with.")
@@ -1185,12 +1200,12 @@ class Controller(wsgi.Controller):
             msg = _("Image that the instance was started "
                     "with could not be found.")
             raise exc.HTTPBadRequest(explanation=msg)
-        except exception.Invalid:
-            msg = _("Invalid instance image.")
-            raise exc.HTTPBadRequest(explanation=msg)
         except (exception.NoValidHost,
                 exception.AutoDiskConfigDisabledByImage) as e:
             raise exc.HTTPBadRequest(explanation=e.format_message())
+        except exception.Invalid:
+            msg = _("Invalid instance image.")
+            raise exc.HTTPBadRequest(explanation=msg)
 
         return webob.Response(status_int=202)
 
@@ -1206,7 +1221,7 @@ class Controller(wsgi.Controller):
             raise exc.HTTPConflict(explanation=e.format_message())
         except exception.InstanceInvalidState as state_error:
             common.raise_http_conflict_for_instance_invalid_state(state_error,
-                    'delete')
+                    'delete', id)
 
     def _image_ref_from_req_data(self, data):
         try:
@@ -1383,7 +1398,7 @@ class Controller(wsgi.Controller):
             raise exc.HTTPConflict(explanation=e.format_message())
         except exception.InstanceInvalidState as state_error:
             common.raise_http_conflict_for_instance_invalid_state(state_error,
-                    'rebuild')
+                    'rebuild', id)
         except exception.InstanceNotFound:
             msg = _("Instance could not be found")
             raise exc.HTTPNotFound(explanation=msg)
@@ -1469,7 +1484,7 @@ class Controller(wsgi.Controller):
                                                   extra_properties=props)
         except exception.InstanceInvalidState as state_error:
             common.raise_http_conflict_for_instance_invalid_state(state_error,
-                        'createImage')
+                        'createImage', id)
         except exception.Invalid as err:
             raise exc.HTTPBadRequest(explanation=err.format_message())
 

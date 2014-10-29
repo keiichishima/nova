@@ -18,6 +18,7 @@ import iso8601
 import mock
 import mox
 import netaddr
+from oslo.utils import timeutils
 
 from nova.cells import rpcapi as cells_rpcapi
 from nova.compute import flavors
@@ -25,16 +26,19 @@ from nova import db
 from nova import exception
 from nova.network import model as network_model
 from nova import notifications
+from nova import objects
 from nova.objects import instance
 from nova.objects import instance_info_cache
+from nova.objects import instance_numa_topology
 from nova.objects import pci_device
 from nova.objects import security_group
-from nova.openstack.common import timeutils
 from nova import test
 from nova.tests.api.openstack import fakes
 from nova.tests import fake_instance
 from nova.tests.objects import test_instance_fault
 from nova.tests.objects import test_instance_info_cache
+from nova.tests.objects import test_instance_numa_topology
+from nova.tests.objects import test_instance_pci_requests
 from nova.tests.objects import test_objects
 from nova.tests.objects import test_security_group
 from nova import utils
@@ -70,7 +74,7 @@ class _TestInstanceObject(object):
         primitive = inst.obj_to_primitive()
         expected = {'nova_object.name': 'Instance',
                     'nova_object.namespace': 'nova',
-                    'nova_object.version': '1.13',
+                    'nova_object.version': '1.16',
                     'nova_object.data':
                         {'uuid': 'fake-uuid',
                          'launched_at': '1955-11-05T00:00:00Z'},
@@ -86,7 +90,7 @@ class _TestInstanceObject(object):
         primitive = inst.obj_to_primitive()
         expected = {'nova_object.name': 'Instance',
                     'nova_object.namespace': 'nova',
-                    'nova_object.version': '1.13',
+                    'nova_object.version': '1.16',
                     'nova_object.data':
                         {'uuid': 'fake-uuid',
                          'access_ip_v4': '1.2.3.4',
@@ -116,9 +120,13 @@ class _TestInstanceObject(object):
     def test_get_with_expected(self):
         self.mox.StubOutWithMock(db, 'instance_get_by_uuid')
         self.mox.StubOutWithMock(db, 'instance_fault_get_by_instance_uuids')
+        self.mox.StubOutWithMock(
+                db, 'instance_extra_get_by_instance_uuid')
 
         exp_cols = instance.INSTANCE_OPTIONAL_ATTRS[:]
         exp_cols.remove('fault')
+        exp_cols.remove('numa_topology')
+        exp_cols.remove('pci_requests')
 
         db.instance_get_by_uuid(
             self.context, 'uuid',
@@ -129,6 +137,16 @@ class _TestInstanceObject(object):
         db.instance_fault_get_by_instance_uuids(
                 self.context, [self.fake_instance['uuid']]
                 ).AndReturn(fake_faults)
+        fake_topology = test_instance_numa_topology.fake_db_topology
+        db.instance_extra_get_by_instance_uuid(
+                self.context, self.fake_instance['uuid'],
+                columns=['numa_topology']
+                ).AndReturn(fake_topology)
+        fake_requests = test_instance_pci_requests.fake_pci_requests
+        db.instance_extra_get_by_instance_uuid(
+                self.context, self.fake_instance['uuid'],
+                columns=['pci_requests']
+                ).AndReturn(fake_requests)
 
         self.mox.ReplayAll()
         inst = instance.Instance.get_by_uuid(
@@ -379,6 +397,22 @@ class _TestInstanceObject(object):
         self.assertEqual('goodbye', inst.display_name)
         self.assertEqual(set([]), inst.obj_what_changed())
 
+    @mock.patch('nova.db.instance_update_and_get_original')
+    @mock.patch('nova.objects.Instance._from_db_object')
+    def test_save_does_not_refresh_pci_devices(self, mock_fdo, mock_update):
+        # NOTE(danms): This tests that we don't update the pci_devices
+        # field from the contents of the database. This is not because we
+        # don't necessarily want to, but because the way pci_devices is
+        # currently implemented it causes versioning issues. When that is
+        # resolved, this test should go away.
+        mock_update.return_value = None, None
+        inst = instance.Instance(context=self.context, id=123)
+        inst.uuid = 'foo'
+        inst.pci_devices = pci_device.PciDeviceList()
+        inst.save()
+        self.assertNotIn('pci_devices',
+                         mock_fdo.call_args_list[0][1]['expected_attrs'])
+
     def test_get_deleted(self):
         fake_inst = dict(self.fake_instance, id=123, deleted=123)
         fake_uuid = fake_inst['uuid']
@@ -543,6 +577,7 @@ class _TestInstanceObject(object):
              'dev_id': 'i',
              'label': 'l',
              'instance_uuid': fake_uuid,
+             'request_id': None,
              'extra_info': '{}'},
             {
              'created_at': None,
@@ -559,6 +594,7 @@ class _TestInstanceObject(object):
              'dev_id': 'i',
              'label': 'l',
              'instance_uuid': fake_uuid,
+             'request_id': None,
              'extra_info': '{}'},
             ]
         self.mox.StubOutWithMock(db, 'instance_get_by_uuid')
@@ -643,6 +679,19 @@ class _TestInstanceObject(object):
         self.assertEqual(inst1.host, 'foo-host')
         inst2 = instance.Instance.get_by_uuid(self.context, inst1.uuid)
         self.assertEqual(inst2.host, 'foo-host')
+
+    def test_create_with_numa_topology(self):
+        inst = instance.Instance(uuid=self.fake_instance['uuid'],
+                numa_topology=instance_numa_topology.InstanceNUMATopology
+                        .obj_from_topology(
+                            test_instance_numa_topology.fake_numa_topology))
+
+        inst.create(self.context)
+        self.assertIsNotNone(inst.numa_topology)
+        got_numa_topo = (
+                instance_numa_topology.InstanceNUMATopology
+                .get_by_instance_uuid(self.context, inst.uuid))
+        self.assertEqual(inst.numa_topology.id, got_numa_topo.id)
 
     def test_recreate_fails(self):
         inst = instance.Instance(user_id=self.context.user_id,
@@ -763,6 +812,18 @@ class _TestInstanceObject(object):
         self.assertEqual(
             '1.4',
             primitive['nova_object.data']['info_cache']['nova_object.version'])
+
+    @mock.patch('nova.objects.InstancePCIRequests.get_by_instance_uuid')
+    def test_get_with_pci_requests(self, mock_get):
+        mock_get.return_value = objects.InstancePCIRequests()
+        db_instance = db.instance_create(self.context, {
+            'user_id': self.context.user_id,
+            'project_id': self.context.project_id})
+        instance = objects.Instance.get_by_uuid(
+            self.context, db_instance['uuid'],
+            expected_attrs=['pci_requests'])
+        self.assertTrue(instance.obj_attr_is_set('pci_requests'))
+        self.assertIsNotNone(instance.pci_requests)
 
     def _test_get_flavor(self, namespace):
         prefix = '%s_' % namespace if namespace is not None else ''

@@ -24,7 +24,7 @@ import os
 from oslo.config import cfg
 
 from nova import exception
-from nova.i18n import _
+from nova.i18n import _, _LE
 from nova import image
 from nova.openstack.common import fileutils
 from nova.openstack.common import imageutils
@@ -49,10 +49,16 @@ def qemu_img_info(path):
     # TODO(mikal): this code should not be referring to a libvirt specific
     # flag.
     if not os.path.exists(path) and CONF.libvirt.images_type != 'rbd':
-        return imageutils.QemuImgInfo()
+        msg = (_("Path does not exist %(path)s") % {'path': path})
+        raise exception.InvalidDiskInfo(reason=msg)
 
     out, err = utils.execute('env', 'LC_ALL=C', 'LANG=C',
                              'qemu-img', 'info', path)
+    if not out:
+        msg = (_("Failed to run qemu-img info on %(path)s : %(error)s") %
+               {'path': path, 'error': err})
+        raise exception.InvalidDiskInfo(reason=msg)
+
     return imageutils.QemuImgInfo(out)
 
 
@@ -97,11 +103,11 @@ def fetch_to_raw(context, image_href, path, user_id, project_id, max_size=0):
         # irrespective of whether the base image was prepared or not.
         disk_size = data.virtual_size
         if max_size and max_size < disk_size:
-            msg = _('%(base)s virtual size %(disk_size)s '
-                    'larger than flavor root disk size %(size)s')
-            LOG.error(msg % {'base': path,
-                             'disk_size': disk_size,
-                             'size': max_size})
+            LOG.error(_LE('%(base)s virtual size %(disk_size)s '
+                          'larger than flavor root disk size %(size)s'),
+                      {'base': path,
+                       'disk_size': disk_size,
+                       'size': max_size})
             raise exception.FlavorDiskTooSmall()
 
         if fmt != "raw" and CONF.force_raw_images:

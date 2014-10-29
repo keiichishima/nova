@@ -86,6 +86,11 @@ image_ref = {
 }
 
 
+flavor_ref = {
+    'type': ['string', 'integer'],
+}
+
+
 metadata = {
     'type': 'object',
     'patternProperties': {
@@ -94,4 +99,10 @@ metadata = {
         }
     },
     'additionalProperties': False
+}
+
+
+mac_address = {
+    'type': 'string',
+    'pattern': '^([0-9a-fA-F]{2})(:[0-9a-fA-F]{2}){5}$'
 }

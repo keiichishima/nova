@@ -1,13 +1,13 @@
 {
     "server": {
-        "os-access-ips:access_ip_v4": "%(access_ip_v4)s",
-        "os-access-ips:access_ip_v6": "%(access_ip_v6)s",
+        "accessIPv4": "%(access_ip_v4)s",
+        "accessIPv6": "%(access_ip_v6)s",
         "addresses": {
             "private": [
                 {
                     "addr": "%(ip)s",
-                    "mac_addr": "aa:bb:cc:dd:ee:ff",
-                    "type": "fixed",
+                    "OS-EXT-IPS-MAC:mac_addr": "aa:bb:cc:dd:ee:ff",
+                    "OS-EXT-IPS:type": "fixed",
                     "version": 4
                 }
             ]
@@ -22,13 +22,13 @@
                 }
             ]
         },
-        "host_id": "%(hostid)s",
+        "hostId": "%(hostid)s",
         "id": "%(id)s",
         "image": {
             "id": "%(uuid)s",
             "links": [
                 {
-                    "href": "%(glance_host)s/images/%(uuid)s",
+                    "href": "%(host)s/images/%(uuid)s",
                     "rel": "bookmark"
                 }
             ]

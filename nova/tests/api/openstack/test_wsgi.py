@@ -125,7 +125,7 @@ class RequestTest(test.NoDBTestCase):
                 compute_nodes[1])
         self.assertEqual(request.get_db_compute_node('id2'),
                 compute_nodes[2])
-        self.assertEqual(request.get_db_compute_node('id3'), None)
+        self.assertIsNone(request.get_db_compute_node('id3'))
         self.assertEqual(request.get_db_compute_nodes(),
                 {'id0': compute_nodes[0],
                  'id1': compute_nodes[1],
@@ -221,6 +221,14 @@ class XMLDictSerializerTest(test.NoDBTestCase):
         result = serializer.serialize(input_dict)
         result = result.replace('\n', '').replace(' ', '')
         self.assertEqual(result, expected_xml)
+
+    def test_xml_contains_unicode(self):
+        input_dict = dict(test=u'\u89e3\u7801')
+        expected_xml = '<test>\xe8\xa7\xa3\xe7\xa0\x81</test>'
+        serializer = wsgi.XMLDictSerializer()
+        result = serializer.serialize(input_dict)
+        result = result.replace('\n', '').replace(' ', '')
+        self.assertEqual(expected_xml, result)
 
 
 class JSONDictSerializerTest(test.NoDBTestCase):

@@ -15,12 +15,12 @@
 from nova.api.openstack import extensions
 from nova.api.openstack import wsgi
 from nova import compute
-from nova.openstack.common import log as logging
 
-LOG = logging.getLogger(__name__)
 
 ALIAS = "os-server-usage"
 authorize = extensions.soft_extension_authorizer('compute', 'v3:' + ALIAS)
+
+resp_topic = "OS-SRV-USG"
 
 
 class ServerUsageController(wsgi.Controller):
@@ -30,7 +30,7 @@ class ServerUsageController(wsgi.Controller):
 
     def _extend_server(self, server, instance):
         for k in ['launched_at', 'terminated_at']:
-            key = "%s:%s" % (ServerUsage.alias, k)
+            key = "%s:%s" % (resp_topic, k)
             # NOTE(danms): Historically, this timestamp has been generated
             # merely by grabbing str(datetime) of a TZ-naive object. The
             # only way we can keep that with instance objects is to strip

@@ -17,10 +17,11 @@ import datetime
 import time
 import zlib
 
+from oslo.utils import timeutils
+
 from nova import context
 from nova import exception
 from nova.openstack.common import log as logging
-from nova.openstack.common import timeutils
 from nova.tests import fake_network
 from nova.tests.integrated.api import client
 from nova.tests.integrated import integrated_helpers
@@ -185,11 +186,6 @@ class ServersTest(integrated_helpers._IntegratedTestBase):
         self.assertRaises(client.OpenStackApiException,
                           self.api.post_server_action, created_server_id,
                           {'restore': {}})
-
-        # Cannot forceDelete unless instance is deleted
-        self.assertRaises(client.OpenStackApiException,
-                          self.api.post_server_action, created_server_id,
-                          {'forceDelete': {}})
 
         # Delete the server
         self.api.delete_server(created_server_id)
@@ -510,12 +506,10 @@ class ServersTest(integrated_helpers._IntegratedTestBase):
 
 
 class ServersTestV3(client.TestOpenStackClientV3Mixin, ServersTest):
-    _force_delete_parameter = 'force_delete'
+    _force_delete_parameter = 'forceDelete'
     _api_version = 'v3'
     _image_ref_parameter = 'imageRef'
     _flavor_ref_parameter = 'flavorRef'
-    _return_resv_id_parameter = 'os-multiple-create:return_reservation_id'
-    _min_count_parameter = 'os-multiple-create:min_count'
     _access_ipv4_parameter = None
     _access_ipv6_parameter = None
 

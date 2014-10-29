@@ -16,6 +16,7 @@
 import datetime
 
 from oslo.config import cfg
+from oslo.serialization import jsonutils
 import webob
 
 from nova.api.openstack.compute.contrib import config_drive as config_drive_v2
@@ -29,7 +30,6 @@ from nova.compute import api as compute_api
 from nova.compute import flavors
 from nova import db
 from nova import exception
-from nova.openstack.common import jsonutils
 from nova import test
 from nova.tests.api.openstack import fakes
 from nova.tests import fake_instance
@@ -40,10 +40,10 @@ CONF = cfg.CONF
 
 
 class ConfigDriveTestV21(test.TestCase):
-    base_url = '/v3/servers/'
+    base_url = '/v2/fake/servers/'
 
     def _setup_wsgi(self):
-        self.app = fakes.wsgi_app_v3(init_only=('servers', 'os-config-drive'))
+        self.app = fakes.wsgi_app_v21(init_only=('servers', 'os-config-drive'))
 
     def _get_config_drive_controller(self):
         return config_drive_v21.ConfigDriveController()
@@ -80,7 +80,6 @@ class ConfigDriveTestV21(test.TestCase):
 
 
 class ConfigDriveTestV2(ConfigDriveTestV21):
-    base_url = '/v2/fake/servers/'
 
     def _get_config_drive_controller(self):
         return config_drive_v2.Controller()
@@ -94,7 +93,7 @@ class ConfigDriveTestV2(ConfigDriveTestV21):
 
 
 class ServersControllerCreateTestV21(test.TestCase):
-    base_url = '/v3/'
+    base_url = '/v2/fake/'
     bad_request = exception.ValidationError
 
     def _set_up_controller(self):
@@ -129,7 +128,7 @@ class ServersControllerCreateTestV21(test.TestCase):
                 'id': self.instance_cache_num,
                 'display_name': inst['display_name'] or 'test',
                 'uuid': fakes.FAKE_UUID,
-                'instance_type': dict(inst_type),
+                'instance_type': inst_type,
                 'access_ip_v4': '1.2.3.4',
                 'access_ip_v6': 'fead::1234',
                 'image_ref': inst.get('image_ref', def_image_ref),
@@ -239,7 +238,6 @@ class ServersControllerCreateTestV21(test.TestCase):
 
 
 class ServersControllerCreateTestV2(ServersControllerCreateTestV21):
-    base_url = '/v2/fake/'
     bad_request = webob.exc.HTTPBadRequest
 
     def _set_up_controller(self):

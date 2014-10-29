@@ -22,7 +22,10 @@ import mock
 import mox
 import netaddr
 from oslo.config import cfg
+from oslo.db import exception as db_exc
 from oslo import messaging
+from oslo.utils import importutils
+import six
 
 from nova import context
 from nova import db
@@ -36,8 +39,6 @@ from nova.network import model as net_model
 from nova import objects
 from nova.objects import quotas as quotas_obj
 from nova.objects import virtual_interface as vif_obj
-from nova.openstack.common.db import exception as db_exc
-from nova.openstack.common import importutils
 from nova.openstack.common import log as logging
 from nova.openstack.common import processutils
 from nova import quota
@@ -222,7 +223,7 @@ class FlatNetworkTestCase(test.TestCase):
                      'should_create_vlan': False,
                      'should_create_bridge': False,
                      'ip': '192.168.%d.%03d' % (nid, nid + 99),
-                     'ip_v6': '2001:db8:0:1::%x' % nid,
+                     'ip_v6': '2001:db8:0:1:dcad:beff:feef:%x' % nid,
                      'netmask': '255.255.255.0',
                      'netmask_v6': 64,
                      'physical_network': None,
@@ -700,7 +701,9 @@ class FlatNetworkTestCase(test.TestCase):
         inst = objects.Instance()
         inst['uuid'] = 'nosuch'
         get_by_uuid.return_value = inst
-        reserve.side_effect = exception.OverQuota(overs='testing')
+        reserve.side_effect = exception.OverQuota(overs='testing',
+                                                  quotas={'fixed_ips': 10},
+                                                  headroom={'fixed_ips': 0})
         util_method.return_value = ('foo', 'bar')
         self.assertRaises(exception.FixedIpLimitExceeded,
                           self.network.allocate_fixed_ip,
@@ -1014,6 +1017,35 @@ class VlanNetworkTestCase(test.TestCase):
                           network_size=100)
 
         self.assertEqual(networks[0]["vlan"], 102)
+
+    def test_vlan_parameter(self):
+        # vlan parameter could not be greater than 4094
+        exc = self.assertRaises(ValueError,
+                                self.network.create_networks,
+                                self.context_admin, label="fake",
+                                num_networks=1,
+                                vlan=4095, cidr='192.168.0.1/24')
+        error_msg = 'The vlan number cannot be greater than 4094'
+        self.assertIn(error_msg, six.text_type(exc))
+
+        # vlan parameter could not be less than 1
+        exc = self.assertRaises(ValueError,
+                                self.network.create_networks,
+                                self.context_admin, label="fake",
+                                num_networks=1,
+                                vlan=0, cidr='192.168.0.1/24')
+        error_msg = 'The vlan number cannot be less than 1'
+        self.assertIn(error_msg, six.text_type(exc))
+
+    def test_vlan_be_integer(self):
+        # vlan must be an integer
+        exc = self.assertRaises(ValueError,
+                                self.network.create_networks,
+                                self.context_admin, label="fake",
+                                num_networks=1,
+                                vlan='fake', cidr='192.168.0.1/24')
+        error_msg = 'vlan must be an integer'
+        self.assertIn(error_msg, six.text_type(exc))
 
     @mock.patch('nova.db.network_get')
     def test_validate_networks(self, net_get):
@@ -1638,6 +1670,50 @@ class VlanNetworkTestCase(test.TestCase):
         fixed_update.assert_called_once_with(context1, fix_addr.address,
                                              {'allocated': False})
 
+    @mock.patch('nova.db.fixed_ip_get_by_address')
+    @mock.patch('nova.db.network_get')
+    @mock.patch('nova.db.fixed_ip_update')
+    def test_deallocate_fixed_with_dhcp_exception(self, fixed_update, net_get,
+                                                  fixed_get):
+        net_get.return_value = dict(test_network.fake_network,
+                                    **networks[1])
+
+        def vif_get(_context, _vif_id):
+            return vifs[0]
+
+        with contextlib.nested(
+            mock.patch.object(db, 'virtual_interface_get', vif_get),
+            mock.patch.object(
+                utils, 'execute',
+                side_effect=processutils.ProcessExecutionError()),
+        ) as (_vif_get, _execute):
+            context1 = context.RequestContext('user', 'project1')
+
+            instance = db.instance_create(context1,
+                    {'project_id': 'project1'})
+
+            elevated = context1.elevated()
+            fix_addr = db.fixed_ip_associate_pool(elevated, 1,
+                                                  instance['uuid'])
+            fixed_get.return_value = dict(test_fixed_ip.fake_fixed_ip,
+                                          address=fix_addr.address,
+                                          instance_uuid=instance.uuid,
+                                          allocated=True,
+                                          virtual_interface_id=3,
+                                          network=dict(
+                                              test_network.fake_network,
+                                              **networks[1]))
+            self.flags(force_dhcp_release=True)
+            self.network.deallocate_fixed_ip(context1, fix_addr.address,
+                                             'fake')
+            fixed_update.assert_called_once_with(context1, fix_addr.address,
+                                                 {'allocated': False})
+            _execute.assert_called_once_with('dhcp_release',
+                                             networks[1]['bridge'],
+                                             fix_addr.address,
+                                             'DE:AD:BE:EF:00:00',
+                                             run_as_root=True)
+
     def test_deallocate_fixed_deleted(self):
         # Verify doesn't deallocate deleted fixed_ip from deleted network.
 
@@ -1843,10 +1919,9 @@ class CommonNetworkTestCase(test.TestCase):
     def test_get_instance_nw_info_client_exceptions(self):
         manager = network_manager.NetworkManager()
         self.mox.StubOutWithMock(manager.db,
-                                 'virtual_interface_get_by_instance')
-        manager.db.virtual_interface_get_by_instance(
-                self.context, FAKEUUID,
-                use_slave=False).AndRaise(exception.InstanceNotFound(
+                                 'fixed_ip_get_by_instance')
+        manager.db.fixed_ip_get_by_instance(
+                self.context, FAKEUUID).AndRaise(exception.InstanceNotFound(
                                                  instance_id=FAKEUUID))
         self.mox.ReplayAll()
         self.assertRaises(messaging.ExpectedException,
@@ -1873,6 +1948,23 @@ class CommonNetworkTestCase(test.TestCase):
 
         self.assertEqual([
             (ctx, '1.2.3.4', 'fake-host')
+        ], manager.deallocate_fixed_ip_calls)
+
+    def test_deallocate_for_instance_with_requested_networks(self):
+        manager = fake_network.FakeNetworkManager()
+        db = manager.db
+        db.virtual_interface_delete_by_instance = mock.Mock()
+        ctx = context.RequestContext('igonre', 'igonre')
+        requested_networks = objects.NetworkRequestList(
+            objects=[objects.NetworkRequest.from_tuple(t)
+                     for t in [('123', '1.2.3.4'), ('123', '4.3.2.1')]])
+        manager.deallocate_for_instance(
+            ctx,
+            instance=fake_instance.fake_instance_obj(ctx),
+            requested_networks=requested_networks)
+
+        self.assertEqual([
+            (ctx, '1.2.3.4', 'fake-host'), (ctx, '4.3.2.1', 'fake-host')
         ], manager.deallocate_fixed_ip_calls)
 
     @mock.patch('nova.db.fixed_ip_get_by_instance')
@@ -2409,6 +2501,22 @@ class CommonNetworkTestCase(test.TestCase):
         #     CONF.fixed_range is not set, defaults to None
         #     Determine networks to NAT based on lookup
         self._test_init_host_dynamic_fixed_range(self.network)
+
+    @mock.patch('nova.objects.quotas.Quotas.rollback')
+    @mock.patch('nova.objects.fixed_ip.FixedIP.get_by_address')
+    @mock.patch('nova.network.manager.NetworkManager.'
+                '_do_trigger_security_group_members_refresh_for_instance')
+    def test_fixed_ip_cleanup_rollback(self, fake_trig,
+                                      fixed_get, rollback):
+        manager = network_manager.NetworkManager()
+
+        fake_trig.side_effect = test.TestingException
+
+        self.assertRaises(test.TestingException,
+                          manager.deallocate_fixed_ip,
+                          self.context, 'fake', 'fake',
+                          instance=fake_inst(uuid='ignoreduuid'))
+        rollback.assert_called_once_with(self.context)
 
 
 class TestRPCFixedManager(network_manager.RPCAllocateFixedIP,

@@ -13,9 +13,10 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
+from oslo.serialization import jsonutils
+
 from nova.consoleauth import rpcapi as consoleauth_rpcapi
 from nova import context
-from nova.openstack.common import jsonutils
 from nova import test
 from nova.tests.api.openstack import fakes
 
@@ -43,7 +44,7 @@ def _fake_check_token_unauthorized(self, context, token):
 
 class ConsoleAuthTokensExtensionTest(test.TestCase):
 
-    _FAKE_URL = '/v3/os-console-auth-tokens/1'
+    _FAKE_URL = '/v2/fake/os-console-auth-tokens/1'
 
     _EXPECTED_OUTPUT = {'console': {'instance_uuid': 'fake_instance_uuid',
                                     'host': 'fake_host',
@@ -57,8 +58,8 @@ class ConsoleAuthTokensExtensionTest(test.TestCase):
                        _fake_check_token)
 
         ctxt = self._get_admin_context()
-        self.app = fakes.wsgi_app_v3(init_only=('os-console-auth-tokens'),
-                                     fake_auth_context=ctxt)
+        self.app = fakes.wsgi_app_v21(init_only=('os-console-auth-tokens'),
+                                      fake_auth_context=ctxt)
 
     def _get_admin_context(self):
         ctxt = context.get_admin_context()

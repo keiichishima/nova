@@ -13,15 +13,16 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
+from oslo.utils import strutils
 import webob
 
+from nova.api.openstack import common
 from nova.api.openstack.compute.views import flavors as flavors_view
 from nova.api.openstack import wsgi
 from nova.api.openstack import xmlutil
 from nova.compute import flavors
 from nova import exception
 from nova.i18n import _
-from nova.openstack.common import strutils
 from nova import utils
 
 
@@ -112,8 +113,7 @@ class Controller(wsgi.Controller):
         filters = {}
         sort_key = req.params.get('sort_key') or 'flavorid'
         sort_dir = req.params.get('sort_dir') or 'asc'
-        limit = req.params.get('limit') or None
-        marker = req.params.get('marker') or None
+        limit, marker = common.get_limit_and_marker(req)
 
         context = req.environ['nova.context']
         if context.is_admin:

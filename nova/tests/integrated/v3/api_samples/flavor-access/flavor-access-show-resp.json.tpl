@@ -13,11 +13,11 @@
             }
         ],
         "name": "m1.tiny",
-        "flavor-access:is_public": true,
+        "os-flavor-access:is_public": true,
         "ram": 512,
         "vcpus": 1,
-        "disabled": false,
-        "ephemeral": 0,
-        "swap": 0
+        "OS-FLV-DISABLED:disabled": false,
+        "OS-FLV-EXT-DATA:ephemeral": 0,
+        "swap": ""
     }
 }

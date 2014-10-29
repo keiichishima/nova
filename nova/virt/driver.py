@@ -23,9 +23,9 @@ Driver base-classes:
 import sys
 
 from oslo.config import cfg
+from oslo.utils import importutils
 
-from nova.i18n import _
-from nova.openstack.common import importutils
+from nova.i18n import _, _LE
 from nova.openstack.common import log as logging
 from nova import utils
 from nova.virt import event as virtevent
@@ -373,6 +373,8 @@ class ComputeDriver(object):
 
         :param context: security context
         :param instance: nova.objects.instance.Instance
+
+        :returns an instance of console.type.ConsoleVNC
         """
         raise NotImplementedError()
 
@@ -381,6 +383,8 @@ class ComputeDriver(object):
 
         :param context: security context
         :param instance: nova.objects.instance.Instance
+
+        :returns an instance of console.type.ConsoleSpice
         """
         raise NotImplementedError()
 
@@ -389,6 +393,18 @@ class ComputeDriver(object):
 
         :param context: security context
         :param instance: nova.objects.instance.Instance
+
+        :returns an instance of console.type.ConsoleRDP
+        """
+        raise NotImplementedError()
+
+    def get_serial_console(self, context, instance):
+        """Get connection info for a serial console.
+
+        :param context: security context
+        :param instance: nova.objects.instance.Instance
+
+        :returns an instance of console.type.ConsoleSerial
         """
         raise NotImplementedError()
 
@@ -792,7 +808,7 @@ class ComputeDriver(object):
         raise NotImplementedError()
 
     def check_can_live_migrate_source(self, context, instance,
-                                      dest_check_data):
+                                      dest_check_data, block_device_info=None):
         """Check if it is possible to execute live migration.
 
         This checks if the live migration can succeed, based on the
@@ -801,6 +817,7 @@ class ComputeDriver(object):
         :param context: security context
         :param instance: nova.db.sqlalchemy.models.Instance
         :param dest_check_data: result of check_can_live_migrate_destination
+        :param block_device_info: result of _get_instance_block_device_info
         :returns: a dict containing migration info (hypervisor-dependent)
         """
         raise NotImplementedError()
@@ -1034,21 +1051,6 @@ class ComputeDriver(object):
         """
         raise NotImplementedError()
 
-    def get_host_stats(self, refresh=False):
-        """Return currently known host stats.
-
-        If the hypervisor supports pci passthrough, the returned
-        dictionary includes a key-value pair for it.
-        The key of pci passthrough device is "pci_passthrough_devices"
-        and the value is a json string for the list of assignable
-        pci devices. Each device is a dictionary, with mandatory
-        keys of 'address', 'vendor_id', 'product_id', 'dev_type',
-        'dev_id', 'label' and other optional device specific information.
-
-        Refer to the objects/pci_device.py for more idea of these keys.
-        """
-        raise NotImplementedError()
-
     def get_host_cpu_stats(self):
         """Get the currently known host CPU stats.
 
@@ -1218,10 +1220,7 @@ class ComputeDriver(object):
         by the service. Otherwise, this method should return
         [hypervisor_hostname].
         """
-        stats = self.get_host_stats(refresh=refresh)
-        if not isinstance(stats, list):
-            stats = [stats]
-        return [s['hypervisor_hostname'] for s in stats]
+        raise NotImplementedError()
 
     def node_is_available(self, nodename):
         """Return whether this compute service manages a particular node."""
@@ -1282,7 +1281,7 @@ class ComputeDriver(object):
             LOG.debug("Emitting event %s", str(event))
             self._compute_event_callback(event)
         except Exception as ex:
-            LOG.error(_("Exception dispatching event %(event)s: %(ex)s"),
+            LOG.error(_LE("Exception dispatching event %(event)s: %(ex)s"),
                       {'event': event, 'ex': ex})
 
     def delete_instance_files(self, instance):
@@ -1376,7 +1375,7 @@ def load_compute_driver(virtapi, compute_driver=None):
         compute_driver = CONF.compute_driver
 
     if not compute_driver:
-        LOG.error(_("Compute driver option required, but not specified"))
+        LOG.error(_LE("Compute driver option required, but not specified"))
         sys.exit(1)
 
     LOG.info(_("Loading compute driver '%s'") % compute_driver)

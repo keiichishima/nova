@@ -13,6 +13,7 @@
 # License for the specific language governing permissions and limitations
 # under the License.
 
+import ast
 import re
 
 import pep8
@@ -50,9 +51,9 @@ asse_equal_type_re = re.compile(
                        r"(.)*assertEqual\(type\((\w|\.|\'|\"|\[|\])+\), "
                        "(\w|\.|\'|\"|\[|\])+\)")
 asse_equal_end_with_none_re = re.compile(
-                           r"(.)*assertEqual\((\w|\.|\'|\"|\[|\])+, None\)")
+                           r"assertEqual\(.*?,\s+None\)$")
 asse_equal_start_with_none_re = re.compile(
-                           r"(.)*assertEqual\(None, (\w|\.|\'|\"|\[|\])+\)")
+                           r"assertEqual\(None,")
 conf_attribute_set_re = re.compile(r"CONF\.[a-z0-9_.]+\s*=\s*\w")
 log_translation = re.compile(
     r"(.)*LOG\.(audit|error|info|warn|warning|critical|exception)\(\s*('|\")")
@@ -64,6 +65,49 @@ string_translation = re.compile(r"[^_]*_\(\s*('|\")")
 underscore_import_check = re.compile(r"(.)*import _(.)*")
 # We need this for cases where they have created their own _ function.
 custom_underscore_check = re.compile(r"(.)*_\s*=\s*(.)*")
+
+
+class BaseASTChecker(ast.NodeVisitor):
+    """Provides a simple framework for writing AST-based checks.
+
+    Subclasses should implement visit_* methods like any other AST visitor
+    implementation. When they detect an error for a particular node the
+    method should call ``self.add_error(offending_node)``. Details about
+    where in the code the error occurred will be pulled from the node
+    object.
+
+    Subclasses should also provide a class variable named CHECK_DESC to
+    be used for the human readable error message.
+
+    """
+
+    def __init__(self, tree, filename):
+        """This object is created automatically by pep8.
+
+        :param tree: an AST tree
+        :param filename: name of the file being analyzed
+                         (ignored by our checks)
+        """
+        self._tree = tree
+        self._errors = []
+
+    def run(self):
+        """Called automatically by pep8."""
+        self.visit(self._tree)
+        return self._errors
+
+    def add_error(self, node, message=None):
+        """Add an error caused by a node to the list of errors for pep8."""
+        message = message or self.CHECK_DESC
+        error = (node.lineno, node.col_offset, message, self.__class__)
+        self._errors.append(error)
+
+    def _check_call_names(self, call_node, names):
+        if isinstance(call_node, ast.Call):
+            if isinstance(call_node.func, ast.Name):
+                if call_node.func.id in names:
+                    return True
+        return False
 
 
 def import_no_db_in_virt(logical_line, filename):
@@ -206,8 +250,8 @@ def assert_equal_none(logical_line):
 
     N318
     """
-    res = (asse_equal_start_with_none_re.match(logical_line) or
-           asse_equal_end_with_none_re.match(logical_line))
+    res = (asse_equal_start_with_none_re.search(logical_line) or
+           asse_equal_end_with_none_re.search(logical_line))
     if res:
         yield (0, "N318: assertEqual(A, None) or assertEqual(None, A) "
                "sentences not allowed")
@@ -303,6 +347,76 @@ def use_jsonutils(logical_line, filename):
                 yield (pos, msg % {'fun': f[:-1]})
 
 
+def check_assert_called_once(logical_line, filename):
+    msg = ("N327: assert_called_once is a no-op. please use assert_called_"
+           "once_with to test with explicit parameters or an assertEqual with"
+           " call_count.")
+
+    if 'nova/tests/' in filename:
+        pos = logical_line.find('.assert_called_once(')
+        if pos != -1:
+            yield (pos, msg)
+
+
+class CheckForStrUnicodeExc(BaseASTChecker):
+    """Checks for the use of str() or unicode() on an exception.
+
+    This currently only handles the case where str() or unicode()
+    is used in the scope of an exception handler.  If the exception
+    is passed into a function, returned from an assertRaises, or
+    used on an exception created in the same scope, this does not
+    catch it.
+    """
+
+    CHECK_DESC = ('N325 str() and unicode() cannot be used on an '
+                  'exception.  Remove or use six.text_type()')
+
+    def __init__(self, tree, filename):
+        super(CheckForStrUnicodeExc, self).__init__(tree, filename)
+        self.name = []
+        self.already_checked = []
+
+    def visit_TryExcept(self, node):
+        for handler in node.handlers:
+            if handler.name:
+                self.name.append(handler.name.id)
+                super(CheckForStrUnicodeExc, self).generic_visit(node)
+                self.name = self.name[:-1]
+            else:
+                super(CheckForStrUnicodeExc, self).generic_visit(node)
+
+    def visit_Call(self, node):
+        if self._check_call_names(node, ['str', 'unicode']):
+            if node not in self.already_checked:
+                self.already_checked.append(node)
+                if isinstance(node.args[0], ast.Name):
+                    if node.args[0].id in self.name:
+                        self.add_error(node.args[0])
+        super(CheckForStrUnicodeExc, self).generic_visit(node)
+
+
+class CheckForTransAdd(BaseASTChecker):
+    """Checks for the use of concatenation on a translated string.
+
+    Translations should not be concatenated with other strings, but
+    should instead include the string being added to the translated
+    string to give the translators the most information.
+    """
+
+    CHECK_DESC = ('N326 Translated messages cannot be concatenated.  '
+                  'String should be included in translated message.')
+
+    TRANS_FUNC = ['_', '_LI', '_LW', '_LE', '_LC']
+
+    def visit_BinOp(self, node):
+        if isinstance(node.op, ast.Add):
+            if self._check_call_names(node.left, self.TRANS_FUNC):
+                self.add_error(node.left)
+            elif self._check_call_names(node.right, self.TRANS_FUNC):
+                self.add_error(node.right)
+        super(CheckForTransAdd, self).generic_visit(node)
+
+
 def factory(register):
     register(import_no_db_in_virt)
     register(no_db_session_in_public_api)
@@ -321,3 +435,6 @@ def factory(register):
     register(no_mutable_default_args)
     register(check_explicit_underscore_import)
     register(use_jsonutils)
+    register(check_assert_called_once)
+    register(CheckForStrUnicodeExc)
+    register(CheckForTransAdd)

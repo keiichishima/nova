@@ -16,11 +16,11 @@ import datetime
 
 import iso8601
 import netaddr
+from oslo.utils import timeutils
 
 from nova.network import model as network_model
 from nova.objects import base as obj_base
 from nova.objects import fields
-from nova.openstack.common import timeutils
 from nova import test
 
 
@@ -269,6 +269,34 @@ class TestListOfStrings(TestField):
 
     def test_stringify(self):
         self.assertEqual("['abc']", self.field.stringify(['abc']))
+
+
+class TestSet(TestField):
+    def setUp(self):
+        super(TestSet, self).setUp()
+        self.field = fields.Field(fields.Set(FakeFieldType()))
+        self.coerce_good_values = [(set(['foo', 'bar']),
+                                    set(['*foo*', '*bar*']))]
+        self.coerce_bad_values = [['foo'], {'foo': 'bar'}]
+        self.to_primitive_values = [(set(['foo']), tuple(['!foo!']))]
+        self.from_primitive_values = [(tuple(['!foo!']), set(['foo']))]
+
+    def test_stringify(self):
+        self.assertEqual('set([123])', self.field.stringify(set([123])))
+
+
+class TestSetOfIntegers(TestField):
+    def setUp(self):
+        super(TestSetOfIntegers, self).setUp()
+        self.field = fields.SetOfIntegersField()
+        self.coerce_good_values = [(set(['1', 2]),
+                                    set([1, 2]))]
+        self.coerce_bad_values = [set(['foo'])]
+        self.to_primitive_values = [(set([1]), tuple([1]))]
+        self.from_primitive_values = [(tuple([1]), set([1]))]
+
+    def test_stringify(self):
+        self.assertEqual('set([1,2])', self.field.stringify(set([1, 2])))
 
 
 class TestObject(TestField):

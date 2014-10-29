@@ -20,6 +20,9 @@ Starting point for routing EC2 requests.
 
 from eventlet.green import httplib
 from oslo.config import cfg
+from oslo.serialization import jsonutils
+from oslo.utils import importutils
+from oslo.utils import timeutils
 import six
 import six.moves.urllib.parse as urlparse
 import webob
@@ -35,11 +38,9 @@ from nova import exception
 from nova.i18n import _
 from nova.i18n import _LE
 from nova.i18n import _LW
-from nova.openstack.common import importutils
-from nova.openstack.common import jsonutils
+from nova.openstack.common import context as common_context
 from nova.openstack.common import log as logging
 from nova.openstack.common import memorycache
-from nova.openstack.common import timeutils
 from nova import utils
 from nova import wsgi
 
@@ -86,7 +87,7 @@ class FaultWrapper(wsgi.Middleware):
         try:
             return req.get_response(self.application)
         except Exception as ex:
-            LOG.exception(_("FaultWrapper: %s"), unicode(ex))
+            LOG.exception(_("FaultWrapper: %s"), ex)
             return faults.Fault(webob.exc.HTTPInternalServerError())
 
 
@@ -182,7 +183,7 @@ class EC2KeystoneAuth(wsgi.Middleware):
 
     @webob.dec.wsgify(RequestClass=wsgi.Request)
     def __call__(self, req):
-        request_id = context.generate_request_id()
+        request_id = common_context.generate_request_id()
         signature = req.params.get('Signature')
         if not signature:
             msg = _("Signature not provided")
@@ -320,7 +321,7 @@ class Requestify(wsgi.Middleware):
         except KeyError:
             raise webob.exc.HTTPBadRequest()
         except exception.InvalidRequest as err:
-            raise webob.exc.HTTPBadRequest(explanation=unicode(err))
+            raise webob.exc.HTTPBadRequest(explanation=six.text_type(err))
 
         LOG.debug('action: %s', action)
         for key, value in args.items():
@@ -505,9 +506,9 @@ def ec2_error_ex(ex, req, code=None, message=None, unexpected=False):
     request_id = context.request_id
     log_msg_args = {
         'ex_name': type(ex).__name__,
-        'ex_str': unicode(ex)
+        'ex_str': ex
     }
-    log_fun(log_msg % log_msg_args, context=context)
+    log_fun(log_msg, log_msg_args, context=context)
 
     if ex.args and not message and (not unexpected or status < 500):
         message = unicode(ex.args[0])

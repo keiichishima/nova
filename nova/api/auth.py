@@ -17,13 +17,13 @@ Common Auth Middleware.
 """
 
 from oslo.config import cfg
+from oslo.serialization import jsonutils
 import webob.dec
 import webob.exc
 
 from nova import context
 from nova.i18n import _
 from nova.i18n import _LW
-from nova.openstack.common import jsonutils
 from nova.openstack.common import log as logging
 from nova.openstack.common.middleware import request_id
 from nova import wsgi
@@ -75,9 +75,13 @@ def pipeline_factory(loader, global_conf, **local_conf):
     return _load_pipeline(loader, pipeline)
 
 
-def pipeline_factory_v3(loader, global_conf, **local_conf):
+def pipeline_factory_v21(loader, global_conf, **local_conf):
     """A paste pipeline replica that keys off of auth_strategy."""
     return _load_pipeline(loader, local_conf[CONF.auth_strategy].split())
+
+
+# NOTE(oomichi): This pipeline_factory_v3 is for passing check-grenade-dsvm.
+pipeline_factory_v3 = pipeline_factory_v21
 
 
 class InjectContext(wsgi.Middleware):

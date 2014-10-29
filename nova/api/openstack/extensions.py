@@ -18,6 +18,7 @@ import abc
 import functools
 import os
 
+from oslo.utils import importutils
 import six
 import webob.dec
 import webob.exc
@@ -28,7 +29,6 @@ from nova.api.openstack import xmlutil
 from nova import exception
 from nova.i18n import _
 from nova.i18n import _LW
-from nova.openstack.common import importutils
 from nova.openstack.common import log as logging
 import nova.policy
 
@@ -195,8 +195,6 @@ class ExtensionManager(object):
             return
 
         alias = ext.alias
-        LOG.audit(_('Loaded extension: %s'), alias)
-
         if alias in self.extensions:
             raise exception.NovaException("Found duplicate extension: %s"
                                           % alias)
@@ -241,7 +239,7 @@ class ExtensionManager(object):
             LOG.debug('Ext namespace: %s', extension.namespace)
             LOG.debug('Ext updated: %s', extension.updated)
         except AttributeError as ex:
-            LOG.exception(_("Exception loading extension: %s"), unicode(ex))
+            LOG.exception(_("Exception loading extension: %s"), ex)
             return False
 
         return True
@@ -395,8 +393,8 @@ def extension_authorizer(api_name, extension_name):
     return core_authorizer('%s_extension' % api_name, extension_name)
 
 
-def soft_extension_authorizer(api_name, extension_name):
-    hard_authorize = extension_authorizer(api_name, extension_name)
+def soft_authorizer(hard_authorizer, api_name, extension_name):
+    hard_authorize = hard_authorizer(api_name, extension_name)
 
     def authorize(context, action=None):
         try:
@@ -405,6 +403,14 @@ def soft_extension_authorizer(api_name, extension_name):
         except exception.Forbidden:
             return False
     return authorize
+
+
+def soft_extension_authorizer(api_name, extension_name):
+    return soft_authorizer(extension_authorizer, api_name, extension_name)
+
+
+def soft_core_authorizer(api_name, extension_name):
+    return soft_authorizer(core_authorizer, api_name, extension_name)
 
 
 def check_compute_policy(context, action, target, scope='compute'):

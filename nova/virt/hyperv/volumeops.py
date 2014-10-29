@@ -20,10 +20,10 @@ Management class for Storage-related functions (attach, detach, etc).
 import time
 
 from oslo.config import cfg
+from oslo.utils import excutils
 
 from nova import exception
-from nova.i18n import _
-from nova.openstack.common import excutils
+from nova.i18n import _, _LE
 from nova.openstack.common import log as logging
 from nova.virt import driver
 from nova.virt.hyperv import constants
@@ -67,8 +67,12 @@ class VolumeOps(object):
         self._default_root_device = 'vda'
 
     def ebs_root_in_block_devices(self, block_device_info):
-        return self._volutils.volume_in_mapping(self._default_root_device,
-                                                block_device_info)
+        if block_device_info:
+            root_device = block_device_info.get('root_device_name')
+            if not root_device:
+                root_device = self._default_root_device
+            return self._volutils.volume_in_mapping(root_device,
+                                                    block_device_info)
 
     def attach_volumes(self, block_device_info, instance_name, ebs_root):
         mapping = driver.block_device_info_get_mapping(block_device_info)
@@ -145,7 +149,7 @@ class VolumeOps(object):
                                                       mounted_disk_path)
         except Exception:
             with excutils.save_and_reraise_exception():
-                LOG.error(_('Unable to attach volume to instance %s'),
+                LOG.error(_LE('Unable to attach volume to instance %s'),
                           instance_name)
                 if target_iqn:
                     self._volutils.logout_storage_target(target_iqn)
@@ -246,3 +250,22 @@ class VolumeOps(object):
 
     def get_target_from_disk_path(self, physical_drive_path):
         return self._volutils.get_target_from_disk_path(physical_drive_path)
+
+    def fix_instance_volume_disk_paths(self, instance_name, block_device_info):
+        mapping = driver.block_device_info_get_mapping(block_device_info)
+
+        if self.ebs_root_in_block_devices(block_device_info):
+            mapping = mapping[1:]
+
+        disk_address = 0
+        for vol in mapping:
+            data = vol['connection_info']['data']
+            target_lun = data['target_lun']
+            target_iqn = data['target_iqn']
+
+            mounted_disk_path = self._get_mounted_disk_from_lun(
+                target_iqn, target_lun, True)
+            ctrller_path = self._vmutils.get_vm_scsi_controller(instance_name)
+            self._vmutils.set_disk_host_resource(
+                instance_name, ctrller_path, disk_address, mounted_disk_path)
+            disk_address += 1

@@ -18,9 +18,9 @@ Client side of the network RPC API.
 
 from oslo.config import cfg
 from oslo import messaging
+from oslo.serialization import jsonutils
 
 from nova.objects import base as objects_base
-from nova.openstack.common import jsonutils
 from nova import rpc
 
 rpcapi_opts = [
@@ -81,12 +81,19 @@ class NetworkAPI(object):
         existing methods in 1.x after that point should be done such that they
         can handle the version_cap being set to 1.12.
 
+        * 1.13 - Convert allocate_for_instance()
+                 to use NetworkRequestList objects
+
+        ... Juno supports message version 1.13.  So, any changes to
+        existing methods in 1.x after that point should be done such that they
+        can handle the version_cap being set to 1.13.
     '''
 
     VERSION_ALIASES = {
         'grizzly': '1.9',
         'havana': '1.10',
         'icehouse': '1.12',
+        'juno': '1.13',
     }
 
     def __init__(self, topic=None):
@@ -166,10 +173,16 @@ class NetworkAPI(object):
     def allocate_for_instance(self, ctxt, instance_id, project_id, host,
                               rxtx_factor, vpn, requested_networks, macs=None,
                               dhcp_options=None):
+        version = '1.13'
+        if not self.client.can_send_version(version):
+            version = '1.9'
+            if requested_networks:
+                requested_networks = requested_networks.as_tuples()
+
         if CONF.multi_host:
-            cctxt = self.client.prepare(version='1.9', server=host)
+            cctxt = self.client.prepare(version=version, server=host)
         else:
-            cctxt = self.client.prepare(version='1.9')
+            cctxt = self.client.prepare(version=version)
         return cctxt.call(ctxt, 'allocate_for_instance',
                           instance_id=instance_id, project_id=project_id,
                           host=host, rxtx_factor=rxtx_factor, vpn=vpn,

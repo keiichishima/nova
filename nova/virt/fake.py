@@ -26,13 +26,17 @@ semantics of real hypervisor connections.
 import contextlib
 
 from oslo.config import cfg
+from oslo.serialization import jsonutils
 
+from nova.compute import arch
+from nova.compute import hvtype
 from nova.compute import power_state
 from nova.compute import task_states
+from nova.compute import vm_mode
+from nova.console import type as ctype
 from nova import db
 from nova import exception
 from nova.i18n import _
-from nova.openstack.common import jsonutils
 from nova.openstack.common import log as logging
 from nova import utils
 from nova.virt import diagnostics
@@ -54,7 +58,6 @@ def set_nodes(nodes):
     It has effect on the following methods:
         get_available_nodes()
         get_available_resource
-        get_host_stats()
 
     To restore the change, call restore_nodes()
     """
@@ -88,15 +91,21 @@ class FakeDriver(driver.ComputeDriver):
         "supports_recreate": True,
         }
 
+    # Since we don't have a real hypervisor, pretend we have lots of
+    # disk and ram so this driver can be used to test large instances.
+    vcpus = 1000
+    memory_mb = 800000
+    local_gb = 600000
+
     """Fake hypervisor driver."""
 
     def __init__(self, virtapi, read_only=False):
         super(FakeDriver, self).__init__(virtapi)
         self.instances = {}
         self.host_status_base = {
-          'vcpus': 100000,
-          'memory_mb': 8000000000,
-          'local_gb': 600000000000,
+          'vcpus': self.vcpus,
+          'memory_mb': self.memory_mb,
+          'local_gb': self.local_gb,
           'vcpus_used': 0,
           'memory_mb_used': 0,
           'local_gb_used': 100000000000,
@@ -104,8 +113,11 @@ class FakeDriver(driver.ComputeDriver):
           'hypervisor_version': utils.convert_version_to_int('1.0'),
           'hypervisor_hostname': CONF.host,
           'cpu_info': {},
-          'disk_available_least': 500000000000,
-          'supported_instances': [(None, 'fake', None)],
+          'disk_available_least': 0,
+          'supported_instances': jsonutils.dumps([(arch.X86_64,
+                                                   hvtype.FAKE,
+                                                   vm_mode.HVM)]),
+          'numa_topology': None,
           }
         self._mounts = {}
         self._interfaces = {}
@@ -337,20 +349,25 @@ class FakeDriver(driver.ComputeDriver):
         return 'FAKE CONSOLE OUTPUT\nANOTHER\nLAST LINE'
 
     def get_vnc_console(self, context, instance):
-        return {'internal_access_path': 'FAKE',
-                'host': 'fakevncconsole.com',
-                'port': 6969}
+        return ctype.ConsoleVNC(internal_access_path='FAKE',
+                                host='fakevncconsole.com',
+                                port=6969)
 
     def get_spice_console(self, context, instance):
-        return {'internal_access_path': 'FAKE',
-                'host': 'fakespiceconsole.com',
-                'port': 6969,
-                'tlsPort': 6970}
+        return ctype.ConsoleSpice(internal_access_path='FAKE',
+                                  host='fakespiceconsole.com',
+                                  port=6969,
+                                  tlsPort=6970)
 
     def get_rdp_console(self, context, instance):
-        return {'internal_access_path': 'FAKE',
-                'host': 'fakerdpconsole.com',
-                'port': 6969}
+        return ctype.ConsoleRDP(internal_access_path='FAKE',
+                                host='fakerdpconsole.com',
+                                port=6969)
+
+    def get_serial_console(self, context, instance):
+        return ctype.ConsoleSerial(internal_access_path='FAKE',
+                                   host='fakerdpconsole.com',
+                                   port=6969)
 
     def get_console_pool_info(self, console_type):
         return {'address': '127.0.0.1',
@@ -378,25 +395,17 @@ class FakeDriver(driver.ComputeDriver):
         if nodename not in _FAKE_NODES:
             return {}
 
-        dic = {'vcpus': 1,
-               'memory_mb': 8192,
-               'local_gb': 1028,
-               'vcpus_used': 0,
-               'memory_mb_used': 0,
-               'local_gb_used': 0,
-               'hypervisor_type': 'fake',
-               'hypervisor_version': utils.convert_version_to_int('1.0'),
-               'hypervisor_hostname': nodename,
-               'disk_available_least': 0,
-               'cpu_info': '?',
-               'supported_instances': jsonutils.dumps([(None, 'fake', None)])
-              }
-        return dic
+        host_status = self.host_status_base.copy()
+        host_status['hypervisor_hostname'] = nodename
+        host_status['host_hostname'] = nodename
+        host_status['host_name_label'] = nodename
+        host_status['cpu_info'] = '?'
+        return host_status
 
     def ensure_filtering_rules_for_instance(self, instance_ref, network_info):
         return
 
-    def get_instance_disk_info(self, instance_name):
+    def get_instance_disk_info(self, instance_name, block_device_info=None):
         return
 
     def live_migration(self, context, instance_ref, dest,
@@ -417,7 +426,7 @@ class FakeDriver(driver.ComputeDriver):
         return {}
 
     def check_can_live_migrate_source(self, ctxt, instance_ref,
-                                      dest_check_data):
+                                      dest_check_data, block_device_info=None):
         return
 
     def finish_migration(self, context, migration, instance, disk_info,
@@ -438,22 +447,6 @@ class FakeDriver(driver.ComputeDriver):
     def test_remove_vm(self, instance_name):
         """Removes the named VM, as if it crashed. For testing."""
         self.instances.pop(instance_name)
-
-    def get_host_stats(self, refresh=False):
-        """Return fake Host Status of ram, disk, network."""
-        stats = []
-        for nodename in _FAKE_NODES:
-            host_status = self.host_status_base.copy()
-            host_status['hypervisor_hostname'] = nodename
-            host_status['host_hostname'] = nodename
-            host_status['host_name_label'] = nodename
-            stats.append(host_status)
-        if len(stats) == 0:
-            raise exception.NovaException("FakeDriver has no node")
-        elif len(stats) == 1:
-            return stats[0]
-        else:
-            return stats
 
     def host_power_action(self, host, action):
         """Reboots, shuts down or powers up the host."""
@@ -493,3 +486,15 @@ class FakeVirtAPI(virtapi.VirtAPI):
         # NOTE(danms): Don't actually wait for any events, just
         # fall through
         yield
+
+
+class SmallFakeDriver(FakeDriver):
+    # The api samples expect specific cpu memory and disk sizes. In order to
+    # allow the FakeVirt driver to be used outside of the unit tests, provide
+    # a separate class that has the values expected by the api samples. So
+    # instead of requiring new samples every time those
+    # values are adjusted allow them to be overwritten here.
+
+    vcpus = 1
+    memory_mb = 8192
+    local_gb = 1028

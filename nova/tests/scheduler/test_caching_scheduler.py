@@ -14,9 +14,9 @@
 #    under the License.
 
 import mock
+from oslo.utils import timeutils
 
 from nova import exception
-from nova.openstack.common import timeutils
 from nova.scheduler import caching_scheduler
 from nova.scheduler import host_manager
 from nova.tests.scheduler import test_scheduler
@@ -80,7 +80,10 @@ class CachingSchedulerTestCase(test_scheduler.SchedulerTestCase):
                 self.driver.select_destinations,
                 self.context, fake_request_spec, {})
 
-    def test_select_destination_works(self):
+    @mock.patch('nova.db.instance_extra_get_by_instance_uuid',
+                return_value={'numa_topology': None,
+                              'pci_requests': None})
+    def test_select_destination_works(self, mock_get_extra):
         fake_request_spec = self._get_fake_request_spec()
         fake_host = self._get_fake_host_state()
         self.driver.all_host_states = [fake_host]
@@ -109,6 +112,7 @@ class CachingSchedulerTestCase(test_scheduler.SchedulerTestCase):
             "root_gb": 1,
             "ephemeral_gb": 1,
             "vcpus": 1,
+            "uuid": 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',
         }
         request_spec = {
             "instance_type": flavor,
@@ -129,7 +133,10 @@ class CachingSchedulerTestCase(test_scheduler.SchedulerTestCase):
         }
         return host_state
 
-    def test_performance_check_select_destination(self):
+    @mock.patch('nova.db.instance_extra_get_by_instance_uuid',
+                return_value={'numa_topology': None,
+                              'pci_requests': None})
+    def test_performance_check_select_destination(self, mock_get_extra):
         hosts = 2
         requests = 1
 

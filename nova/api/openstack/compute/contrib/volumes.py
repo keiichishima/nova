@@ -15,6 +15,7 @@
 
 """The volumes extension."""
 
+from oslo.utils import strutils
 import webob
 from webob import exc
 
@@ -27,7 +28,6 @@ from nova import exception
 from nova.i18n import _
 from nova import objects
 from nova.openstack.common import log as logging
-from nova.openstack.common import strutils
 from nova.openstack.common import uuidutils
 from nova import volume
 
@@ -221,7 +221,8 @@ class VolumeController(wsgi.Controller):
         authorize(context)
 
         if not self.is_valid_body(body, 'volume'):
-            raise exc.HTTPUnprocessableEntity()
+            msg = _("volume not specified")
+            raise exc.HTTPBadRequest(explanation=msg)
 
         vol = body['volume']
 
@@ -392,7 +393,8 @@ class VolumeAttachmentController(wsgi.Controller):
         authorize_attach(context, action='create')
 
         if not self.is_valid_body(body, 'volumeAttachment'):
-            raise exc.HTTPUnprocessableEntity()
+            msg = _("volumeAttachment not specified")
+            raise exc.HTTPBadRequest(explanation=msg)
         try:
             volume_id = body['volumeAttachment']['volumeId']
         except KeyError:
@@ -420,7 +422,7 @@ class VolumeAttachmentController(wsgi.Controller):
             raise exc.HTTPConflict(explanation=e.format_message())
         except exception.InstanceInvalidState as state_error:
             common.raise_http_conflict_for_instance_invalid_state(state_error,
-                    'attach_volume')
+                    'attach_volume', server_id)
 
         # The attach is async
         attachment = {}
@@ -449,7 +451,8 @@ class VolumeAttachmentController(wsgi.Controller):
         authorize_attach(context, action='update')
 
         if not self.is_valid_body(body, 'volumeAttachment'):
-            raise exc.HTTPUnprocessableEntity()
+            msg = _("volumeAttachment not specified")
+            raise exc.HTTPBadRequest(explanation=msg)
 
         old_volume_id = id
         old_volume = self.volume_api.get(context, old_volume_id)
@@ -488,7 +491,7 @@ class VolumeAttachmentController(wsgi.Controller):
             raise exc.HTTPConflict(explanation=e.format_message())
         except exception.InstanceInvalidState as state_error:
             common.raise_http_conflict_for_instance_invalid_state(state_error,
-                    'swap_volume')
+                    'swap_volume', server_id)
 
         if not found:
             msg = _("volume_id not found: %s") % old_volume_id
@@ -539,7 +542,7 @@ class VolumeAttachmentController(wsgi.Controller):
             raise exc.HTTPConflict(explanation=e.format_message())
         except exception.InstanceInvalidState as state_error:
             common.raise_http_conflict_for_instance_invalid_state(state_error,
-                    'detach_volume')
+                    'detach_volume', server_id)
 
         if not found:
             msg = _("volume_id not found: %s") % volume_id
@@ -681,7 +684,8 @@ class SnapshotController(wsgi.Controller):
         authorize(context)
 
         if not self.is_valid_body(body, 'snapshot'):
-            raise exc.HTTPUnprocessableEntity()
+            msg = _("snapshot not specified")
+            raise exc.HTTPBadRequest(explanation=msg)
 
         snapshot = body['snapshot']
         volume_id = snapshot['volume_id']
@@ -694,7 +698,7 @@ class SnapshotController(wsgi.Controller):
             force = strutils.bool_from_string(force, strict=True)
         except ValueError:
             msg = _("Invalid value '%s' for force.") % force
-            raise exception.InvalidParameterValue(err=msg)
+            raise exc.HTTPBadRequest(explanation=msg)
 
         if force:
             create_func = self.volume_api.create_snapshot_force

@@ -13,11 +13,11 @@
             }
         ],
         "name": "%(flavor_name)s",
-        "flavor-access:is_public": false,
+        "os-flavor-access:is_public": false,
         "ram": 1024,
         "vcpus": 2,
-        "disabled": false,
-        "ephemeral": 0,
-        "swap": 0
+        "OS-FLV-DISABLED:disabled": false,
+        "OS-FLV-EXT-DATA:ephemeral": 0,
+        "swap": ""
     }
 }

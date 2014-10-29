@@ -28,7 +28,6 @@ from nova import context
 from nova import db
 from nova import exception
 from nova import objects
-from nova.pci import pci_request
 from nova.scheduler import driver
 from nova.scheduler import filter_scheduler
 from nova.scheduler import host_manager
@@ -49,12 +48,7 @@ class FilterSchedulerTestCase(test_scheduler.SchedulerTestCase):
     driver_cls = filter_scheduler.FilterScheduler
 
     def test_run_instance_no_hosts(self):
-
-        def _fake_empty_call_zone_method(*args, **kwargs):
-            return []
-
         sched = fakes.FakeFilterScheduler()
-
         uuid = 'fake-uuid1'
         fake_context = context.RequestContext('user', 'project')
         instance_properties = {'project_id': 1, 'os_type': 'Linux'}
@@ -155,7 +149,10 @@ class FilterSchedulerTestCase(test_scheduler.SchedulerTestCase):
         self.driver.schedule_run_instance(fake_context, request_spec,
                 None, None, None, None, {}, False)
 
-    def test_schedule_happy_day(self):
+    @mock.patch('nova.db.instance_extra_get_by_instance_uuid',
+                return_value={'numa_topology': None,
+                              'pci_requests': None})
+    def test_schedule_happy_day(self, mock_get_extra):
         """Make sure there's nothing glaringly wrong with _schedule()
         by doing a happy day pass through.
         """
@@ -186,7 +183,8 @@ class FilterSchedulerTestCase(test_scheduler.SchedulerTestCase):
                                                 'memory_mb': 512,
                                                 'ephemeral_gb': 0,
                                                 'vcpus': 1,
-                                                'os_type': 'Linux'}}
+                                                'os_type': 'Linux',
+                                                'uuid': 'fake-uuid'}}
         self.mox.ReplayAll()
         weighed_hosts = sched._schedule(fake_context, request_spec, {})
         self.assertEqual(len(weighed_hosts), 10)
@@ -446,17 +444,15 @@ class FilterSchedulerTestCase(test_scheduler.SchedulerTestCase):
         for policy in policies:
             self._group_filter_with_filter_not_configured(policy)
 
-    def test_group_uuid_details_in_filter_properties(self):
-        group = self._create_server_group()
-        self._group_details_in_filter_properties(group, 'get_by_uuid',
-                                                 group.uuid, 'anti-affinity')
-
     def test_group_name_details_in_filter_properties(self):
         group = self._create_server_group()
         self._group_details_in_filter_properties(group, 'get_by_name',
                                                  group.name, 'anti-affinity')
 
-    def test_schedule_host_pool(self):
+    @mock.patch('nova.db.instance_extra_get_by_instance_uuid',
+                return_value={'numa_topology': None,
+                              'pci_requests': None})
+    def test_schedule_host_pool(self, mock_get_extra):
         """Make sure the scheduler_host_subset_size property works properly."""
 
         self.flags(scheduler_host_subset_size=2)
@@ -469,11 +465,12 @@ class FilterSchedulerTestCase(test_scheduler.SchedulerTestCase):
         fakes.mox_host_manager_db_calls(self.mox, fake_context)
 
         instance_properties = {'project_id': 1,
-                                    'root_gb': 512,
-                                    'memory_mb': 512,
-                                    'ephemeral_gb': 0,
-                                    'vcpus': 1,
-                                    'os_type': 'Linux'}
+                               'root_gb': 512,
+                               'memory_mb': 512,
+                               'ephemeral_gb': 0,
+                               'vcpus': 1,
+                               'os_type': 'Linux',
+                               'uuid': 'fake-uuid'}
 
         request_spec = dict(instance_properties=instance_properties,
                             instance_type={})
@@ -485,7 +482,10 @@ class FilterSchedulerTestCase(test_scheduler.SchedulerTestCase):
         # one host should be chosen
         self.assertEqual(len(hosts), 1)
 
-    def test_schedule_large_host_pool(self):
+    @mock.patch('nova.db.instance_extra_get_by_instance_uuid',
+                return_value={'numa_topology': None,
+                              'pci_requests': None})
+    def test_schedule_large_host_pool(self, mock_get_extra):
         """Hosts should still be chosen if pool size
         is larger than number of filtered hosts.
         """
@@ -500,11 +500,12 @@ class FilterSchedulerTestCase(test_scheduler.SchedulerTestCase):
         fakes.mox_host_manager_db_calls(self.mox, fake_context)
 
         instance_properties = {'project_id': 1,
-                                    'root_gb': 512,
-                                    'memory_mb': 512,
-                                    'ephemeral_gb': 0,
-                                    'vcpus': 1,
-                                    'os_type': 'Linux'}
+                               'root_gb': 512,
+                               'memory_mb': 512,
+                               'ephemeral_gb': 0,
+                               'vcpus': 1,
+                               'os_type': 'Linux',
+                               'uuid': 'fake-uuid'}
         request_spec = dict(instance_properties=instance_properties,
                             instance_type={})
         filter_properties = {}
@@ -515,7 +516,10 @@ class FilterSchedulerTestCase(test_scheduler.SchedulerTestCase):
         # one host should be chose
         self.assertEqual(len(hosts), 1)
 
-    def test_schedule_chooses_best_host(self):
+    @mock.patch('nova.db.instance_extra_get_by_instance_uuid',
+                return_value={'numa_topology': None,
+                              'pci_requests': None})
+    def test_schedule_chooses_best_host(self, mock_get_extra):
         """If scheduler_host_subset_size is 1, the largest host with greatest
         weight should be returned.
         """
@@ -543,7 +547,8 @@ class FilterSchedulerTestCase(test_scheduler.SchedulerTestCase):
                                 'memory_mb': 512,
                                 'ephemeral_gb': 0,
                                 'vcpus': 1,
-                                'os_type': 'Linux'}
+                                'os_type': 'Linux',
+                                'uuid': 'fake-uuid'}
 
         request_spec = dict(instance_properties=instance_properties,
                             instance_type={})
@@ -561,7 +566,10 @@ class FilterSchedulerTestCase(test_scheduler.SchedulerTestCase):
 
         self.assertEqual(50, hosts[0].weight)
 
-    def test_select_destinations(self):
+    @mock.patch('nova.db.instance_extra_get_by_instance_uuid',
+                return_value={'numa_topology': None,
+                              'pci_requests': None})
+    def test_select_destinations(self, mock_get_extra):
         """select_destinations is basically a wrapper around _schedule().
 
         Similar to the _schedule tests, this just does a happy path test to
@@ -598,7 +606,8 @@ class FilterSchedulerTestCase(test_scheduler.SchedulerTestCase):
                                                 'memory_mb': 512,
                                                 'ephemeral_gb': 0,
                                                 'vcpus': 1,
-                                                'os_type': 'Linux'},
+                                                'os_type': 'Linux',
+                                                'uuid': 'fake-uuid'},
                         'num_instances': 1}
         self.mox.ReplayAll()
         dests = sched.select_destinations(fake_context, request_spec, {})
@@ -632,6 +641,20 @@ class FilterSchedulerTestCase(test_scheduler.SchedulerTestCase):
                 self.driver.select_destinations, self.context,
                 {'num_instances': 1}, {})
 
+    def test_select_destinations_no_valid_host_not_enough(self):
+        # Tests that we have fewer hosts available than number of instances
+        # requested to build.
+        with mock.patch.object(self.driver, '_schedule',
+                               return_value=[mock.sentinel.host1]):
+            try:
+                self.driver.select_destinations(
+                    self.context, {'num_instances': 2}, {})
+                self.fail('Expected NoValidHost to be raised.')
+            except exception.NoValidHost as e:
+                # Make sure that we provided a reason why NoValidHost.
+                self.assertIn('reason', e.kwargs)
+                self.assertTrue(len(e.kwargs['reason']) > 0)
+
     def test_handles_deleted_instance(self):
         """Test instance deletion while being scheduled."""
 
@@ -656,19 +679,3 @@ class FilterSchedulerTestCase(test_scheduler.SchedulerTestCase):
         sched._provision_resource(fake_context, weighted_host,
                                   request_spec, filter_properties,
                                   None, None, None, None)
-
-    def test_pci_request_in_filter_properties(self):
-        instance_type = {}
-        request_spec = {'instance_type': instance_type,
-                        'instance_properties': {'project_id': 1,
-                                                'os_type': 'Linux'}}
-        filter_properties = {}
-        requests = [{'count': 1, 'spec': [{'vendor_id': '8086'}]}]
-        self.mox.StubOutWithMock(pci_request, 'get_pci_requests_from_flavor')
-        pci_request.get_pci_requests_from_flavor(
-            instance_type).AndReturn(requests)
-        self.mox.ReplayAll()
-        self.driver.populate_filter_properties(
-            request_spec, filter_properties)
-        self.assertEqual(filter_properties.get('pci_requests'),
-                         requests)

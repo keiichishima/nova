@@ -16,6 +16,7 @@
 import datetime
 
 from oslo.config import cfg
+from oslo.serialization import jsonutils
 
 from nova.api.openstack import compute
 from nova.api.openstack.compute import plugins
@@ -25,7 +26,6 @@ from nova.api.openstack import extensions
 import nova.compute.api
 from nova.compute import flavors
 from nova import db
-from nova.openstack.common import jsonutils
 from nova import test
 from nova.tests.api.openstack import fakes
 from nova.tests import fake_instance
@@ -146,7 +146,7 @@ class ServersControllerCreateTestV21(test.TestCase):
                 'id': self.instance_cache_num,
                 'display_name': inst['display_name'] or 'test',
                 'uuid': fakes.FAKE_UUID,
-                'instance_type': dict(inst_type),
+                'instance_type': inst_type,
                 'access_ip_v4': '1.2.3.4',
                 'access_ip_v6': 'fead::1234',
                 'image_ref': inst.get('image_ref', def_image_ref),

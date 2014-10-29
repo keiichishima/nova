@@ -14,8 +14,8 @@ Tests For BaremetalHostManager
 """
 
 import mock
+from oslo.serialization import jsonutils
 
-from nova.openstack.common import jsonutils
 from nova.scheduler import baremetal_host_manager
 from nova.scheduler import host_manager
 from nova import test
@@ -27,6 +27,18 @@ class BaremetalHostManagerTestCase(test.NoDBTestCase):
     def setUp(self):
         super(BaremetalHostManagerTestCase, self).setUp()
         self.host_manager = baremetal_host_manager.BaremetalHostManager()
+
+    def test_manager_public_api_signatures(self):
+        self.assertPublicAPISignatures(host_manager.HostManager(),
+                                       self.host_manager)
+
+    def test_state_public_api_signatures(self):
+        self.assertPublicAPISignatures(
+            host_manager.HostState("dummy",
+                                   "dummy"),
+            baremetal_host_manager.BaremetalNodeState("dummy",
+                                                      "dummy")
+        )
 
     @mock.patch.object(baremetal_host_manager.BaremetalNodeState, '__init__')
     def test_create_baremetal_node_state(self, init_mock):

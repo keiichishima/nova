@@ -38,6 +38,8 @@ import math
 import re
 import time
 
+from oslo.serialization import jsonutils
+from oslo.utils import importutils
 import webob.dec
 import webob.exc
 
@@ -45,8 +47,6 @@ from nova.api.openstack.compute.views import limits as limits_views
 from nova.api.openstack import wsgi
 from nova.api.openstack import xmlutil
 from nova.i18n import _
-from nova.openstack.common import importutils
-from nova.openstack.common import jsonutils
 from nova import quota
 from nova import utils
 from nova import wsgi as base_wsgi
@@ -159,9 +159,11 @@ class Limit(object):
         self.water_level = 0
         self.capacity = self.unit
         self.request_value = float(self.capacity) / float(self.value)
-        msg = _("Only %(value)s %(verb)s request(s) can be "
-                "made to %(uri)s every %(unit_string)s.")
-        self.error_message = msg % self.__dict__
+        msg = (_("Only %(value)s %(verb)s request(s) can be "
+                 "made to %(uri)s every %(unit_string)s.") %
+               {'value': self.value, 'verb': self.verb, 'uri': self.uri,
+                'unit_string': self.unit_string})
+        self.error_message = msg
 
     def __call__(self, verb, url):
         """Represents a call to this limit from a relevant request.

@@ -10,7 +10,7 @@ Nova Specific Commandments
 
 - ``nova.db`` imports are not allowed in ``nova/virt/*``
 - [N309] no db session in public API methods (disabled)
-  This enforces a guideline defined in ``nova.openstack.common.db.sqlalchemy.session``
+  This enforces a guideline defined in ``oslo.db.sqlalchemy.session``
 - [N310] timeutils.utcnow() wrapper must be used instead of direct calls to
   datetime.datetime.utcnow() to make it easy to override its return value in tests
 - [N311] importing code from other virt drivers forbidden
@@ -37,6 +37,9 @@ Nova Specific Commandments
 - [N322] Method's default argument shouldn't be mutable
 - [N323] Ensure that the _() function is explicitly imported to ensure proper translations.
 - [N324] Ensure that jsonutils.%(fun)s must be used instead of json.%(fun)s
+- [N325] str() and unicode() cannot be used on an exception.  Remove use or use six.text_type()
+- [N326] Translated messages cannot be concatenated.  String should be included in translated message.
+- [N327] assert_called_once() is not a valid method
 
 Creating Unit Tests
 -------------------

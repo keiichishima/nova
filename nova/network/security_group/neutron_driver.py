@@ -18,16 +18,16 @@ import sys
 from neutronclient.common import exceptions as n_exc
 from neutronclient.neutron import v2_0 as neutronv20
 from oslo.config import cfg
+from oslo.utils import excutils
 import six
 from webob import exc
 
 from nova.compute import api as compute_api
 from nova import exception
-from nova.i18n import _
+from nova.i18n import _, _LE
 from nova.network import neutronv2
 from nova.network.security_group import security_group_base
 from nova import objects
-from nova.openstack.common import excutils
 from nova.openstack.common import log as logging
 from nova.openstack.common import uuidutils
 from nova import utils
@@ -62,7 +62,7 @@ class SecurityGroupAPI(security_group_base.SecurityGroupBase):
                 # quota
                 raise exc.HTTPBadRequest()
             elif e.status_code == 409:
-                self.raise_over_quota(unicode(e))
+                self.raise_over_quota(six.text_type(e))
             raise exc_info[0], exc_info[1], exc_info[2]
         return self._convert_to_nova_security_group_format(security_group)
 
@@ -123,8 +123,12 @@ class SecurityGroupAPI(security_group_base.SecurityGroupBase):
         neutron = neutronv2.get_client(context)
         try:
             if not id and name:
+                # NOTE(flwang): The project id should be honoured so as to get
+                # the correct security group id when user(with admin role but
+                # non-admin project) try to query by name, so as to avoid
+                # getting more than duplicated records with the same name.
                 id = neutronv20.find_resourceid_by_name_or_id(
-                    neutron, 'security_group', name)
+                    neutron, 'security_group', name, context.project_id)
             group = neutron.show_security_group(id).get('security_group')
         except n_exc.NeutronClientNoUniqueMatch as e:
             raise exception.NoUniqueMatch(six.text_type(e))
@@ -132,9 +136,9 @@ class SecurityGroupAPI(security_group_base.SecurityGroupBase):
             exc_info = sys.exc_info()
             if e.status_code == 404:
                 LOG.debug("Neutron security group %s not found", name)
-                self.raise_not_found(unicode(e))
+                self.raise_not_found(six.text_type(e))
             else:
-                LOG.error(_("Neutron Error: %s"), e)
+                LOG.error(_LE("Neutron Error: %s"), e)
                 raise exc_info[0], exc_info[1], exc_info[2]
 
         return self._convert_to_nova_security_group_format(group)
@@ -177,11 +181,11 @@ class SecurityGroupAPI(security_group_base.SecurityGroupBase):
         except n_exc.NeutronClientException as e:
             exc_info = sys.exc_info()
             if e.status_code == 404:
-                self.raise_not_found(unicode(e))
+                self.raise_not_found(six.text_type(e))
             elif e.status_code == 409:
-                self.raise_invalid_property(unicode(e))
+                self.raise_invalid_property(six.text_type(e))
             else:
-                LOG.error(_("Neutron Error: %s"), e)
+                LOG.error(_LE("Neutron Error: %s"), e)
                 raise exc_info[0], exc_info[1], exc_info[2]
 
     def add_rules(self, context, id, name, vals):
@@ -203,11 +207,11 @@ class SecurityGroupAPI(security_group_base.SecurityGroupBase):
             if e.status_code == 404:
                 LOG.exception(_("Neutron Error getting security group %s"),
                               name)
-                self.raise_not_found(unicode(e))
+                self.raise_not_found(six.text_type(e))
             elif e.status_code == 409:
                 LOG.exception(_("Neutron Error adding rules to security "
                                 "group %s"), name)
-                self.raise_over_quota(unicode(e))
+                self.raise_over_quota(six.text_type(e))
             else:
                 LOG.exception(_("Neutron Error:"))
                 raise exc_info[0], exc_info[1], exc_info[2]
@@ -274,9 +278,9 @@ class SecurityGroupAPI(security_group_base.SecurityGroupBase):
             exc_info = sys.exc_info()
             if e.status_code == 404:
                 LOG.debug("Neutron security group rule %s not found", id)
-                self.raise_not_found(unicode(e))
+                self.raise_not_found(six.text_type(e))
             else:
-                LOG.error(_("Neutron Error: %s"), e)
+                LOG.error(_LE("Neutron Error: %s"), e)
                 raise exc_info[0], exc_info[1], exc_info[2]
         return self._convert_to_nova_security_group_rule_format(rule)
 
@@ -393,7 +397,9 @@ class SecurityGroupAPI(security_group_base.SecurityGroupBase):
         neutron = neutronv2.get_client(context)
         try:
             security_group_id = neutronv20.find_resourceid_by_name_or_id(
-                neutron, 'security_group', security_group_name)
+                neutron, 'security_group',
+                security_group_name,
+                context.project_id)
         except n_exc.NeutronClientNoUniqueMatch as e:
             raise exception.NoUniqueMatch(six.text_type(e))
         except n_exc.NeutronClientException as e:
@@ -446,7 +452,9 @@ class SecurityGroupAPI(security_group_base.SecurityGroupBase):
         neutron = neutronv2.get_client(context)
         try:
             security_group_id = neutronv20.find_resourceid_by_name_or_id(
-                neutron, 'security_group', security_group_name)
+                neutron, 'security_group',
+                security_group_name,
+                context.project_id)
         except n_exc.NeutronClientException as e:
             exc_info = sys.exc_info()
             if e.status_code == 404:

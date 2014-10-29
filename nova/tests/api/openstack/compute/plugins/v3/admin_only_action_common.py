@@ -12,13 +12,13 @@
 #   License for the specific language governing permissions and limitations
 #   under the License.
 
+from oslo.serialization import jsonutils
+from oslo.utils import timeutils
 import webob
 
 from nova.compute import vm_states
 import nova.context
 from nova import exception
-from nova.openstack.common import jsonutils
-from nova.openstack.common import timeutils
 from nova.openstack.common import uuidutils
 from nova import test
 from nova.tests import fake_instance
@@ -31,7 +31,7 @@ class CommonMixin(object):
         self.context = nova.context.RequestContext('fake', 'fake')
 
     def _make_request(self, url, body):
-        req = webob.Request.blank('/v3' + url)
+        req = webob.Request.blank('/v2/fake' + url)
         req.method = 'POST'
         req.body = jsonutils.dumps(body)
         req.content_type = 'application/json'
@@ -138,7 +138,8 @@ class CommonMixin(object):
         res = self._make_request('/servers/%s/action' % instance.uuid,
                                  {action: body_map.get(action)})
         self.assertEqual(409, res.status_int)
-        self.assertIn("Cannot \'%s\' while instance" % action, res.body)
+        self.assertIn("Cannot \'%(action)s\' instance %(id)s"
+                      % {'action': action, 'id': instance.uuid}, res.body)
         # Do these here instead of tearDown because this method is called
         # more than once for the same test case
         self.mox.VerifyAll()

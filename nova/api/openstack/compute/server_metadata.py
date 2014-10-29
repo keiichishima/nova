@@ -56,6 +56,9 @@ class Controller(object):
         except (KeyError, TypeError):
             msg = _("Malformed request body")
             raise exc.HTTPBadRequest(explanation=msg)
+        if not isinstance(metadata, dict):
+            msg = _("Malformed request body. metadata must be object")
+            raise exc.HTTPBadRequest(explanation=msg)
 
         context = req.environ['nova.context']
 
@@ -74,6 +77,10 @@ class Controller(object):
         except (TypeError, KeyError):
             expl = _('Malformed request body')
             raise exc.HTTPBadRequest(explanation=expl)
+
+        if not isinstance(meta_item, dict):
+            msg = _("Malformed request body. meta item must be object")
+            raise exc.HTTPBadRequest(explanation=msg)
 
         if id not in meta_item:
             expl = _('Request body and URI mismatch')
@@ -99,6 +106,10 @@ class Controller(object):
         except (TypeError, KeyError):
             expl = _('Malformed request body')
             raise exc.HTTPBadRequest(explanation=expl)
+
+        if not isinstance(metadata, dict):
+            msg = _("Malformed request body. metadata must be object")
+            raise exc.HTTPBadRequest(explanation=msg)
 
         context = req.environ['nova.context']
         new_metadata = self._update_instance_metadata(context,
@@ -141,7 +152,7 @@ class Controller(object):
 
         except exception.InstanceInvalidState as state_error:
             common.raise_http_conflict_for_instance_invalid_state(state_error,
-                    'update metadata')
+                    'update metadata', server_id)
 
     @wsgi.serializers(xml=common.MetaItemTemplate)
     def show(self, req, server_id, id):
@@ -180,7 +191,7 @@ class Controller(object):
 
         except exception.InstanceInvalidState as state_error:
             common.raise_http_conflict_for_instance_invalid_state(state_error,
-                    'delete metadata')
+                    'delete metadata', server_id)
 
 
 def create_resource():

@@ -32,11 +32,16 @@ import traceback
 from eventlet import queue
 from oslo.config import cfg
 from oslo import messaging
+from oslo.serialization import jsonutils
+from oslo.utils import excutils
+from oslo.utils import importutils
+from oslo.utils import timeutils
 import six
 
 from nova.cells import state as cells_state
 from nova.cells import utils as cells_utils
 from nova import compute
+from nova.compute import delete_types
 from nova.compute import rpcapi as compute_rpcapi
 from nova.compute import task_states
 from nova.compute import vm_states
@@ -44,15 +49,11 @@ from nova.consoleauth import rpcapi as consoleauth_rpcapi
 from nova import context
 from nova.db import base
 from nova import exception
-from nova.i18n import _
+from nova.i18n import _, _LE
 from nova.network import model as network_model
 from nova import objects
 from nova.objects import base as objects_base
-from nova.openstack.common import excutils
-from nova.openstack.common import importutils
-from nova.openstack.common import jsonutils
 from nova.openstack.common import log as logging
-from nova.openstack.common import timeutils
 from nova.openstack.common import uuidutils
 from nova import rpc
 from nova import utils
@@ -843,7 +844,7 @@ class _TargetedMessageMethods(_BaseMessageMethods):
                 self.msg_runner.instance_destroy_at_top(ctxt,
                                                         instance)
         except exception.InstanceInfoCacheNotFound:
-            if method != 'delete':
+            if method != delete_types.DELETE:
                 raise
 
         fn = getattr(self.compute_api, method, None)
@@ -876,10 +877,12 @@ class _TargetedMessageMethods(_BaseMessageMethods):
         return self.host_api.get_host_uptime(message.ctxt, host_name)
 
     def terminate_instance(self, message, instance):
-        self._call_compute_api_with_obj(message.ctxt, instance, 'delete')
+        self._call_compute_api_with_obj(message.ctxt, instance,
+                                        delete_types.DELETE)
 
     def soft_delete_instance(self, message, instance):
-        self._call_compute_api_with_obj(message.ctxt, instance, 'soft_delete')
+        self._call_compute_api_with_obj(message.ctxt, instance,
+                                        delete_types.SOFT_DELETE)
 
     def pause_instance(self, message, instance):
         """Pause an instance via compute_api.pause()."""
@@ -950,6 +953,10 @@ class _TargetedMessageMethods(_BaseMessageMethods):
         self._call_compute_api_with_obj(message.ctxt, instance, 'rebuild',
                                         image_href, admin_password,
                                         files_to_inject, **kwargs)
+
+    def set_admin_password(self, message, instance, new_pass):
+        self._call_compute_api_with_obj(message.ctxt, instance,
+                'set_admin_password', new_pass)
 
 
 class _BroadcastMessageMethods(_BaseMessageMethods):
@@ -1091,7 +1098,7 @@ class _BroadcastMessageMethods(_BaseMessageMethods):
         """
         LOG.debug("Got broadcast to %(delete_type)s delete instance",
                   {'delete_type': delete_type}, instance=instance)
-        if delete_type == 'soft':
+        if delete_type == delete_types.SOFT_DELETE:
             self.compute_api.soft_delete(message.ctxt, instance)
         else:
             self.compute_api.delete(message.ctxt, instance)
@@ -1389,8 +1396,11 @@ class MessageRunner(object):
             return
         my_cell_info = self.state_manager.get_my_state()
         capabs = self.state_manager.get_our_capabilities()
-        LOG.debug("Updating parents with our capabilities: %(capabs)s",
-                  {'capabs': capabs})
+        parent_cell_names = ','.join(x.name for x in parent_cells)
+        LOG.debug("Updating parents [%(parent_cell_names)s] with "
+                                     "our capabilities: %(capabs)s",
+                   {'parent_cell_names': parent_cell_names,
+                    'capabs': capabs})
         # We have to turn the sets into lists so they can potentially
         # be json encoded when the raw message is sent.
         for key, values in capabs.items():
@@ -1409,8 +1419,11 @@ class MessageRunner(object):
             return
         my_cell_info = self.state_manager.get_my_state()
         capacities = self.state_manager.get_our_capacities()
-        LOG.debug("Updating parents with our capacities: %(capacities)s",
-                  {'capacities': capacities})
+        parent_cell_names = ','.join(x.name for x in parent_cells)
+        LOG.debug("Updating parents [%(parent_cell_names)s] with "
+                                   "our capacities: %(capacities)s",
+                  {'parent_cell_names': parent_cell_names,
+                   'capacities': capacities})
         method_kwargs = {'cell_name': my_cell_info.name,
                          'capacities': capacities}
         for cell in parent_cells:
@@ -1806,6 +1819,10 @@ class MessageRunner(object):
         self._instance_action(ctxt, instance, 'rebuild_instance',
                               extra_kwargs=extra_kwargs)
 
+    def set_admin_password(self, ctxt, instance, new_pass):
+        self._instance_action(ctxt, instance, 'set_admin_password',
+                extra_kwargs={'new_pass': new_pass})
+
     @staticmethod
     def get_message_types():
         return _CELL_MESSAGE_TYPE_TO_MESSAGE_CLS.keys()
@@ -1860,7 +1877,7 @@ def serialize_remote_exception(failure_info, log_failure=True):
     tb = traceback.format_exception(*failure_info)
     failure = failure_info[1]
     if log_failure:
-        LOG.error(_("Returning exception %s to caller"),
+        LOG.error(_LE("Returning exception %s to caller"),
                   six.text_type(failure))
         LOG.error(tb)
 

@@ -17,10 +17,10 @@ import datetime
 import iso8601
 import mock
 import netaddr
+from oslo.utils import timeutils
 
 from nova import exception
 from nova.objects import fixed_ip
-from nova.openstack.common import timeutils
 from nova.tests import fake_instance
 from nova.tests.objects import test_network
 from nova.tests.objects import test_objects
@@ -40,13 +40,16 @@ fake_fixed_ip = {
     'leased': False,
     'reserved': False,
     'host': None,
+    'network': None,
+    'virtual_interface': None,
+    'floating_ips': [],
     }
 
 
 class _TestFixedIPObject(object):
     def _compare(self, obj, db_obj):
         for field in obj.fields:
-            if field is 'virtual_interface':
+            if field in ('default_route', 'floating_ips'):
                 continue
             if field in fixed_ip.FIXED_IP_OPTIONAL_ATTRS:
                 if obj.obj_attr_is_set(field) and db_obj[field] is not None:
@@ -257,6 +260,10 @@ class _TestFixedIPObject(object):
         get.assert_called_once_with(self.context, 123)
         self._compare(fixedips[0], fake_fixed_ip)
 
+    def test_floating_ips_do_not_lazy_load(self):
+        fixedip = fixed_ip.FixedIP()
+        self.assertRaises(NotImplementedError, lambda: fixedip.floating_ips)
+
     @mock.patch('nova.db.fixed_ip_bulk_create')
     def test_bulk_create(self, bulk):
         fixed_ips = [fixed_ip.FixedIP(address='192.168.1.1'),
@@ -278,6 +285,7 @@ class _TestFixedIPObject(object):
                 'instance_created': datetime.datetime(1955, 11, 5),
                 'allocated': True,
                 'leased': True,
+                'default_route': True,
                 }
         get.return_value = [info]
         fixed_ips = fixed_ip.FixedIPList.get_by_network(
@@ -297,6 +305,28 @@ class _TestFixedIPObject(object):
         self.assertIsInstance(fip.instance.updated_at, datetime.datetime)
         self.assertEqual(1, fip.virtual_interface.id)
         self.assertEqual(info['vif_address'], fip.virtual_interface.address)
+
+    @mock.patch('nova.db.network_get_associated_fixed_ips')
+    def test_backport_default_route(self, mock_get):
+        info = {'address': '1.2.3.4',
+                'instance_uuid': 'fake-uuid',
+                'network_id': 0,
+                'vif_id': 1,
+                'vif_address': 'de:ad:be:ee:f0:00',
+                'instance_hostname': 'fake-host',
+                'instance_updated': datetime.datetime(1955, 11, 5),
+                'instance_created': datetime.datetime(1955, 11, 5),
+                'allocated': True,
+                'leased': True,
+                'default_route': True,
+                }
+        mock_get.return_value = [info]
+        fixed_ips = fixed_ip.FixedIPList.get_by_network(
+            self.context, {'id': 0}, host='fake-host')
+        primitive = fixed_ips[0].obj_to_primitive()
+        self.assertIn('default_route', primitive['nova_object.data'])
+        fixed_ips[0].obj_make_compatible(primitive['nova_object.data'], '1.1')
+        self.assertNotIn('default_route', primitive['nova_object.data'])
 
 
 class TestFixedIPObject(test_objects._LocalTest,

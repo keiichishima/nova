@@ -22,17 +22,17 @@ import time
 import uuid
 
 from oslo.config import cfg
+from oslo.serialization import jsonutils
+from oslo.utils import strutils
 
 from nova.api.metadata import password
 from nova.compute import utils as compute_utils
 from nova import context
 from nova import crypto
 from nova import exception
-from nova.i18n import _
+from nova.i18n import _, _LE
 from nova import objects
-from nova.openstack.common import jsonutils
 from nova.openstack.common import log as logging
-from nova.openstack.common import strutils
 from nova import utils
 
 
@@ -109,18 +109,25 @@ def _call_agent(session, instance, vm_ref, method, addl_args=None,
     except session.XenAPI.Failure as e:
         err_msg = e.details[-1].splitlines()[-1]
         if 'TIMEOUT:' in err_msg:
-            LOG.error(_('TIMEOUT: The call to %(method)s timed out. '
-                        'args=%(args)r'),
+            LOG.error(_LE('TIMEOUT: The call to %(method)s timed out. '
+                          'args=%(args)r'),
                       {'method': method, 'args': args}, instance=instance)
             raise exception.AgentTimeout(method=method)
+        elif 'REBOOT:' in err_msg:
+            LOG.debug('REBOOT: The call to %(method)s detected a reboot. '
+                      'args=%(args)r',
+                      {'method': method, 'args': args}, instance=instance)
+            _wait_for_new_dom_id(session, vm_ref, dom_id, method)
+            return _call_agent(session, instance, vm_ref, method,
+                               addl_args, timeout, success_codes)
         elif 'NOT IMPLEMENTED:' in err_msg:
-            LOG.error(_('NOT IMPLEMENTED: The call to %(method)s is not '
-                        'supported by the agent. args=%(args)r'),
+            LOG.error(_LE('NOT IMPLEMENTED: The call to %(method)s is not '
+                          'supported by the agent. args=%(args)r'),
                       {'method': method, 'args': args}, instance=instance)
             raise exception.AgentNotImplemented(method=method)
         else:
-            LOG.error(_('The call to %(method)s returned an error: %(e)s. '
-                        'args=%(args)r'),
+            LOG.error(_LE('The call to %(method)s returned an error: %(e)s. '
+                          'args=%(args)r'),
                       {'method': method, 'args': args, 'e': e},
                       instance=instance)
             raise exception.AgentError(method=method)
@@ -129,15 +136,15 @@ def _call_agent(session, instance, vm_ref, method, addl_args=None,
         try:
             ret = jsonutils.loads(ret)
         except TypeError:
-            LOG.error(_('The agent call to %(method)s returned an invalid '
-                        'response: %(ret)r. args=%(args)r'),
+            LOG.error(_LE('The agent call to %(method)s returned an invalid '
+                          'response: %(ret)r. args=%(args)r'),
                       {'method': method, 'ret': ret, 'args': args},
                       instance=instance)
             raise exception.AgentError(method=method)
 
     if ret['returncode'] not in success_codes:
-        LOG.error(_('The agent call to %(method)s returned an '
-                    'an error: %(ret)r. args=%(args)r'),
+        LOG.error(_LE('The agent call to %(method)s returned an '
+                      'an error: %(ret)r. args=%(args)r'),
                   {'method': method, 'ret': ret, 'args': args},
                   instance=instance)
         raise exception.AgentError(method=method)
@@ -150,6 +157,22 @@ def _call_agent(session, instance, vm_ref, method, addl_args=None,
     # Some old versions of the Windows agent have a trailing \\r\\n
     # (ie CRLF escaped) for some reason. Strip that off.
     return ret['message'].replace('\\r\\n', '')
+
+
+def _wait_for_new_dom_id(session, vm_ref, old_dom_id, method):
+    expiration = time.time() + CONF.xenserver.agent_timeout
+    while True:
+        dom_id = session.VM.get_domid(vm_ref)
+
+        if dom_id and dom_id != -1 and dom_id != old_dom_id:
+            LOG.debug("Found new dom_id %s" % dom_id)
+            return
+
+        if time.time() > expiration:
+            LOG.debug("Timed out waiting for new dom_id %s" % dom_id)
+            raise exception.AgentTimeout(method=method)
+
+        time.sleep(1)
 
 
 def is_upgrade_required(current_version, available_version):

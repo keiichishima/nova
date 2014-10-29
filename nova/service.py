@@ -23,15 +23,15 @@ import sys
 
 from oslo.config import cfg
 from oslo import messaging
+from oslo.utils import importutils
 
 from nova import baserpc
 from nova import conductor
 from nova import context
 from nova import debugger
 from nova import exception
-from nova.i18n import _
+from nova.i18n import _, _LE
 from nova.objects import base as objects_base
-from nova.openstack.common import importutils
 from nova.openstack.common import log as logging
 from nova.openstack.common import processutils
 from nova.openstack.common import service
@@ -221,7 +221,7 @@ class Service(service.Service):
             'host': self.host,
             'binary': self.binary,
             'topic': self.topic,
-            'report_count': 0
+            'report_count': 0,
         }
         service = self.conductor_api.service_create(context, svc_values)
         self.service_id = service['id']
@@ -312,7 +312,7 @@ class Service(service.Service):
             with utils.tempdir():
                 pass
         except Exception as e:
-            LOG.error(_('Temporary directory is invalid: %s'), e)
+            LOG.error(_LE('Temporary directory is invalid: %s'), e)
             sys.exit(1)
 
 

@@ -19,7 +19,11 @@
 #    under the License.
 #
 
+import functools
+
 from oslo.config import cfg
+from oslo.utils import units
+import six
 
 from nova import exception
 from nova.i18n import _
@@ -27,13 +31,46 @@ from nova.i18n import _LE
 from nova.i18n import _LW
 from nova.openstack.common import log as logging
 from nova.openstack.common import processutils
-from nova.openstack.common import units
+from nova import utils as nova_utils
 from nova.virt.libvirt import utils
 
 
+lvm_opts = [
+    cfg.StrOpt('volume_clear',
+               default='zero',
+               help='Method used to wipe old volumes (valid options are: '
+                    'none, zero, shred)'),
+    cfg.IntOpt('volume_clear_size',
+               default=0,
+               help='Size in MiB to wipe at start of old volumes. 0 => all'),
+]
+
 CONF = cfg.CONF
+CONF.register_opts(lvm_opts, 'libvirt')
 CONF.import_opt('instances_path', 'nova.compute.manager')
 LOG = logging.getLogger(__name__)
+
+
+@nova_utils.expects_func_args('path')
+def wrap_no_device_error(function):
+    """Wraps a method to catch exceptions related to volume BDM not found.
+
+    This decorator wraps a method to catch ProcessExecutionError having to do
+    with a missing volume block device mapping. It translates the error to a
+    VolumeBDMPathNotFound exception.
+    """
+
+    @functools.wraps(function)
+    def decorated_function(path):
+        try:
+            return function(path)
+        except processutils.ProcessExecutionError as e:
+            if 'No such device or address' in e.stderr:
+                raise exception.VolumeBDMPathNotFound(path=path)
+            else:
+                raise
+
+    return decorated_function
 
 
 def create_volume(vg, lv, size, sparse=False):
@@ -147,10 +184,14 @@ def volume_info(path):
     return dict(zip(*info))
 
 
+@wrap_no_device_error
 def get_volume_size(path):
     """Get logical volume size in bytes.
 
     :param path: logical volume path
+    :raises: processutils.ProcessExecutionError if getting the volume size
+             fails in some unexpected way.
+    :raises: exception.VolumeBDMPathNotFound if the volume path does not exist.
     """
     out, _err = utils.execute('blockdev', '--getsize64', path,
                               run_as_root=True)
@@ -232,6 +273,6 @@ def remove_volumes(paths):
         try:
             utils.execute(*lvremove, attempts=3, run_as_root=True)
         except processutils.ProcessExecutionError as exp:
-            errors.append(str(exp))
+            errors.append(six.text_type(exp))
     if errors:
         raise exception.VolumesNotRemoved(reason=(', ').join(errors))

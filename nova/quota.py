@@ -19,15 +19,15 @@
 import datetime
 
 from oslo.config import cfg
+from oslo.utils import importutils
+from oslo.utils import timeutils
 import six
 
 from nova import db
 from nova import exception
 from nova.i18n import _
 from nova import objects
-from nova.openstack.common import importutils
 from nova.openstack.common import log as logging
-from nova.openstack.common import timeutils
 
 LOG = logging.getLogger(__name__)
 
@@ -72,6 +72,12 @@ quota_opts = [
     cfg.IntOpt('quota_key_pairs',
                default=100,
                help='Number of key pairs per user'),
+    cfg.IntOpt('quota_server_groups',
+               default=10,
+               help='Number of server groups per project'),
+    cfg.IntOpt('quota_server_group_members',
+               default=10,
+               help='Number of servers per server group'),
     cfg.IntOpt('reservation_expire',
                default=86400,
                help='Number of seconds until a reservation expires'),
@@ -452,16 +458,11 @@ class DbQuotaDriver(object):
                  (user_quotas[key] >= 0 and user_quotas[key] < val)]
         if overs:
             headroom = {}
-            # Check project_quotas:
-            for key in quotas:
-                if quotas[key] >= 0 and quotas[key] < val:
-                    headroom[key] = quotas[key]
-            # Check user quotas:
-            for key in user_quotas:
-                if (user_quotas[key] >= 0 and user_quotas[key] < val and
-                        headroom.get(key) > user_quotas[key]):
-                    headroom[key] = user_quotas[key]
-
+            for key in overs:
+                headroom[key] = min(
+                    val for val in (quotas.get(key), project_quotas.get(key))
+                    if val is not None
+                )
             raise exception.OverQuota(overs=sorted(overs), quotas=quotas,
                                       usages={}, headroom=headroom)
 
@@ -778,7 +779,7 @@ class NoopQuotaDriver(object):
         """
         quotas = {}
         for resource in resources.values():
-            quotas[resource.name].update(minimum=0, maximum=-1)
+            quotas[resource.name] = {'minimum': 0, 'maximum': -1}
         return quotas
 
     def limit_check(self, context, resources, values, project_id=None,
@@ -1416,6 +1417,11 @@ def _keypair_get_count_by_user(*args, **kwargs):
     return objects.KeyPairList.get_count_by_user(*args, **kwargs)
 
 
+def _server_group_count_members_by_user(context, group, user_id):
+    """Helper method to avoid referencing objects.InstanceGroup on import."""
+    return group.count_members_by_user(context, user_id)
+
+
 QUOTAS = QuotaEngine()
 
 
@@ -1439,6 +1445,11 @@ resources = [
                       'quota_security_group_rules'),
     CountableResource('key_pairs', _keypair_get_count_by_user,
                       'quota_key_pairs'),
+    ReservableResource('server_groups', '_sync_server_groups',
+                      'quota_server_groups'),
+    CountableResource('server_group_members',
+                      _server_group_count_members_by_user,
+                      'quota_server_group_members'),
     ]
 
 

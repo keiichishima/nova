@@ -21,6 +21,9 @@ import os
 import posixpath
 
 from oslo.config import cfg
+from oslo.serialization import jsonutils
+from oslo.utils import importutils
+from oslo.utils import timeutils
 
 from nova.api.ec2 import ec2utils
 from nova.api.metadata import password
@@ -31,10 +34,7 @@ from nova import context
 from nova import network
 from nova import objects
 from nova.objects import base as obj_base
-from nova.openstack.common import importutils
-from nova.openstack.common import jsonutils
 from nova.openstack.common import log as logging
-from nova.openstack.common import timeutils
 from nova import utils
 from nova.virt import netutils
 

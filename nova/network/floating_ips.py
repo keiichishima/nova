@@ -17,15 +17,16 @@
 
 from oslo.config import cfg
 from oslo import messaging
+from oslo.utils import excutils
+from oslo.utils import importutils
+import six
 
 from nova import context
 from nova.db import base
 from nova import exception
-from nova.i18n import _
+from nova.i18n import _, _LE
 from nova.network import rpcapi as network_rpcapi
 from nova import objects
-from nova.openstack.common import excutils
-from nova.openstack.common import importutils
 from nova.openstack.common import log as logging
 from nova.openstack.common import processutils
 from nova.openstack.common import uuidutils
@@ -376,9 +377,9 @@ class FloatingIP(object):
                         LOG.warn(_('Failed to disassociated floating '
                                    'address: %s'), floating_address)
                         pass
-                    if "Cannot find device" in str(e):
+                    if "Cannot find device" in six.text_type(e):
                         try:
-                            LOG.error(_('Interface %s not found'), interface)
+                            LOG.error(_LE('Interface %s not found'), interface)
                         except Exception:
                             pass
                         raise exception.NoFloatingIpInterface(

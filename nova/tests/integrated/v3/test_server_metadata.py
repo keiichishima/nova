@@ -45,7 +45,7 @@ class ServersMetadataJsonTest(test_servers.ServersSampleBase):
         response = self._do_post('servers/%s/metadata' % uuid,
                                  'server-metadata-all-req',
                                  subs)
-        self._verify_response('server-metadata-all-resp', subs, response, 201)
+        self._verify_response('server-metadata-all-resp', subs, response, 200)
 
     def test_metadata_get_all(self):
         # Test getting all metadata for a server.
@@ -76,5 +76,5 @@ class ServersMetadataJsonTest(test_servers.ServersSampleBase):
         subs = {'value': 'Foo Value'}
         uuid = self._create_and_set(subs)
         response = self._do_delete('servers/%s/metadata/foo' % uuid)
-        self.assertEqual(response.status, 204)
-        self.assertEqual(response.read(), '')
+        self.assertEqual(response.status_code, 204)
+        self.assertEqual(response.content, '')

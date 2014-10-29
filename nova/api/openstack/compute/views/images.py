@@ -14,9 +14,10 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
+from oslo.utils import timeutils
+
 from nova.api.openstack import common
 from nova.image import glance
-from nova.openstack.common import timeutils
 
 
 class ViewBuilder(common.ViewBuilder):
@@ -118,7 +119,6 @@ class ViewBuilder(common.ViewBuilder):
         glance_url = glance.generate_glance_url()
         glance_url = self._update_glance_link_prefix(glance_url)
         return '/'.join([glance_url,
-                         request.environ["nova.context"].project_id,
                          self._collection_name,
                          str(identifier)])
 
@@ -147,20 +147,3 @@ class ViewBuilder(common.ViewBuilder):
             "saving": 50,
             "active": 100,
         }.get(image.get("status"), 0)
-
-
-class ViewBuilderV3(ViewBuilder):
-
-    def _get_bookmark_link(self, request, identifier, collection_name):
-        """Create a URL that refers to a specific resource."""
-        if collection_name == "images":
-            glance_url = glance.generate_image_url(identifier)
-            return self._update_glance_link_prefix(glance_url)
-        else:
-            raise NotImplementedError
-            # NOTE(cyeoh) The V3 version of _get_bookmark_link should
-            # only ever be called with images as the
-            # collection_name. The images API has been removed in the
-            # V3 API and the V3 version of the view only exists for
-            # the servers view to be able to generate the appropriate
-            # bookmark link for the image of the instance.

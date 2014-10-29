@@ -19,23 +19,27 @@ Management class for basic VM operations.
 """
 import functools
 import os
+import time
 
 from eventlet import timeout as etimeout
 from oslo.config import cfg
+from oslo.utils import excutils
+from oslo.utils import importutils
+from oslo.utils import units
 
 from nova.api.metadata import base as instance_metadata
 from nova import exception
-from nova.i18n import _, _LI, _LW
-from nova.openstack.common import excutils
-from nova.openstack.common import importutils
+from nova.i18n import _, _LI, _LE, _LW
+from nova.openstack.common import fileutils
 from nova.openstack.common import log as logging
 from nova.openstack.common import loopingcall
 from nova.openstack.common import processutils
-from nova.openstack.common import units
+from nova.openstack.common import uuidutils
 from nova import utils
 from nova.virt import configdrive
 from nova.virt.hyperv import constants
 from nova.virt.hyperv import imagecache
+from nova.virt.hyperv import ioutils
 from nova.virt.hyperv import utilsfactory
 from nova.virt.hyperv import vmutils
 from nova.virt.hyperv import volumeops
@@ -107,6 +111,10 @@ class VMOps(object):
         'nova.virt.hyperv.vif.HyperVNovaNetworkVIFDriver',
     }
 
+    # The console log is stored in two files, each should have at most half of
+    # the maximum console log size.
+    _MAX_CONSOLE_LOG_FILE_SIZE = units.Mi / 2
+
     def __init__(self):
         self._vmutils = utilsfactory.get_vmutils()
         self._vhdutils = utilsfactory.get_vhdutils()
@@ -115,6 +123,7 @@ class VMOps(object):
         self._imagecache = imagecache.ImageCache()
         self._vif_driver = None
         self._load_vif_driver_class()
+        self._vm_log_writers = {}
 
     def _load_vif_driver_class(self):
         try:
@@ -124,6 +133,16 @@ class VMOps(object):
             raise TypeError(_("VIF driver not found for "
                               "network_api_class: %s") %
                             CONF.network_api_class)
+
+    def list_instance_uuids(self):
+        instance_uuids = []
+        for (instance_name, notes) in self._vmutils.list_instance_notes():
+            if notes and uuidutils.is_uuid_like(notes[0]):
+                instance_uuids.append(str(notes[0]))
+            else:
+                LOG.debug("Notes not found or not resembling a GUID for "
+                          "instance: %s" % instance_name)
+        return instance_uuids
 
     def list_instances(self):
         return self._vmutils.list_instances()
@@ -275,7 +294,8 @@ class VMOps(object):
                                 instance['memory_mb'],
                                 instance['vcpus'],
                                 CONF.hyperv.limit_cpu_features,
-                                CONF.hyperv.dynamic_memory_ratio)
+                                CONF.hyperv.dynamic_memory_ratio,
+                                [instance['uuid']])
 
         ctrl_disk_addr = 0
         if root_vhd_path:
@@ -309,6 +329,8 @@ class VMOps(object):
         if CONF.hyperv.enable_instance_metrics_collection:
             self._vmutils.enable_vm_metrics_collection(instance_name)
 
+        self._create_vm_com_port_pipe(instance)
+
     def _create_config_drive(self, instance, injected_files, admin_password):
         if CONF.config_drive_format != 'iso9660':
             raise vmutils.UnsupportedConfigDriveFormatException(
@@ -336,7 +358,8 @@ class VMOps(object):
                 cdb.make_drive(configdrive_path_iso)
             except processutils.ProcessExecutionError as e:
                 with excutils.save_and_reraise_exception():
-                    LOG.error(_('Creating config drive failed with error: %s'),
+                    LOG.error(_LE('Creating config drive failed with '
+                                  'error: %s'),
                               e, instance=instance)
 
         if not CONF.hyperv.config_drive_cdrom:
@@ -410,11 +433,12 @@ class VMOps(object):
                 self.power_on(instance)
                 return
 
-        self._set_vm_state(instance['name'],
+        self._set_vm_state(instance,
                            constants.HYPERV_VM_STATE_REBOOT)
 
     def _soft_shutdown(self, instance,
-                       timeout=CONF.hyperv.wait_soft_reboot_seconds):
+                       timeout=CONF.hyperv.wait_soft_reboot_seconds,
+                       retry_interval=SHUTDOWN_TIME_INCREMENT):
         """Perform a soft shutdown on the VM.
 
            :return: True if the instance was shutdown within time limit,
@@ -422,16 +446,27 @@ class VMOps(object):
         """
         LOG.debug("Performing Soft shutdown on instance", instance=instance)
 
-        try:
-            self._vmutils.soft_shutdown_vm(instance.name)
-            if self._wait_for_power_off(instance.name, timeout):
-                LOG.info(_LI("Soft shutdown succeded."), instance=instance)
-                return True
-        except vmutils.HyperVException as e:
-            # Exception is raised when trying to shutdown the instance
-            # while it is still booting.
-            LOG.warning(_LW("Soft shutdown failed: %s"), e, instance=instance)
-            return False
+        while timeout > 0:
+            # Perform a soft shutdown on the instance.
+            # Wait maximum timeout for the instance to be shutdown.
+            # If it was not shutdown, retry until it succeeds or a maximum of
+            # time waited is equal to timeout.
+            wait_time = min(retry_interval, timeout)
+            try:
+                LOG.debug("Soft shutdown instance, timeout remaining: %d",
+                          timeout, instance=instance)
+                self._vmutils.soft_shutdown_vm(instance.name)
+                if self._wait_for_power_off(instance.name, wait_time):
+                    LOG.info(_LI("Soft shutdown succeeded."),
+                             instance=instance)
+                    return True
+            except vmutils.HyperVException as e:
+                # Exception is raised when trying to shutdown the instance
+                # while it is still booting.
+                LOG.debug("Soft shutdown failed: %s", e, instance=instance)
+                time.sleep(wait_time)
+
+            timeout -= retry_interval
 
         LOG.warning(_LW("Timed out while waiting for soft shutdown."),
                     instance=instance)
@@ -440,50 +475,72 @@ class VMOps(object):
     def pause(self, instance):
         """Pause VM instance."""
         LOG.debug("Pause instance", instance=instance)
-        self._set_vm_state(instance["name"],
+        self._set_vm_state(instance,
                            constants.HYPERV_VM_STATE_PAUSED)
 
     def unpause(self, instance):
         """Unpause paused VM instance."""
         LOG.debug("Unpause instance", instance=instance)
-        self._set_vm_state(instance["name"],
+        self._set_vm_state(instance,
                            constants.HYPERV_VM_STATE_ENABLED)
 
     def suspend(self, instance):
         """Suspend the specified instance."""
         LOG.debug("Suspend instance", instance=instance)
-        self._set_vm_state(instance["name"],
+        self._set_vm_state(instance,
                            constants.HYPERV_VM_STATE_SUSPENDED)
 
     def resume(self, instance):
         """Resume the suspended VM instance."""
         LOG.debug("Resume instance", instance=instance)
-        self._set_vm_state(instance["name"],
+        self._set_vm_state(instance,
                            constants.HYPERV_VM_STATE_ENABLED)
 
-    def power_off(self, instance):
+    def power_off(self, instance, timeout=0, retry_interval=0):
         """Power off the specified instance."""
         LOG.debug("Power off instance", instance=instance)
-        self._set_vm_state(instance["name"],
+        if retry_interval <= 0:
+            retry_interval = SHUTDOWN_TIME_INCREMENT
+        if timeout and self._soft_shutdown(instance, timeout, retry_interval):
+            return
+
+        self._set_vm_state(instance,
                            constants.HYPERV_VM_STATE_DISABLED)
 
-    def power_on(self, instance):
+    def power_on(self, instance, block_device_info=None):
         """Power on the specified instance."""
         LOG.debug("Power on instance", instance=instance)
-        self._set_vm_state(instance["name"],
-                           constants.HYPERV_VM_STATE_ENABLED)
 
-    def _set_vm_state(self, vm_name, req_state):
+        if block_device_info:
+            self._volumeops.fix_instance_volume_disk_paths(instance['name'],
+                                                           block_device_info)
+
+        self._set_vm_state(instance, constants.HYPERV_VM_STATE_ENABLED)
+
+    def _set_vm_state(self, instance, req_state):
+        instance_name = instance['name']
+        instance_uuid = instance['uuid']
+
         try:
-            self._vmutils.set_vm_state(vm_name, req_state)
-            LOG.debug("Successfully changed state of VM %(vm_name)s"
-                      " to: %(req_state)s",
-                      {'vm_name': vm_name, 'req_state': req_state})
+            self._vmutils.set_vm_state(instance_name, req_state)
+
+            if req_state in (constants.HYPERV_VM_STATE_DISABLED,
+                             constants.HYPERV_VM_STATE_REBOOT):
+                self._delete_vm_console_log(instance)
+            if req_state in (constants.HYPERV_VM_STATE_ENABLED,
+                             constants.HYPERV_VM_STATE_REBOOT):
+                self.log_vm_serial_output(instance_name,
+                                          instance_uuid)
+
+            LOG.debug("Successfully changed state of VM %(instance_name)s"
+                      " to: %(req_state)s", {'instance_name': instance_name,
+                                             'req_state': req_state})
         except Exception:
             with excutils.save_and_reraise_exception():
-                LOG.error(_("Failed to change vm state of %(vm_name)s"
-                            " to %(req_state)s"),
-                          {'vm_name': vm_name, 'req_state': req_state})
+                LOG.error(_LE("Failed to change vm state of %(instance_name)s"
+                              " to %(req_state)s"),
+                          {'instance_name': instance_name,
+                           'req_state': req_state})
 
     def _get_vm_state(self, instance_name):
         summary_info = self._vmutils.get_vm_summary_info(instance_name)
@@ -517,3 +574,83 @@ class VMOps(object):
             periodic_call.stop()
 
         return True
+
+    def resume_state_on_host_boot(self, context, instance, network_info,
+                                  block_device_info=None):
+        """Resume guest state when a host is booted."""
+        self.power_on(instance, block_device_info)
+
+    def log_vm_serial_output(self, instance_name, instance_uuid):
+        # Uses a 'thread' that will run in background, reading
+        # the console output from the according named pipe and
+        # write it to a file.
+        console_log_path = self._pathutils.get_vm_console_log_paths(
+            instance_name)[0]
+        pipe_path = r'\\.\pipe\%s' % instance_uuid
+
+        vm_log_writer = ioutils.IOThread(pipe_path, console_log_path,
+                                         self._MAX_CONSOLE_LOG_FILE_SIZE)
+        self._vm_log_writers[instance_uuid] = vm_log_writer
+
+        vm_log_writer.start()
+
+    def get_console_output(self, instance):
+        console_log_paths = (
+            self._pathutils.get_vm_console_log_paths(instance['name']))
+
+        try:
+            instance_log = ''
+            # Start with the oldest console log file.
+            for console_log_path in console_log_paths[::-1]:
+                if os.path.exists(console_log_path):
+                    with open(console_log_path, 'rb') as fp:
+                        instance_log += fp.read()
+            return instance_log
+        except IOError as err:
+            msg = _("Could not get instance console log. Error: %s") % err
+            raise vmutils.HyperVException(msg, instance=instance)
+
+    def _delete_vm_console_log(self, instance):
+        console_log_files = self._pathutils.get_vm_console_log_paths(
+            instance['name'])
+
+        vm_log_writer = self._vm_log_writers.get(instance['uuid'])
+        if vm_log_writer:
+            vm_log_writer.join()
+
+        for log_file in console_log_files:
+            fileutils.delete_if_exists(log_file)
+
+    def copy_vm_console_logs(self, vm_name, dest_host):
+        local_log_paths = self._pathutils.get_vm_console_log_paths(
+            vm_name)
+        remote_log_paths = self._pathutils.get_vm_console_log_paths(
+            vm_name, remote_server=dest_host)
+
+        for local_log_path, remote_log_path in (local_log_paths,
+                                                remote_log_paths):
+            if self._pathutils.exists(local_log_path):
+                self._pathutils.copy(local_log_path,
+                                     remote_log_path)
+
+    def _create_vm_com_port_pipe(self, instance):
+        # Creates a pipe to the COM 0 serial port of the specified vm.
+        pipe_path = r'\\.\pipe\%s' % instance['uuid']
+        self._vmutils.get_vm_serial_port_connection(
+            instance['name'], update_connection=pipe_path)
+
+    def restart_vm_log_writers(self):
+        # Restart the VM console log writers after nova compute restarts.
+        active_instances = self._vmutils.get_active_instances()
+        for instance_name in active_instances:
+            instance_path = self._pathutils.get_instance_dir(instance_name)
+
+            # Skip instances that are not created by Nova
+            if not os.path.exists(instance_path):
+                continue
+
+            vm_serial_conn = self._vmutils.get_vm_serial_port_connection(
+                instance_name)
+            if vm_serial_conn:
+                instance_uuid = os.path.basename(vm_serial_conn)
+                self.log_vm_serial_output(instance_name, instance_uuid)

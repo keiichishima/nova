@@ -82,7 +82,7 @@ def get_fake_block_device_info(target_portal, volume_id):
                                       'target_discovered': False}},
                                      'mount_device': 'vda',
                                      'delete_on_termination': False}],
-            'root_device_name': None,
+            'root_device_name': 'fake_root_device_name',
             'ephemerals': [],
             'swap': None
             }
@@ -147,6 +147,7 @@ def stub_out_db_instance_api(stubs):
             'vcpus': flavor['vcpus'],
             'mac_addresses': [{'address': values['mac_address']}],
             'root_gb': flavor['root_gb'],
+            'system_metadata': {'image_shutdown_timeout': 0},
         }
         return FakeModel(base_options)
 

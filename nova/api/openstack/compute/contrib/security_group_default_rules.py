@@ -11,7 +11,9 @@
 #    WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
 #    License for the specific language governing permissions and limitations
 #    under the License.
+from xml.dom import minidom
 
+import six
 import webob
 from webob import exc
 
@@ -22,11 +24,8 @@ from nova.api.openstack import xmlutil
 from nova import exception
 from nova.i18n import _
 from nova.network.security_group import openstack_driver
-from nova.openstack.common import log as logging
-from nova.openstack.common import xmlutils
 
 
-LOG = logging.getLogger(__name__)
 authorize = extensions.extension_authorizer('compute',
                                             'security_group_default_rules')
 
@@ -71,7 +70,7 @@ class SecurityGroupDefaultRuleTemplate(xmlutil.TemplateBuilder):
 
 class SecurityGroupDefaultRulesXMLDeserializer(wsgi.MetadataXMLDeserializer):
     def default(self, string):
-        dom = xmlutils.safe_minidom_parse_string(string)
+        dom = minidom.parseString(string)
         security_group_rule = self._extract_security_group_default_rule(dom)
         return {'body': {'security_group_default_rule': security_group_rule}}
 
@@ -121,7 +120,7 @@ class SecurityGroupDefaultRulesController(sg.SecurityGroupControllerBase):
                 ip_protocol=sg_rule.get('ip_protocol'),
                 cidr=sg_rule.get('cidr'))
         except Exception as exp:
-            raise exc.HTTPBadRequest(explanation=unicode(exp))
+            raise exc.HTTPBadRequest(explanation=six.text_type(exp))
 
         if values is None:
             msg = _('Not enough parameters to build a valid rule.')
@@ -149,7 +148,6 @@ class SecurityGroupDefaultRulesController(sg.SecurityGroupControllerBase):
 
         id = self.security_group_api.validate_id(id)
 
-        LOG.debug("Showing security_group_default_rule with id %s", id)
         try:
             rule = self.security_group_api.get_default_rule(context, id)
         except exception.SecurityGroupDefaultRuleNotFound:

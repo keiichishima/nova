@@ -13,6 +13,7 @@
 #   under the License.
 
 
+from oslo.utils import strutils
 from webob import exc
 
 from nova.api.openstack import common
@@ -21,7 +22,6 @@ from nova.api.openstack import wsgi
 from nova import compute
 from nova import exception
 from nova.i18n import _
-from nova.openstack.common import strutils
 from nova import utils
 
 authorize = extensions.extension_authorizer('compute', 'evacuate')
@@ -89,7 +89,7 @@ class Controller(wsgi.Controller):
                                       on_shared_storage, password)
         except exception.InstanceInvalidState as state_error:
             common.raise_http_conflict_for_instance_invalid_state(state_error,
-                    'evacuate')
+                    'evacuate', id)
         except exception.InstanceNotFound as e:
             raise exc.HTTPNotFound(explanation=e.format_message())
         except exception.ComputeServiceInUse as e:

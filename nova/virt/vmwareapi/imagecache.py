@@ -30,20 +30,20 @@ That effectively ages the cached image.
 If an image is used then the timestamps will be deleted.
 
 When accessing a timestamp we make use of locking. This ensure that aging
-will not delete an image during the spawn operiation. When spawning
+will not delete an image during the spawn operation. When spawning
 the timestamp folder will be locked  and the timestamps will be purged.
 This will ensure that a image is not deleted during the spawn.
 """
 
 from oslo.config import cfg
+from oslo.utils import timeutils
+from oslo.vmware import exceptions as vexc
 
 from nova.i18n import _
 from nova.openstack.common import lockutils
 from nova.openstack.common import log as logging
-from nova.openstack.common import timeutils
 from nova.virt import imagecache
 from nova.virt.vmwareapi import ds_util
-from nova.virt.vmwareapi import error_util
 from nova.virt.vmwareapi import vim_util
 
 LOG = logging.getLogger(__name__)
@@ -66,15 +66,30 @@ class ImageCacheManager(imagecache.ImageCacheManager):
     def _folder_delete(self, ds_path, dc_ref):
         try:
             ds_util.file_delete(self._session, ds_path, dc_ref)
-        except (error_util.CannotDeleteFileException,
-                error_util.FileFaultException,
-                error_util.FileLockedException) as e:
+        except (vexc.CannotDeleteFileException,
+                vexc.FileFaultException,
+                vexc.FileLockedException) as e:
             # There may be more than one process or thread that tries
             # to delete the file.
             LOG.warning(_("Unable to delete %(file)s. Exception: %(ex)s"),
                         {'file': ds_path, 'ex': e})
-        except error_util.FileNotFoundException:
+        except vexc.FileNotFoundException:
             LOG.debug("File not found: %s", ds_path)
+
+    def enlist_image(self, image_id, datastore, dc_ref):
+        ds_browser = self._get_ds_browser(datastore.ref)
+        cache_root_folder = datastore.build_path(self._base_folder)
+
+        # Check if the timestamp file exists - if so then delete it. This
+        # will ensure that the aging will not delete a cache image if it
+        # is going to be used now.
+        path = self.timestamp_folder_get(cache_root_folder, image_id)
+
+        # Lock to ensure that the spawn will not try and access a image
+        # that is currently being deleted on the datastore.
+        with lockutils.lock(str(path), lock_file_prefix='nova-vmware-ts',
+                            external=True):
+            self.timestamp_cleanup(dc_ref, ds_browser, path)
 
     def timestamp_folder_get(self, ds_path, image_id):
         """Returns the timestamp folder."""
@@ -107,7 +122,7 @@ class ImageCacheManager(imagecache.ImageCacheManager):
         ds_browser = self._ds_browser.get(ds_ref.value)
         if not ds_browser:
             ds_browser = vim_util.get_dynamic_property(
-                    self._session._get_vim(), ds_ref,
+                    self._session.vim, ds_ref,
                     "Datastore", "browser")
             self._ds_browser[ds_ref.value] = ds_browser
         return ds_browser
@@ -142,7 +157,7 @@ class ImageCacheManager(imagecache.ImageCacheManager):
                     ts_path = path.join(self._get_timestamp_filename())
                     try:
                         ds_util.mkdir(self._session, ts_path, dc_info.ref)
-                    except error_util.FileAlreadyExistsException:
+                    except vexc.FileAlreadyExistsException:
                         LOG.debug("Timestamp already exists.")
                     LOG.info(_("Image %s is no longer used by this node. "
                                "Pending deletion!"), image)
@@ -179,3 +194,7 @@ class ImageCacheManager(imagecache.ImageCacheManager):
             images = self._list_datastore_images(ds_path, datastore)
             self.originals = images['originals']
             self._age_cached_images(context, datastore, dc_info, ds_path)
+
+    def get_image_cache_folder(self, datastore, image_id):
+        """Returns datastore path of folder containing the image."""
+        return datastore.build_path(self._base_folder, image_id)

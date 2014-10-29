@@ -20,6 +20,8 @@ import os
 import pprint
 
 import mock
+from oslo.serialization import jsonutils
+from oslo.utils import timeutils
 import six
 from testtools import matchers
 
@@ -29,9 +31,7 @@ from nova import exception
 from nova import objects
 from nova.objects import base
 from nova.objects import fields
-from nova.openstack.common import jsonutils
 from nova.openstack.common import log
-from nova.openstack.common import timeutils
 from nova import rpc
 from nova import test
 from nova.tests import fake_notifier
@@ -303,7 +303,9 @@ class _BaseTestCase(test.TestCase):
     def setUp(self):
         super(_BaseTestCase, self).setUp()
         self.remote_object_calls = list()
-        self.context = context.RequestContext('fake-user', 'fake-project')
+        self.user_id = 'fake-user'
+        self.project_id = 'fake-project'
+        self.context = context.RequestContext(self.user_id, self.project_id)
         fake_notifier.stub_notifier(self.stubs)
         self.addCleanup(fake_notifier.reset)
 
@@ -489,14 +491,8 @@ class _TestObject(object):
         class Foo(base.NovaObject):
             fields = {'foobar': fields.Field(fields.Integer())}
         obj = Foo()
-        # NOTE(danms): Can't use assertRaisesRegexp() because of py26
-        raised = False
-        try:
+        with self.assertRaisesRegexp(NotImplementedError, ".*foobar.*"):
             obj.foobar
-        except NotImplementedError as ex:
-            raised = True
-        self.assertTrue(raised)
-        self.assertIn('foobar', str(ex))
 
     def test_loaded_in_primitive(self):
         obj = MyObj(foo=1)
@@ -810,7 +806,9 @@ class TestObjectListBase(test.TestCase):
         for item_class in base.NovaObject._obj_classes[item_obj_name]:
             self.assertIn(
                 item_class.VERSION,
-                list_obj_class.child_versions.values())
+                list_obj_class.child_versions.values(),
+                'Version mapping is incomplete for %s' % (
+                    list_obj_class.__name__))
 
     def test_object_version_mappings(self):
         # Find all object list classes and make sure that they at least handle
@@ -933,33 +931,40 @@ object_data = {
     'AgentList': '1.0-31f07426a729311a42ff7f6246e76e25',
     'Aggregate': '1.1-f5d477be06150529a9b2d27cc49030b5',
     'AggregateList': '1.2-4b02a285b8612bfb86a96ff80052fb0a',
-    'BlockDeviceMapping': '1.1-9968ffe513e7672484b0f528b034cd0f',
-    'BlockDeviceMappingList': '1.2-a6df0a8ef84d6bbaba51143499e9bed2',
-    'ComputeNode': '1.4-ed20e7a7c1a4612fe7d2836d5887c726',
-    'ComputeNodeList': '1.3-1c9c281e02182eabffa6b63ee349996a',
+    'BandwidthUsage': '1.1-bdab751673947f0ac7de108540a1a8ce',
+    'BandwidthUsageList': '1.1-76898106a9db393cd5f42c557389c507',
+    'BlockDeviceMapping': '1.4-9968ffe513e7672484b0f528b034cd0f',
+    'BlockDeviceMappingList': '1.5-83767968de6e91e9705bddaae02bc649',
+    'ComputeNode': '1.6-d2ea9b8f4a6e95ff6a683266eebddbff',
+    'ComputeNodeList': '1.6-205aa2ea08d49f6ce87df1fcd2407b4e',
     'DNSDomain': '1.0-5bdc288d7c3b723ce86ede998fd5c9ba',
     'DNSDomainList': '1.0-cfb3e7e82be661501c31099523154db4',
     'EC2InstanceMapping': '1.0-627baaf4b12c9067200979bdc4558a99',
     'EC2SnapshotMapping': '1.0-26cf315be1f8abab4289d4147671c836',
     'EC2VolumeMapping': '1.0-2f8c3bf077c65a425294ec2b361c9143',
-    'FixedIP': '1.1-082fb26772ce2db783ce4934edca4652',
-    'FixedIPList': '1.1-c12d1165c88fa721ab8abcf502fa1b29',
+    'FixedIP': '1.6-2472964d39e50da67202109eb85cd173',
+    'FixedIPList': '1.6-f2f740de66bc2d90627004bd311690ad',
     'Flavor': '1.1-096cfd023c35d07542cf732fb29b45e4',
     'FlavorList': '1.1-a3d5551267cb8f62ff38ded125900721',
-    'FloatingIP': '1.1-27eb68b7c9c620dd5f0561b5a3be0e82',
-    'FloatingIPList': '1.2-6c5b0b4d4a4c17575f4d91bae14e5237',
-    'Instance': '1.13-c9cfd71ddc9d6e7e7c72879f4d5982ee',
+    'FloatingIP': '1.6-27eb68b7c9c620dd5f0561b5a3be0e82',
+    'FloatingIPList': '1.7-f376f63ed99243f9d90841b7f6732bbf',
+    'HVSpec': '1.0-c4d8377cc4fe519930e60c1d8265a142',
+    'Instance': '1.16-b00c09fb92ae80b393943f56e84abd9c',
     'InstanceAction': '1.1-6b1d0a6dbd522b5a83c20757ec659663',
-    'InstanceActionEvent': '1.1-f144eaa9fb22f248fc41ed8401a3a1be',
+    'InstanceActionEvent': '1.1-42dbdba74bd06e0619ca75cd3397cd1b',
     'InstanceActionEventList': '1.0-1d5cc958171d6ce07383c2ad6208318e',
     'InstanceActionList': '1.0-368410fdb8d69ae20c495308535d6266',
     'InstanceExternalEvent': '1.0-f1134523654407a875fd59b80f759ee7',
     'InstanceFault': '1.2-313438e37e9d358f3566c85f6ddb2d3e',
     'InstanceFaultList': '1.1-aeb598ffd0cd6aa61fca7adf0f5e900d',
-    'InstanceGroup': '1.7-b31ea31fdb452ab7810adbe789244f91',
-    'InstanceGroupList': '1.2-a474822eebc3e090012e581adcc1fa09',
+    'InstanceGroup': '1.9-95ece99f092e8f4f88327cdbb44162c9',
+    'InstanceGroupList': '1.6-c6b78f3c9d9080d33c08667e80589817',
     'InstanceInfoCache': '1.5-ef64b604498bfa505a8c93747a9d8b2f',
-    'InstanceList': '1.7-71e48495e83df551cefe6691478c865c',
+    'InstanceList': '1.10-03dd7839cd11cff75c3661c9e4227900',
+    'InstanceNUMACell': '1.0-17e6ee0a24cb6651d1b084efa3027bda',
+    'InstanceNUMATopology': '1.0-86b95d263c4c68411d44c6741b8d2bb0',
+    'InstancePCIRequest': '1.1-e082d174f4643e5756ba098c47c1510f',
+    'InstancePCIRequests': '1.1-bc7c6684d8579ee49d6a3b8aef756918',
     'KeyPair': '1.1-3410f51950d052d861c11946a6ae621a',
     'KeyPairList': '1.0-71132a568cc5d078ba1748a9c02c87b8',
     'Migration': '1.1-67c47726c2c71422058cd9d149d6d3ed',
@@ -968,8 +973,10 @@ object_data = {
     'MyOwnedObject': '1.0-0f3d6c028543d7f3715d121db5b8e298',
     'Network': '1.2-2ea21ede5e45bb80e7b7ac7106915c4e',
     'NetworkList': '1.2-aa4ad23f035b97a41732ea8b3445fc5e',
-    'PciDevice': '1.1-523c46f960d93f78db55f0280b09441e',
-    'PciDeviceList': '1.0-43d6c4ea0dd77955e97b23d937a3f925',
+    'NetworkRequest': '1.1-f31192f5a725017707f989585e12d7dc',
+    'NetworkRequestList': '1.1-beeab521ac9450f1f5ef4eaa945a783c',
+    'PciDevice': '1.2-29e35c3199f3b98ce66e5d1212612818',
+    'PciDeviceList': '1.1-2896df4f5b06579e5f35adba5fcae9db',
     'Quotas': '1.1-7897deef00e6cd3095c8916f68d24418',
     'QuotasNoOp': '1.1-4b06fd721c586b907ddd6543a00d6c2f',
     'S3ImageMapping': '1.0-9225943a44a91ad0349b9fd8bd3f3ce2',
@@ -977,8 +984,8 @@ object_data = {
     'SecurityGroupList': '1.0-528e6448adfeeb78921ebeda499ab72f',
     'SecurityGroupRule': '1.1-a9175baf7664439af1a16c2010b55576',
     'SecurityGroupRuleList': '1.1-667fca3a9928f23d2d10e61962c55f3c',
-    'Service': '1.2-5a3df338c669e1148251431370b440ef',
-    'ServiceList': '1.0-2c960ac9bc56a12c65b9118bb3a58b44',
+    'Service': '1.5-82bbfd46a744a9c89bc44b47a1b81683',
+    'ServiceList': '1.3-4a1a5822dea268d0d7f892f5106bb2e1',
     'TestSubclassedObject': '1.6-c63feb2f2533b7d075490c04a2cc10dd',
     'VirtualInterface': '1.0-10fdac4c704102b6d57d6936d6d790d2',
     'VirtualInterfaceList': '1.0-accbf02628a8063c1d885077a2bf49b6',
@@ -986,24 +993,39 @@ object_data = {
 
 
 object_relationships = {
-    'BlockDeviceMapping': {'Instance': '1.13'},
-    'FixedIP': {'Instance': '1.13', 'Network': '1.2',
-                'VirtualInterface': '1.0'},
-    'FloatingIP': {'FixedIP': '1.1'},
+    'BlockDeviceMapping': {'Instance': '1.16'},
+    'FixedIP': {'Instance': '1.16', 'Network': '1.2',
+                'VirtualInterface': '1.0',
+                'FloatingIPList': '1.7'},
+    'FloatingIP': {'FixedIP': '1.6'},
     'Instance': {'InstanceFault': '1.2',
                  'InstanceInfoCache': '1.5',
-                 'PciDeviceList': '1.0',
-                 'SecurityGroupList': '1.0'},
+                 'InstanceNUMATopology': '1.0',
+                 'PciDeviceList': '1.1',
+                 'SecurityGroupList': '1.0',
+                 'InstancePCIRequests': '1.1'},
     'MyObj': {'MyOwnedObject': '1.0'},
     'SecurityGroupRule': {'SecurityGroup': '1.1'},
-    'Service': {'ComputeNode': '1.4'},
+    'Service': {'ComputeNode': '1.6'},
     'TestSubclassedObject': {'MyOwnedObject': '1.0'}
 }
 
 
 class TestObjectVersions(test.TestCase):
-    def setUp(self):
-        super(TestObjectVersions, self).setUp()
+    def _find_remotable_method(self, cls, thing, parent_was_remotable=False):
+        """Follow a chain of remotable things down to the original function."""
+        if isinstance(thing, classmethod):
+            return self._find_remotable_method(cls, thing.__get__(None, cls))
+        elif inspect.ismethod(thing) and hasattr(thing, 'remotable'):
+            return self._find_remotable_method(cls, thing.original_fn,
+                                               parent_was_remotable=True)
+        elif parent_was_remotable:
+            # We must be the first non-remotable thing underneath a stack of
+            # remotable things (i.e. the actual implementation method)
+            return thing
+        else:
+            # This means the top-level thing never hit a remotable layer
+            return None
 
     def _get_fingerprint(self, obj_name):
         obj_class = base.NovaObject._obj_classes[obj_name][0]
@@ -1012,8 +1034,10 @@ class TestObjectVersions(test.TestCase):
         methods = []
         for name in dir(obj_class):
             thing = getattr(obj_class, name)
-            if inspect.ismethod(thing) and hasattr(thing, 'remotable'):
-                methods.append((name, inspect.getargspec(thing.original_fn)))
+            if inspect.ismethod(thing) or isinstance(thing, classmethod):
+                method = self._find_remotable_method(obj_class, thing)
+                if method:
+                    methods.append((name, inspect.getargspec(method)))
         methods.sort()
         # NOTE(danms): Things that need a version bump are any fields
         # and their types, or the signatures of any remotable methods.
@@ -1041,7 +1065,7 @@ class TestObjectVersions(test.TestCase):
 
         stored = set(object_data.items())
         computed = set(fingerprints.items())
-        changed = stored - computed
+        changed = stored.symmetric_difference(computed)
         expected = {}
         actual = {}
         for name, hash in changed:
@@ -1073,7 +1097,7 @@ class TestObjectVersions(test.TestCase):
 
         stored = set([(x, str(y)) for x, y in object_relationships.items()])
         computed = set([(x, str(y)) for x, y in tree.items()])
-        changed = stored - computed
+        changed = stored.symmetric_difference(computed)
         expected = {}
         actual = {}
         for name, deps in changed:

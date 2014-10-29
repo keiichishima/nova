@@ -26,10 +26,10 @@ import functools
 import sys
 
 from oslo.config import cfg
+from oslo.utils import excutils
 import webob.exc
 
 from nova.i18n import _
-from nova.openstack.common import excutils
 from nova.openstack.common import log as logging
 from nova import safe_utils
 
@@ -292,7 +292,7 @@ class InvalidVolume(Invalid):
 
 
 class InvalidVolumeAccessMode(Invalid):
-    msg_fmt = _("Invalid volume access mode") + ": %(access_mode)s"
+    msg_fmt = _("Invalid volume access mode: %(access_mode)s")
 
 
 class InvalidMetadata(Invalid):
@@ -535,6 +535,10 @@ class VolumeBDMNotFound(NotFound):
     msg_fmt = _("No volume Block Device Mapping with id %(volume_id)s.")
 
 
+class VolumeBDMPathNotFound(VolumeBDMNotFound):
+    msg_fmt = _("No volume Block Device Mapping at path: %(path)s")
+
+
 class SnapshotNotFound(NotFound):
     ec2_code = 'InvalidSnapshot.NotFound'
     msg_fmt = _("Snapshot %(snapshot_id)s could not be found.")
@@ -584,6 +588,10 @@ class StorageRepositoryNotFound(NotFound):
 
 class NetworkDuplicated(Invalid):
     msg_fmt = _("Network %(network_id)s is duplicated.")
+
+
+class NetworkDhcpReleaseFailed(NovaException):
+    msg_fmt = _("Failed to release IP %(address)s with MAC %(mac_address)s")
 
 
 class NetworkInUse(NovaException):
@@ -752,7 +760,7 @@ class FixedIpInvalid(Invalid):
 
 class NoMoreFixedIps(NovaException):
     ec2_code = 'UnsupportedOperation'
-    msg_fmt = _("Zero fixed ips available.")
+    msg_fmt = _("No fixed IP addresses available for network: %(net)s")
 
 
 class NoFixedIpsDefined(NotFound):
@@ -840,6 +848,11 @@ class HostNotFound(NotFound):
 
 class ComputeHostNotFound(HostNotFound):
     msg_fmt = _("Compute host %(host)s could not be found.")
+
+
+class ComputeHostNotCreated(HostNotFound):
+    msg_fmt = _("Compute host %(name)s needs to be created first"
+                " before updating.")
 
 
 class HostBinaryNotFound(NotFound):
@@ -1068,10 +1081,6 @@ class FileNotFound(NotFound):
     msg_fmt = _("File %(file_path)s could not be found.")
 
 
-class NoFilesFound(NotFound):
-    msg_fmt = _("Zero files could be found.")
-
-
 class SwitchNotFoundForNetworkAdapter(NotFound):
     msg_fmt = _("Virtual switch associated with the "
                 "network adapter %(adapter)s not found.")
@@ -1278,6 +1287,11 @@ class InstanceNotFound(NotFound):
 class InstanceInfoCacheNotFound(NotFound):
     msg_fmt = _("Info cache for instance %(instance_uuid)s could not be "
                 "found.")
+
+
+class InvalidAssociation(NotFound):
+    ec2_code = 'InvalidAssociationID.NotFound'
+    msg_fmt = _("Invalid association.")
 
 
 class NodeNotFound(NotFound):
@@ -1637,6 +1651,12 @@ class InvalidWatchdogAction(Invalid):
     msg_fmt = _("Provided watchdog action (%(action)s) is not supported.")
 
 
+class NoLiveMigrationForConfigDriveInLibVirt(NovaException):
+    msg_fmt = _("Live migration of instances with config drives is not "
+                "supported in libvirt unless libvirt instance path and "
+                "drive data is shared across compute nodes.")
+
+
 class LiveMigrationWithOldNovaNotSafe(NovaException):
     msg_fmt = _("Host %(server)s is running an old version of Nova, "
                 "live migrations involving that version may cause data loss. "
@@ -1696,3 +1716,50 @@ class ImageNUMATopologyCPUsUnassigned(Invalid):
 class ImageNUMATopologyMemoryOutOfRange(Invalid):
     msg_fmt = _("%(memsize)d MB of memory assigned, but expected "
                 "%(memtotal)d MB")
+
+
+class InvalidHostname(Invalid):
+    msg_fmt = _("Invalid characters in hostname '%(hostname)s'")
+
+
+class NumaTopologyNotFound(NotFound):
+    msg_fmt = _("Instance %(instance_uuid)s does not specify a NUMA topology")
+
+
+class SocketPortRangeExhaustedException(NovaException):
+    msg_fmt = _("Not able to acquire a free port for %(host)s")
+
+
+class SocketPortInUseException(NovaException):
+    msg_fmt = _("Not able to bind %(host)s:%(port)d, %(error)s")
+
+
+class ImageSerialPortNumberInvalid(Invalid):
+    msg_fmt = _("Number of serial ports '%(num_ports)s' specified in "
+                "'%(property)s' isn't valid.")
+
+
+class ImageSerialPortNumberExceedFlavorValue(Invalid):
+    msg_fmt = _("Forbidden to exceed flavor value of number of serial "
+                "ports passed in image meta.")
+
+
+class InvalidImageConfigDrive(Invalid):
+    msg_fmt = _("Image's config drive option '%(config_drive)s' is invalid")
+
+
+class InvalidHypervisorVirtType(Invalid):
+    msg_fmt = _("Hypervisor virtualization type '%(hvtype)s' is not "
+                "recognised")
+
+
+class InvalidVirtualMachineMode(Invalid):
+    msg_fmt = _("Virtual machine mode '%(vmmode)s' is not recognised")
+
+
+class InvalidToken(Invalid):
+    msg_fmt = _("The token '%(token)s' is invalid or has expired")
+
+
+class InvalidConnectionInfo(Invalid):
+    msg_fmt = _("Invalid Connection Info")

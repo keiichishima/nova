@@ -15,6 +15,7 @@
 
 import mox
 import pkg_resources
+import six
 
 from nova import context
 from nova.i18n import _
@@ -56,6 +57,7 @@ class TestBittorrentStore(stubs.XenAPITestBaseNoDB):
 
     def test_download_image(self):
 
+        instance = {'uuid': '00000000-0000-0000-0000-000000007357'}
         params = {'image_id': 'fake_image_uuid',
                   'sr_path': '/fake/sr/path',
                   'torrent_download_stall_cutoff': 600,
@@ -77,14 +79,14 @@ class TestBittorrentStore(stubs.XenAPITestBaseNoDB):
         self.mox.ReplayAll()
 
         self.store.download_image(self.context, self.session,
-                                  'fake_image_uuid')
+                                  instance, 'fake_image_uuid')
 
         self.mox.VerifyAll()
 
     def test_upload_image(self):
         self.assertRaises(NotImplementedError, self.store.upload_image,
-                self.context, self.session, mox.IgnoreArg, ['fake_vdi_uuid'],
-                'fake_image_uuid')
+                self.context, self.session, mox.IgnoreArg, 'fake_image_uuid',
+                ['fake_vdi_uuid'])
 
 
 def bad_fetcher(image_id):
@@ -125,7 +127,7 @@ class LookupTorrentURLTestCase(test.NoDBTestCase):
         self.assertEqual(_('Cannot create default bittorrent URL without'
                            ' torrent_base_url set'
                            ' or torrent URL fetcher extension'),
-                         str(exc))
+                         six.text_type(exc))
 
     def test_default_fetch_url_base_url_is_set(self):
         self.flags(torrent_base_url='http://foo',
@@ -158,4 +160,4 @@ class LookupTorrentURLTestCase(test.NoDBTestCase):
                 RuntimeError, self.store._lookup_torrent_url_fn)
         self.assertEqual(_('Multiple torrent URL fetcher extensions found.'
                            ' Failing.'),
-                         str(exc))
+                         six.text_type(exc))

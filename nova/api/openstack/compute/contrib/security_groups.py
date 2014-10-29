@@ -17,7 +17,10 @@
 """The security groups extension."""
 
 import contextlib
+from xml.dom import minidom
 
+from oslo.serialization import jsonutils
+import six
 import webob
 from webob import exc
 
@@ -31,9 +34,7 @@ from nova import exception
 from nova.i18n import _
 from nova.network.security_group import neutron_driver
 from nova.network.security_group import openstack_driver
-from nova.openstack.common import jsonutils
 from nova.openstack.common import log as logging
-from nova.openstack.common import xmlutils
 from nova.virt import netutils
 
 
@@ -262,10 +263,12 @@ class SecurityGroupControllerBase(object):
 
     def _from_body(self, body, key):
         if not body:
-            raise exc.HTTPUnprocessableEntity()
+            raise exc.HTTPBadRequest(
+                explanation=_("The request body can't be empty"))
         value = body.get(key, None)
         if value is None:
-            raise exc.HTTPUnprocessableEntity()
+            raise exc.HTTPBadRequest(
+                explanation=_("Missing parameter %s") % key)
         return value
 
 
@@ -388,7 +391,7 @@ class SecurityGroupRulesController(SecurityGroupControllerBase):
                               cidr=sg_rule.get('cidr'),
                               group_id=sg_rule.get('group_id'))
         except Exception as exp:
-            raise exc.HTTPBadRequest(explanation=unicode(exp))
+            raise exc.HTTPBadRequest(explanation=six.text_type(exp))
 
         if new_rule is None:
             msg = _("Not enough parameters to build a valid rule.")
@@ -571,7 +574,7 @@ class SecurityGroupsOutputController(wsgi.Controller):
                     servers[0][key] = req_obj['server'].get(
                         key, [{'name': 'default'}])
                 except ValueError:
-                    root = xmlutils.safe_minidom_parse_string(req.body)
+                    root = minidom.parseString(req.body)
                     sg_root = root.getElementsByTagName(key)
                     groups = []
                     if sg_root:

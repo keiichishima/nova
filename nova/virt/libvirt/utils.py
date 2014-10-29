@@ -21,6 +21,7 @@
 import errno
 import os
 import platform
+import re
 
 from lxml import etree
 from oslo.config import cfg
@@ -32,6 +33,7 @@ from nova.openstack.common import log as logging
 from nova.openstack.common import processutils
 from nova import utils
 from nova.virt import images
+from nova.virt.libvirt import config as vconfig
 from nova.virt import volumeutils
 
 libvirt_opts = [
@@ -315,6 +317,27 @@ def chown(path, owner):
     execute('chown', owner, path, run_as_root=True)
 
 
+def _id_map_to_config(id_map):
+    return "%s:%s:%s" % (id_map.start, id_map.target, id_map.count)
+
+
+def chown_for_id_maps(path, id_maps):
+    """Change ownership of file or directory for an id mapped
+    environment
+
+    :param path: File or directory whose ownership to change
+    :param id_maps: List of type LibvirtConfigGuestIDMap
+    """
+    uid_maps_str = ','.join([_id_map_to_config(id_map) for id_map in id_maps if
+                             isinstance(id_map,
+                                        vconfig.LibvirtConfigGuestUIDMap)])
+    gid_maps_str = ','.join([_id_map_to_config(id_map) for id_map in id_maps if
+                             isinstance(id_map,
+                                        vconfig.LibvirtConfigGuestGIDMap)])
+    execute('nova-idmapshift', '-i', '-u', uid_maps_str,
+            '-g', gid_maps_str, path, run_as_root=True)
+
+
 def extract_snapshot(disk_path, source_fmt, out_path, dest_fmt):
     """Extract a snapshot from a disk image.
     Note that nobody should write to the disk image during this operation.
@@ -489,3 +512,7 @@ def is_mounted(mount_path, source=None):
         if exc.errno == errno.ENOENT:
             LOG.info(_LI("findmnt tool is not installed"))
         return False
+
+
+def is_valid_hostname(hostname):
+    return re.match(r"^[\w\-\.:]+$", hostname)

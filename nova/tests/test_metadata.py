@@ -28,6 +28,7 @@ except ImportError:
 
 import mock
 from oslo.config import cfg
+from oslo.serialization import jsonutils
 import webob
 
 from nova.api.metadata import base
@@ -42,7 +43,6 @@ from nova.db.sqlalchemy import api
 from nova import exception
 from nova.network import api as network_api
 from nova import objects
-from nova.openstack.common import jsonutils
 from nova import test
 from nova.tests import fake_block_device
 from nova.tests import fake_instance
@@ -788,6 +788,28 @@ class MetadataHandlerTestCase(test.TestCase):
                      'X-Tenant-ID': 'test',
                      'X-Instance-ID-Signature': signed})
         self.assertEqual(response.status_int, 500)
+
+    def test_get_metadata(self):
+        def _test_metadata_path(relpath):
+            # recursively confirm a http 200 from all meta-data elements
+            # available at relpath.
+            response = fake_request(self.stubs, self.mdinst,
+                                    relpath=relpath)
+            for item in response.body.split('\n'):
+                if 'public-keys' in relpath:
+                    # meta-data/public-keys/0=keyname refers to
+                    # meta-data/public-keys/0
+                    item = item.split('=')[0]
+                if item.endswith('/'):
+                    path = relpath + '/' + item
+                    _test_metadata_path(path)
+                    continue
+
+                path = relpath + '/' + item
+                response = fake_request(self.stubs, self.mdinst, relpath=path)
+                self.assertEqual(response.status_int, 200, message=path)
+
+        _test_metadata_path('/2009-04-04/meta-data')
 
 
 class MetadataPasswordTestCase(test.TestCase):

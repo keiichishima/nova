@@ -20,16 +20,17 @@ import inspect
 
 import mock
 from oslo.config import cfg
+from oslo.utils import timeutils
 
 from nova.cells import manager
 from nova.compute import api as compute_api
 from nova.compute import cells_api as compute_cells_api
+from nova.compute import delete_types
 from nova.compute import flavors
 from nova.compute import vm_states
 from nova import context
 from nova import db
 from nova import objects
-from nova.openstack.common import timeutils
 from nova import quota
 from nova import test
 from nova.tests.compute import test_compute
@@ -147,7 +148,7 @@ class CellsComputeAPITestCase(test_compute.ComputeAPITestCase):
                                  'instance_delete_everywhere')
         inst = self._create_fake_instance_obj()
         cells_rpcapi.instance_delete_everywhere(self.context,
-                inst, 'hard')
+                inst, delete_types.DELETE)
         self.mox.ReplayAll()
         self.stubs.Set(self.compute_api.network_api, 'deallocate_for_instance',
                        lambda *a, **kw: None)
@@ -159,7 +160,7 @@ class CellsComputeAPITestCase(test_compute.ComputeAPITestCase):
                                  'instance_delete_everywhere')
         inst = self._create_fake_instance_obj()
         cells_rpcapi.instance_delete_everywhere(self.context,
-                inst, 'soft')
+                inst, delete_types.SOFT_DELETE)
         self.mox.ReplayAll()
         self.stubs.Set(self.compute_api.network_api, 'deallocate_for_instance',
                        lambda *a, **kw: None)
@@ -230,7 +231,7 @@ class CellsConductorAPIRPCRedirect(test.NoDBTestCase):
     def test_build_instances(self, _validate, _get_image, _check_bdm,
                              _provision, _record_action_start):
         _get_image.return_value = (None, 'fake-image')
-        _validate.return_value = (None, 1)
+        _validate.return_value = ({}, 1)
         _check_bdm.return_value = 'bdms'
         _provision.return_value = 'instances'
 
@@ -260,8 +261,9 @@ class CellsConductorAPIRPCRedirect(test.NoDBTestCase):
         self.compute_api.resize(self.context, instance)
         self.assertTrue(self.cells_rpcapi.resize_instance.called)
 
+    @mock.patch.object(compute_api.API, '_record_action_start')
     @mock.patch.object(objects.Instance, 'save')
-    def test_live_migrate_instance(self, instance_save):
+    def test_live_migrate_instance(self, instance_save, _record):
         orig_system_metadata = {}
         instance = fake_instance.fake_instance_obj(self.context,
                 vm_state=vm_states.ACTIVE, cell_name='fake-cell',
