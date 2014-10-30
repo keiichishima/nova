@@ -772,7 +772,7 @@ class LibvirtUkaiVolumeDriver(LibvirtBaseVolumeDriver):
         """
         mount_path = os.path.join(CONF.libvirt.ukai_mount_point_base,
                                   utils.get_hash_str(dummy_share))
-        if not virtutils.is_mounted(mount_path, dummy_share):
+        if not libvirt_utils.is_mounted(mount_path, dummy_share):
             self._mount_ukai(mount_path, options, ensure=True)
         return mount_path
 
