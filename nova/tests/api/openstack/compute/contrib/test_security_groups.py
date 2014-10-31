@@ -815,14 +815,13 @@ class TestSecurityGroupsV2(TestSecurityGroupsV21):
     secgrp_act_ctl_cls = secgroups_v2.SecurityGroupActionController
 
 
-# NOTE(oomichi): v2.1 API does not support security group management (create/
-# update/delete a security group). We don't need to test this class against
-# v2.1 API.
-class TestSecurityGroupRules(test.TestCase):
-    def setUp(self):
-        super(TestSecurityGroupRules, self).setUp()
+class TestSecurityGroupRulesV21(test.TestCase):
+    secgrp_ctl_cls = secgroups_v21.SecurityGroupRulesController
 
-        self.controller = secgroups_v2.SecurityGroupController()
+    def setUp(self):
+        super(TestSecurityGroupRulesV21, self).setUp()
+
+        self.controller = self.secgrp_ctl_cls()
         if self.controller.security_group_api.id_is_uuid:
             id1 = '11111111-1111-1111-1111-111111111111'
             id2 = '22222222-2222-2222-2222-222222222222'
@@ -845,14 +844,12 @@ class TestSecurityGroupRules(test.TestCase):
                 return db1
             if group_id == db2['id']:
                 return db2
-            raise exception.NotFound()
+            raise exception.SecurityGroupNotFound(security_group_id=group_id)
 
         self.stubs.Set(nova.db, 'security_group_get',
                        return_security_group)
 
         self.parent_security_group = db2
-
-        self.controller = secgroups_v2.SecurityGroupRulesController()
 
     def test_create_by_cidr(self):
         rule = security_group_rule_template(cidr='10.2.3.124/24',
@@ -1140,7 +1137,7 @@ class TestSecurityGroupRules(test.TestCase):
                                             parent_group_id=self.sg2['id'])
 
         req = fakes.HTTPRequest.blank('/v2/fake/os-security-group-rules')
-        self.assertRaises(webob.exc.HTTPBadRequest, self.controller.create,
+        self.assertRaises(webob.exc.HTTPNotFound, self.controller.create,
                           req, {'security_group_rule': rule})
 
     def test_create_with_same_group_parent_id_and_group_id(self):
@@ -1321,6 +1318,10 @@ class TestSecurityGroupRules(test.TestCase):
         req = fakes.HTTPRequest.blank('/v2/fake/os-security-group-rules')
         self.assertRaises(webob.exc.HTTPBadRequest, self.controller.create,
                           req, {'security_group_rule': rule})
+
+
+class TestSecurityGroupRulesV2(TestSecurityGroupRulesV21):
+    secgrp_ctl_cls = secgroups_v2.SecurityGroupRulesController
 
 
 class TestSecurityGroupRulesXMLDeserializer(test.TestCase):

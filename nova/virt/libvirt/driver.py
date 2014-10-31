@@ -48,6 +48,7 @@ from eventlet import patcher
 from eventlet import tpool
 from eventlet import util as eventlet_util
 from lxml import etree
+from oslo.concurrency import processutils
 from oslo.config import cfg
 from oslo.serialization import jsonutils
 from oslo.utils import excutils
@@ -80,7 +81,6 @@ from nova import objects
 from nova.openstack.common import fileutils
 from nova.openstack.common import log as logging
 from nova.openstack.common import loopingcall
-from nova.openstack.common import processutils
 from nova.pci import manager as pci_manager
 from nova.pci import utils as pci_utils
 from nova.pci import whitelist as pci_whitelist
@@ -437,6 +437,15 @@ class LibvirtDriver(driver.ComputeDriver):
 
         self._volume_api = volume.API()
         self._image_api = image.API()
+        self._events_delayed = {}
+        # Note(toabctl): During a reboot of a Xen domain, STOPPED and
+        #                STARTED events are sent. To prevent shutting
+        #                down the domain during a reboot, delay the
+        #                STOPPED lifecycle event some seconds.
+        if CONF.libvirt.virt_type == "xen":
+            self._lifecycle_delay = 15
+        else:
+            self._lifecycle_delay = 0
 
         sysinfo_serial_funcs = {
             'none': lambda: None,
@@ -601,7 +610,9 @@ class LibvirtDriver(driver.ComputeDriver):
             try:
                 event = self._event_queue.get(block=False)
                 if isinstance(event, virtevent.LifecycleEvent):
-                    self.emit_event(event)
+                    # call possibly with delay
+                    self._event_delayed_cleanup(event)
+                    self._event_emit_delayed(event)
                 elif 'conn' in event and 'reason' in event:
                     last_close_event = event
             except native_Queue.Empty:
@@ -620,6 +631,37 @@ class LibvirtDriver(driver.ComputeDriver):
                 # Disable compute service to avoid
                 # new instances of being scheduled on this host.
                 self._set_host_enabled(False, disable_reason=_error)
+
+    def _event_delayed_cleanup(self, event):
+        """Cleanup possible delayed stop events."""
+        if (event.transition == virtevent.EVENT_LIFECYCLE_STARTED or
+            event.transition == virtevent.EVENT_LIFECYCLE_RESUMED):
+            if event.uuid in self._events_delayed.keys():
+                self._events_delayed[event.uuid].cancel()
+                self._events_delayed.pop(event.uuid, None)
+                LOG.debug("Removed pending event for %s due to "
+                          "lifecycle event", event.uuid)
+
+    def _event_emit_delayed(self, event):
+        """Emit events - possibly delayed."""
+        def event_cleanup(gt, *args, **kwargs):
+            """Callback function for greenthread. Called
+            to cleanup the _events_delayed dictionary when a event
+            was called.
+            """
+            event = args[0]
+            self._events_delayed.pop(event.uuid, None)
+
+        if self._lifecycle_delay > 0:
+            if event.uuid not in self._events_delayed.keys():
+                id_ = greenthread.spawn_after(self._lifecycle_delay,
+                                              self.emit_event, event)
+                self._events_delayed[event.uuid] = id_
+                # add callback to cleanup self._events_delayed dict after
+                # event was called
+                id_.link(event_cleanup, event)
+        else:
+            self.emit_event(event)
 
     def _init_events_pipe(self):
         """Create a self-pipe for the native thread to synchronize on.
@@ -1304,7 +1346,7 @@ class LibvirtDriver(driver.ComputeDriver):
         if driver_type not in self.volume_drivers:
             raise exception.VolumeDriverNotFound(driver_type=driver_type)
         driver = self.volume_drivers[driver_type]
-        return driver.connect_volume(connection_info, disk_info)
+        driver.connect_volume(connection_info, disk_info)
 
     def _disconnect_volume(self, connection_info, disk_dev):
         driver_type = connection_info.get('driver_volume_type')
@@ -1357,7 +1399,8 @@ class LibvirtDriver(driver.ComputeDriver):
                 raise exception.Invalid(msg)
 
         disk_info = blockinfo.get_info_from_bdm(CONF.libvirt.virt_type, bdm)
-        conf = self._connect_volume(connection_info, disk_info)
+        self._connect_volume(connection_info, disk_info)
+        conf = self._get_volume_config(connection_info, disk_info)
         self._set_cache_mode(conf)
 
         try:
@@ -1368,10 +1411,6 @@ class LibvirtDriver(driver.ComputeDriver):
             state = LIBVIRT_POWER_STATE[virt_dom.info()[0]]
             if state in (power_state.RUNNING, power_state.PAUSED):
                 flags |= libvirt.VIR_DOMAIN_AFFECT_LIVE
-
-            # cache device_path in connection_info -- required by encryptors
-            if 'data' in connection_info:
-                connection_info['data']['device_path'] = conf.source_path
 
             if encryption:
                 encryptor = self._get_volume_encryptor(connection_info,
@@ -1449,7 +1488,8 @@ class LibvirtDriver(driver.ComputeDriver):
                 CONF.libvirt.virt_type, disk_dev),
             'type': 'disk',
             }
-        conf = self._connect_volume(new_connection_info, disk_info)
+        self._connect_volume(new_connection_info, disk_info)
+        conf = self._get_volume_config(new_connection_info, disk_info)
         if not conf.source_path:
             self._disconnect_volume(new_connection_info, disk_dev)
             raise NotImplementedError(_("Swap only supports host devices"))
@@ -3160,8 +3200,9 @@ class LibvirtDriver(driver.ComputeDriver):
             raise
 
     def _prepare_args_for_get_config(self, context, instance):
-        flavor = objects.Flavor.get_by_id(context,
-                                          instance['instance_type_id'])
+        with utils.temporary_mutation(context, read_deleted="yes"):
+            flavor = objects.Flavor.get_by_id(context,
+                instance['instance_type_id'])
         image_ref = instance['image_ref']
         image_meta = compute_utils.get_image_metadata(
                             context, self._image_api, image_ref, instance)
@@ -3463,7 +3504,8 @@ class LibvirtDriver(driver.ComputeDriver):
             connection_info = vol['connection_info']
             vol_dev = block_device.prepend_dev(vol['mount_device'])
             info = disk_mapping[vol_dev]
-            cfg = self._connect_volume(connection_info, info)
+            self._connect_volume(connection_info, info)
+            cfg = self._get_volume_config(connection_info, info)
             devices.append(cfg)
             vol['connection_info'] = connection_info
             vol.save(nova_context.get_admin_context())
@@ -4374,15 +4416,6 @@ class LibvirtDriver(driver.ComputeDriver):
 
         for vol in block_device_mapping:
             connection_info = vol['connection_info']
-            info = blockinfo.get_info_from_bdm(
-                   CONF.libvirt.virt_type, vol)
-            conf = self._connect_volume(connection_info, info)
-
-            # cache device_path in connection_info -- required by encryptors
-            if 'data' in connection_info:
-                connection_info['data']['device_path'] = conf.source_path
-                vol['connection_info'] = connection_info
-                vol.save(context)
 
             if (not reboot and 'data' in connection_info and
                     'volume_id' in connection_info['data']):
@@ -4981,7 +5014,7 @@ class LibvirtDriver(driver.ComputeDriver):
         back to the source host to check the results.
 
         :param context: security context
-        :param instance: nova.db.sqlalchemy.models.Instance
+        :param instance: nova.objects.instance.Instance object
         :returns
             :tempfile: A dict containing the tempfile info on the destination
                        host

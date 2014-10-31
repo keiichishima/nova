@@ -21,6 +21,7 @@ import fixtures
 import mock
 import mox
 import netaddr
+from oslo.concurrency import processutils
 from oslo.config import cfg
 from oslo.db import exception as db_exc
 from oslo import messaging
@@ -40,7 +41,6 @@ from nova import objects
 from nova.objects import quotas as quotas_obj
 from nova.objects import virtual_interface as vif_obj
 from nova.openstack.common import log as logging
-from nova.openstack.common import processutils
 from nova import quota
 from nova import test
 from nova.tests import fake_instance
@@ -176,6 +176,9 @@ vifs = [{'id': 0,
 
 
 class FlatNetworkTestCase(test.TestCase):
+
+    REQUIRES_LOCKING = True
+
     def setUp(self):
         super(FlatNetworkTestCase, self).setUp()
         self.tempdir = self.useFixture(fixtures.TempDir()).path
@@ -793,6 +796,9 @@ class FlatNetworkTestCase(test.TestCase):
 
 
 class FlatDHCPNetworkTestCase(test.TestCase):
+
+    REQUIRES_LOCKING = True
+
     def setUp(self):
         super(FlatDHCPNetworkTestCase, self).setUp()
         self.useFixture(test.SampleNetworks())
@@ -839,6 +845,9 @@ class FlatDHCPNetworkTestCase(test.TestCase):
 
 
 class VlanNetworkTestCase(test.TestCase):
+
+    REQUIRES_LOCKING = True
+
     def setUp(self):
         super(VlanNetworkTestCase, self).setUp()
         self.useFixture(test.SampleNetworks())
@@ -1884,6 +1893,8 @@ class FakeNetwork(object):
 
 class CommonNetworkTestCase(test.TestCase):
 
+    REQUIRES_LOCKING = True
+
     def setUp(self):
         super(CommonNetworkTestCase, self).setUp()
         self.context = context.RequestContext('fake', 'fake')
@@ -2518,6 +2529,13 @@ class CommonNetworkTestCase(test.TestCase):
                           instance=fake_inst(uuid='ignoreduuid'))
         rollback.assert_called_once_with(self.context)
 
+    def test_fixed_cidr_out_of_range(self):
+        manager = network_manager.NetworkManager()
+        ctxt = context.get_admin_context()
+        self.assertRaises(exception.AddressOutOfRange,
+                          manager.create_networks, ctxt, label="fake",
+                          cidr='10.1.0.0/24', fixed_cidr='10.1.1.0/25')
+
 
 class TestRPCFixedManager(network_manager.RPCAllocateFixedIP,
         network_manager.NetworkManager):
@@ -2560,6 +2578,9 @@ class TestFloatingIPManager(floating_ips.FloatingIP,
 
 
 class AllocateTestCase(test.TestCase):
+
+    REQUIRES_LOCKING = True
+
     def setUp(self):
         super(AllocateTestCase, self).setUp()
         dns = 'nova.network.noop_dns_driver.NoopDNSDriver'
@@ -2674,6 +2695,9 @@ class AllocateTestCase(test.TestCase):
 
 class FloatingIPTestCase(test.TestCase):
     """Tests nova.network.manager.FloatingIP."""
+
+    REQUIRES_LOCKING = True
+
     def setUp(self):
         super(FloatingIPTestCase, self).setUp()
         self.tempdir = self.useFixture(fixtures.TempDir()).path

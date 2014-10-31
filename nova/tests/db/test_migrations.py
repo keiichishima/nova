@@ -44,6 +44,7 @@ import glob
 import os
 
 from migrate.versioning import repository
+from oslo.concurrency import processutils
 from oslo.db.sqlalchemy import session
 from oslo.db.sqlalchemy import utils as oslodbutils
 import six.moves.urllib.parse as urlparse
@@ -54,7 +55,6 @@ import nova.db.sqlalchemy.migrate_repo
 from nova.db.sqlalchemy import utils as db_utils
 from nova.i18n import _
 from nova.openstack.common import log as logging
-from nova.openstack.common import processutils
 from nova import test
 from nova import utils
 
@@ -150,6 +150,8 @@ class BaseMigrationTestCase(test.NoDBTestCase):
     """Base class for testing migrations and migration utils. This sets up
     and configures the databases to run tests against.
     """
+
+    REQUIRES_LOCKING = True
 
     # NOTE(jhesketh): It is expected that tests clean up after themselves.
     # This is necessary for concurrency to allow multiple tests to work on

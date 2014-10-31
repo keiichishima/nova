@@ -34,7 +34,9 @@ import sys
 import uuid
 
 import fixtures
+from oslo.concurrency import lockutils
 from oslo.config import cfg
+from oslo.config import fixture as config_fixture
 from oslo.messaging import conffixture as messaging_conffixture
 from oslo.utils import timeutils
 import testtools
@@ -221,6 +223,7 @@ class TestCase(testtools.TestCase):
     `NoDBTestCase` first.
     """
     USES_DB = True
+    REQUIRES_LOCKING = False
 
     # NOTE(rpodolyaka): this attribute can be overridden in subclasses in order
     #                   to scale the global test timeout value set for each
@@ -283,6 +286,24 @@ class TestCase(testtools.TestCase):
 
         # Don't log every single DB migration step
         logging.getLogger('migrate.versioning.api').setLevel(logging.WARNING)
+
+        # NOTE(sdague): because of the way we were using the lock
+        # wrapper we eneded up with a lot of tests that started
+        # relying on global external locking being set up for them. We
+        # consider all of these to be *bugs*. Tests should not require
+        # global external locking, or if they do, they should
+        # explicitly set it up themselves.
+        #
+        # The following REQUIRES_LOCKING class parameter is provided
+        # as a bridge to get us there. No new tests should be added
+        # that require it, and existing classes and tests should be
+        # fixed to not need it.
+        if self.REQUIRES_LOCKING:
+            lock_path = self.useFixture(fixtures.TempDir()).path
+            self.fixture = self.useFixture(
+                config_fixture.Config(lockutils.CONF))
+            self.fixture.config(lock_path=lock_path,
+                                group='oslo_concurrency')
 
         self.useFixture(conf_fixture.ConfFixture(CONF))
 

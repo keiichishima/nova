@@ -22,11 +22,12 @@ import copy
 import functools
 
 from oslo.config import cfg
+from oslo.utils import excutils
 from oslo.utils import units
 from oslo.vmware import exceptions as vexc
 
 from nova import exception
-from nova.i18n import _
+from nova.i18n import _, _LW
 from nova.network import model as network_model
 from nova.openstack.common import log as logging
 from nova.virt.vmwareapi import constants
@@ -894,105 +895,20 @@ def search_vm_ref_by_identifier(session, identifier):
     return vm_ref
 
 
-def get_host_ref_from_id(session, host_id, property_list=None):
-    """Get a host reference object for a host_id string."""
-
-    if property_list is None:
-        property_list = ['name']
-
-    host_refs = session._call_method(
-                    vim_util, "get_objects",
-                    "HostSystem", property_list)
-    return _get_object_from_results(session, host_refs, host_id,
-                                    _get_reference_for_value)
-
-
-def get_host_id_from_vm_ref(session, vm_ref):
-    """This method allows you to find the managed object
-    ID of the host running a VM. Since vMotion can
-    change the value, you should not presume that this
-    is a value that you can cache for very long and
-    should be prepared to allow for it to change.
-
-    :param session: a vSphere API connection
-    :param vm_ref: a reference object to the running VM
-    :return: the host_id running the virtual machine
-    """
-
-    # to prevent typographical errors below
-    property_name = 'runtime.host'
-
-    # a property collector in VMware vSphere Management API
-    # is a set of local representations of remote values.
-    # property_set here, is a local representation of the
-    # properties we are querying for.
-    property_set = session._call_method(
-            vim_util, "get_object_properties",
-            None, vm_ref, vm_ref._type, [property_name])
-
-    prop = property_from_property_set(
-        property_name, property_set)
-
-    if prop is not None:
-        prop = prop.val.value
-    else:
-        # reaching here represents an impossible state
-        raise RuntimeError(
-            "Virtual Machine %s exists without a runtime.host!"
-            % (vm_ref))
-
-    return prop
-
-
-def property_from_property_set(property_name, property_set):
-    '''Use this method to filter property collector results.
-
-    Because network traffic is expensive, multiple
-    VMwareAPI calls will sometimes pile-up properties
-    to be collected. That means results may contain
-    many different values for multiple purposes.
-
-    This helper will filter a list for a single result
-    and filter the properties of that result to find
-    the single value of whatever type resides in that
-    result. This could be a ManagedObjectReference ID
-    or a complex value.
-
-    :param property_name: name of property you want
-    :param property_set: all results from query
-    :return: the value of the property.
-    '''
-
-    for prop in property_set.objects:
-        p = _property_from_propSet(prop.propSet, property_name)
-        if p is not None:
-            return p
-
-
-def _property_from_propSet(propSet, name='name'):
-    for p in propSet:
-        if p.name == name:
-            return p
-
-
-def get_host_ref_for_vm(session, instance, props):
-    """Get the ESXi host running a VM by its name."""
+def get_host_ref_for_vm(session, instance):
+    """Get a MoRef to the ESXi host currently running an instance."""
 
     vm_ref = get_vm_ref(session, instance)
-    host_id = get_host_id_from_vm_ref(session, vm_ref)
-    return get_host_ref_from_id(session, host_id, props)
+    return session._call_method(vim_util, "get_dynamic_property",
+                                vm_ref, "VirtualMachine", "runtime.host")
 
 
 def get_host_name_for_vm(session, instance):
-    """Get the ESXi host running a VM by its name."""
-    host_ref = get_host_ref_for_vm(session, instance, ['name'])
-    return get_host_name_from_host_ref(host_ref)
+    """Get the hostname of the ESXi host currently running an instance."""
 
-
-def get_host_name_from_host_ref(host_ref):
-    p = _property_from_propSet(host_ref.propSet)
-    if p is not None:
-        return p.val
+    host_ref = get_host_ref_for_vm(session, instance)
+    return session._call_method(vim_util, "get_dynamic_property",
+                                host_ref, "HostSystem", "name")
 
 
 def get_vm_state_from_name(session, vm_name):
@@ -1272,7 +1188,23 @@ def create_vm(session, instance, vm_folder, config_spec, res_pool_ref):
         session.vim,
         "CreateVM_Task", vm_folder,
         config=config_spec, pool=res_pool_ref)
-    task_info = session._wait_for_task(vm_create_task)
+    try:
+        task_info = session._wait_for_task(vm_create_task)
+    except vexc.VMwareDriverException:
+        # An invalid guestId will result in an error with no specific fault
+        # type and the generic error 'A specified parameter was not correct'.
+        # As guestId is user-editable, we try to help the user out with some
+        # additional information if we notice that guestId isn't in our list of
+        # known-good values.
+        # We don't check this in advance or do anything more than warn because
+        # we can't guarantee that our list of known-good guestIds is complete.
+        # Consequently, a value which we don't recognise may in fact be valid.
+        with excutils.save_and_reraise_exception():
+            if config_spec.guestId not in constants.VALID_OS_TYPES:
+                LOG.warning(_LW('vmware_ostype from image is not recognised: '
+                                '\'%(ostype)s\'. An invalid os type may be '
+                                'one cause of this instance creation failure'),
+                         {'ostype': config_spec.guestId})
     LOG.debug("Created VM on the ESX host", instance=instance)
     return task_info.result
 
