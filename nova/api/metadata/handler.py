@@ -45,18 +45,13 @@ metadata_proxy_opts = [
         'service_metadata_proxy',
         default=False,
         help='Set flag to indicate Neutron will proxy metadata requests and '
-             'resolve instance ids.',
-        deprecated_group='DEFAULT',
-        deprecated_name='service_neutron_metadata_proxy'),
+             'resolve instance ids.'),
      cfg.StrOpt(
          'metadata_proxy_shared_secret',
          default='', secret=True,
-         help='Shared secret to validate proxies Neutron metadata requests',
-         deprecated_group='DEFAULT',
-         deprecated_name='neutron_metadata_proxy_shared_secret')
+         help='Shared secret to validate proxies Neutron metadata requests'),
 ]
 
-# metadata_proxy_opts options in the DEFAULT group were deprecated in Juno
 CONF.register_opts(metadata_proxy_opts, 'neutron')
 
 LOG = logging.getLogger(__name__)
@@ -153,7 +148,8 @@ class MetadataRequestHandler(wsgi.Application):
                           remote_address)
             msg = _('An unknown error has occurred. '
                     'Please try your request again.')
-            raise webob.exc.HTTPInternalServerError(explanation=unicode(msg))
+            raise webob.exc.HTTPInternalServerError(
+                                               explanation=six.text_type(msg))
 
         if meta_data is None:
             LOG.error(_LE('Failed to get metadata for ip: %s'),
@@ -210,7 +206,8 @@ class MetadataRequestHandler(wsgi.Application):
                           instance_id)
             msg = _('An unknown error has occurred. '
                     'Please try your request again.')
-            raise webob.exc.HTTPInternalServerError(explanation=unicode(msg))
+            raise webob.exc.HTTPInternalServerError(
+                                               explanation=six.text_type(msg))
 
         if meta_data is None:
             LOG.error(_LE('Failed to get metadata for instance id: %s'),

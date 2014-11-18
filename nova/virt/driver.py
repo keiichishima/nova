@@ -160,13 +160,7 @@ class ComputeDriver(object):
 
         :param instance: nova.objects.instance.Instance object
 
-        Returns a dict containing:
-
-        :state:           the running state, one of the power_state codes
-        :max_mem:         (int) the maximum memory in KBytes allowed
-        :mem:             (int) the memory in KBytes used by the domain
-        :num_cpu:         (int) the number of virtual CPUs for the domain
-        :cpu_time:        (int) the CPU time used in nanoseconds
+        Returns a InstanceInfo object
         """
         # TODO(Vek): Need to pass context in for access to auth_token
         raise NotImplementedError()
@@ -274,7 +268,8 @@ class ComputeDriver(object):
         raise NotImplementedError()
 
     def spawn(self, context, instance, image_meta, injected_files,
-              admin_password, network_info=None, block_device_info=None):
+              admin_password, network_info=None, block_device_info=None,
+              instance_type=None):
         """Create a new instance/VM/domain on the virtualization platform.
 
         Once this successfully completes, the instance should be
@@ -296,6 +291,7 @@ class ComputeDriver(object):
            :py:meth:`~nova.network.manager.NetworkManager.get_instance_nw_info`
         :param block_device_info: Information about block devices to be
                                   attached to the instance.
+        :param instance_type: The instance_type for the instance to be spawned.
         """
         raise NotImplementedError()
 
@@ -1016,7 +1012,7 @@ class ComputeDriver(object):
         # TODO(Vek): Need to pass context in for access to auth_token
         raise NotImplementedError()
 
-    def host_power_action(self, host, action):
+    def host_power_action(self, action):
         """Reboots, shuts down or powers up the host."""
         raise NotImplementedError()
 
@@ -1026,7 +1022,7 @@ class ComputeDriver(object):
         """
         raise NotImplementedError()
 
-    def set_host_enabled(self, host, enabled):
+    def set_host_enabled(self, enabled):
         """Sets the specified host's ability to accept new instances."""
         # TODO(Vek): Need to pass context in for access to auth_token
         raise NotImplementedError()

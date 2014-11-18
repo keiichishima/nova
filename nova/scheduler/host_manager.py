@@ -182,9 +182,11 @@ class HostState(object):
         if least_gb is not None:
             if least_gb > free_gb:
                 # can occur when an instance in database is not on host
-                LOG.warn(_LW("Host has more disk space than database "
-                             "expected (%(physical)sgb > %(database)sgb)"),
-                         {'physical': least_gb, 'database': free_gb})
+                LOG.warn(_LW("Host %(hostname)s has more disk space than "
+                             "database expected "
+                             "(%(physical)sgb > %(database)sgb)"),
+                         {'physical': least_gb, 'database': free_gb,
+                          'hostname': compute['hypervisor_hostname']})
             free_gb = min(least_gb, free_gb)
         free_disk_mb = free_gb * 1024
 
@@ -242,7 +244,11 @@ class HostState(object):
         self.num_instances += 1
 
         pci_requests = instance.get('pci_requests')
-        if pci_requests and pci_requests.requests and self.pci_stats:
+        # NOTE(danms): Instance here is still a dict, which is converted from
+        # an object. Thus, it has a .pci_requests field, which gets converted
+        # to a primitive early on, and is thus a dict here. Convert this when
+        # we get an object all the way to this path.
+        if pci_requests and pci_requests['requests'] and self.pci_stats:
             self.pci_stats.apply_requests(pci_requests.requests)
 
         # Calculate the numa usage

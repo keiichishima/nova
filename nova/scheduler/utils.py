@@ -21,10 +21,10 @@ from oslo.serialization import jsonutils
 
 from nova.compute import flavors
 from nova.compute import utils as compute_utils
-from nova import db
 from nova import exception
 from nova.i18n import _, _LE, _LW
 from nova import notifications
+from nova import objects
 from nova.objects import base as obj_base
 from nova.openstack.common import log as logging
 from nova import rpc
@@ -41,6 +41,8 @@ scheduler_opts = [
 CONF = cfg.CONF
 CONF.register_opts(scheduler_opts)
 
+CONF.import_opt('scheduler_default_filters', 'nova.scheduler.host_manager')
+
 
 def build_request_spec(ctxt, image, instances, instance_type=None):
     """Build a request_spec for the scheduler.
@@ -54,10 +56,10 @@ def build_request_spec(ctxt, image, instances, instance_type=None):
 
     if instance_type is None:
         instance_type = flavors.extract_flavor(instance)
-    # NOTE(comstud): This is a bit ugly, but will get cleaned up when
-    # we're passing an InstanceType internal object.
-    extra_specs = db.flavor_extra_specs_get(ctxt, instance_type['flavorid'])
-    instance_type['extra_specs'] = extra_specs
+
+    if isinstance(instance_type, objects.Flavor):
+        instance_type = obj_base.obj_to_primitive(instance_type)
+
     request_spec = {
             'image': image or {},
             'instance_properties': instance,
@@ -238,3 +240,42 @@ def parse_options(opts, sep='=', converter=str, name=""):
 def validate_filter(filter):
     """Validates that the filter is configured in the default filters."""
     return filter in CONF.scheduler_default_filters
+
+
+_SUPPORTS_AFFINITY = None
+_SUPPORTS_ANTI_AFFINITY = None
+
+
+def setup_instance_group(context, group_hint, user_group_hosts=None):
+    """Provides group_hosts and group_policies sets related to the group
+    provided by hint if corresponding filters are enabled.
+
+    :param group_hint: 'group' scheduler hint
+    :param user_group_hosts: Hosts from the group or empty set
+
+    :returns: None or tuple (group_hosts, group_policies)
+    """
+    global _SUPPORTS_AFFINITY
+    if _SUPPORTS_AFFINITY is None:
+        _SUPPORTS_AFFINITY = validate_filter(
+            'ServerGroupAffinityFilter')
+    global _SUPPORTS_ANTI_AFFINITY
+    if _SUPPORTS_ANTI_AFFINITY is None:
+        _SUPPORTS_ANTI_AFFINITY = validate_filter(
+            'ServerGroupAntiAffinityFilter')
+    if group_hint:
+        group = objects.InstanceGroup.get_by_hint(context, group_hint)
+        policies = set(('anti-affinity', 'affinity'))
+        if any((policy in policies) for policy in group.policies):
+            if ('affinity' in group.policies and not _SUPPORTS_AFFINITY):
+                msg = _("ServerGroupAffinityFilter not configured")
+                LOG.error(msg)
+                raise exception.NoValidHost(reason=msg)
+            if ('anti-affinity' in group.policies and
+                    not _SUPPORTS_ANTI_AFFINITY):
+                msg = _("ServerGroupAntiAffinityFilter not configured")
+                LOG.error(msg)
+                raise exception.NoValidHost(reason=msg)
+            group_hosts = set(group.get_hosts(context))
+            user_hosts = set(user_group_hosts) if user_group_hosts else set()
+            return (user_hosts | group_hosts, group.policies)

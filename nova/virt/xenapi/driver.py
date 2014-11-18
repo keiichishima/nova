@@ -186,7 +186,8 @@ class XenAPIDriver(driver.ComputeDriver):
         return self._vmops.list_instance_uuids()
 
     def spawn(self, context, instance, image_meta, injected_files,
-              admin_password, network_info=None, block_device_info=None):
+              admin_password, network_info=None, block_device_info=None,
+              instance_type=None):
         """Create VM instance."""
         self._vmops.spawn(context, instance, image_meta, injected_files,
                           admin_password, network_info, block_device_info)
@@ -622,7 +623,7 @@ class XenAPIDriver(driver.ComputeDriver):
         stats = self.host_state.get_host_stats(refresh=refresh)
         return [stats["hypervisor_hostname"]]
 
-    def host_power_action(self, host, action):
+    def host_power_action(self, action):
         """The only valid values for 'action' on XenServer are 'reboot' or
         'shutdown', even though the API also accepts 'startup'. As this is
         not technically possible on XenServer, since the host is the same
@@ -630,12 +631,12 @@ class XenAPIDriver(driver.ComputeDriver):
         raise an exception.
         """
         if action in ("reboot", "shutdown"):
-            return self._host.host_power_action(host, action)
+            return self._host.host_power_action(action)
         else:
             msg = _("Host startup on XenServer is not supported.")
             raise NotImplementedError(msg)
 
-    def set_host_enabled(self, host, enabled):
+    def set_host_enabled(self, enabled):
         """Sets the compute host's ability to accept new instances."""
         return self._host.set_host_enabled(enabled)
 

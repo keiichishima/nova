@@ -189,6 +189,31 @@ def get_number_of_serial_ports(flavor, image_meta):
     return flavor_num_ports or image_num_ports or 1
 
 
+class InstanceInfo(object):
+
+    def __init__(self, state=None, max_mem_kb=0, mem_kb=0, num_cpu=0,
+                 cpu_time_ns=0, id=None):
+        """Create a new Instance Info object
+
+        :param state: the running state, one of the power_state codes
+        :param max_mem_kb: (int) the maximum memory in KBytes allowed
+        :param mem_kb: (int) the memory in KBytes used by the instance
+        :param num_cpu: (int) the number of virtual CPUs for the instance
+        :param cpu_time_ns: (int) the CPU time used in nanoseconds
+        :param id: a unique ID for the instance
+        """
+        self.state = state
+        self.max_mem_kb = max_mem_kb
+        self.mem_kb = mem_kb
+        self.num_cpu = num_cpu
+        self.cpu_time_ns = cpu_time_ns
+        self.id = id
+
+    def __eq__(self, other):
+        return (self.__class__ == other.__class__ and
+                self.__dict__ == other.__dict__)
+
+
 class VirtCPUTopology(object):
 
     def __init__(self, sockets, cores, threads):
@@ -532,6 +557,42 @@ class VirtCPUTopology(object):
                                                      allow_threads)[0]
 
 
+class VirtPageSize(object):
+    def __init__(self, size_kb):
+        """Handles a memory page size
+
+        :param size_kb: integer of page size in KiB
+        """
+        self.size_kb = int(size_kb)
+
+
+class VirtPagesTopology(VirtPageSize):
+    """Convenient class/type to identify memory pages info."""
+
+    def __init__(self, size_kb, total, used=0):
+        """Handles memory pages topology info
+
+        :param size_kb: integer of page size in KiB
+        :param total: integer of pages size available
+        :param used: integer of pages size used
+        """
+        super(VirtPagesTopology, self).__init__(size_kb)
+        self.used = int(used)
+        self.total = int(total)
+
+    def to_dict(self):
+        return {'size_kb': self.size_kb,
+                'total': self.total,
+                'used': self.used}
+
+    @classmethod
+    def from_dict(cls, data_dict):
+        size_kb = data_dict['size_kb']
+        total = data_dict.get('total', 0)
+        used = data_dict.get('used', 0)
+        return cls(size_kb, total, used)
+
+
 class VirtNUMATopologyCell(object):
     """Class for reporting NUMA resources in a cell
 
@@ -544,7 +605,7 @@ class VirtNUMATopologyCell(object):
 
         :param id: integer identifier of cell
         :param cpuset: set containing list of CPU indexes
-        :param memory: RAM measured in KiB
+        :param memory: RAM measured in MiB
 
         Creates a new NUMA cell object to record the hardware
         resources.
@@ -571,15 +632,50 @@ class VirtNUMATopologyCell(object):
         return cls(cell_id, cpuset, memory)
 
 
+class VirtNUMATopologyCellInstance(VirtNUMATopologyCell):
+    """Class for reporting NUMA resources in an iinstance cell."""
+
+    def __init__(self, id, cpuset, memory, pagesize=None):
+        """Create a new NUMA Cell Instance
+
+        :param id: integer identifier of cell
+        :param cpuset: set containing list of CPU indexes
+        :param memory: RAM measured in Mib
+        :param pagesize: a VirtPageSize
+
+        :returns: a new NUMA cell instance object
+        """
+
+        super(VirtNUMATopologyCellInstance, self).__init__(
+            id, cpuset, memory)
+
+        self.pagesize = pagesize
+
+    def _to_dict(self):
+        return {'cpus': format_cpu_spec(self.cpuset, allow_ranges=False),
+                'mem': {'total': self.memory},
+                'id': self.id,
+                'pagesize': self.pagesize and self.pagesize.size_kb or None}
+
+    @classmethod
+    def _from_dict(cls, data_dict):
+        cpuset = parse_cpu_spec(data_dict.get('cpus', ''))
+        memory = data_dict.get('mem', {}).get('total', 0)
+        cell_id = data_dict.get('id')
+        pagesize = (data_dict.get('pagesize')
+                    and VirtPageSize(data_dict['pagesize']) or None)
+        return cls(cell_id, cpuset, memory, pagesize)
+
+
 class VirtNUMATopologyCellLimit(VirtNUMATopologyCell):
     def __init__(self, id, cpuset, memory, cpu_limit, memory_limit):
         """Create a new NUMA Cell with usage
 
         :param id: integer identifier of cell
         :param cpuset: set containing list of CPU indexes
-        :param memory: RAM measured in KiB
+        :param memory: RAM measured in MiB
         :param cpu_limit: maximum number of  CPUs allocated
-        :param memory_usage: maxumum RAM allocated in KiB
+        :param memory_usage: maxumum RAM allocated in MiB
 
         Creates a new NUMA cell object to represent the max hardware
         resources and utilization. The number of CPUs specified
@@ -627,9 +723,9 @@ class VirtNUMATopologyCellUsage(VirtNUMATopologyCell):
 
         :param id: integer identifier of cell
         :param cpuset: set containing list of CPU indexes
-        :param memory: RAM measured in KiB
+        :param memory: RAM measured in MiB
         :param cpu_usage: number of  CPUs allocated
-        :param memory_usage: RAM allocated in KiB
+        :param memory_usage: RAM allocated in MiB
 
         Creates a new NUMA cell object to record the hardware
         resources and utilization. The number of CPUs specified
@@ -714,7 +810,7 @@ class VirtNUMAInstanceTopology(VirtNUMATopology):
     disk image
     """
 
-    cell_class = VirtNUMATopologyCell
+    cell_class = VirtNUMATopologyCellInstance
 
     @staticmethod
     def _get_flavor_or_image_prop(flavor, image_meta, propname):
@@ -762,7 +858,7 @@ class VirtNUMAInstanceTopology(VirtNUMATopology):
 
                 availcpus.remove(cpu)
 
-            cells.append(VirtNUMATopologyCell(node, cpuset, mem))
+            cells.append(cls.cell_class(node, cpuset, mem))
             totalmem = totalmem + mem
 
         if availcpus:
@@ -799,7 +895,7 @@ class VirtNUMAInstanceTopology(VirtNUMATopology):
             start = node * ncpus
             cpuset = set(range(start, start + ncpus))
 
-            cells.append(VirtNUMATopologyCell(node, cpuset, mem))
+            cells.append(cls.cell_class(node, cpuset, mem))
 
         return cls(cells)
 
@@ -971,7 +1067,9 @@ def instance_topology_from_instance(instance):
             if dict_cells:
                 cells = [objects.InstanceNUMACell(id=cell['id'],
                                                   cpuset=set(cell['cpuset']),
-                                                  memory=cell['memory'])
+                                                  memory=cell['memory'],
+                                                  pagesize=cell.get(
+                                                      'pagesize'))
                          for cell in dict_cells]
                 instance_numa_topology = (
                         objects.InstanceNUMATopology(cells=cells))

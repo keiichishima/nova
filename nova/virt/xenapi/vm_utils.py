@@ -901,7 +901,7 @@ def update_vdi_virtual_size(session, instance, vdi_ref, new_gb):
         msg = _("VDI %(vdi_ref)s is %(virtual_size)d bytes which is larger "
                 "than flavor size of %(new_disk_size)d bytes.")
         msg = msg % {'vdi_ref': vdi_ref, 'virtual_size': virtual_size,
-             'new_disk_size': new_disk_size}
+              'new_disk_size': new_disk_size}
         LOG.debug(msg, instance=instance)
         raise exception.ResizeError(reason=msg)
 
@@ -1753,11 +1753,10 @@ def compile_info(session, vm_ref):
     mem = session.call_xenapi("VM.get_memory_dynamic_max", vm_ref)
     num_cpu = session.call_xenapi("VM.get_VCPUs_max", vm_ref)
 
-    return {'state': power_state,
-            'max_mem': long(max_mem) >> 10,
-            'mem': long(mem) >> 10,
-            'num_cpu': num_cpu,
-            'cpu_time': 0}
+    return hardware.InstanceInfo(state=power_state,
+                                 max_mem_kb=long(max_mem) >> 10,
+                                 mem_kb=long(mem) >> 10,
+                                 num_cpu=num_cpu)
 
 
 def compile_instance_diagnostics(instance, vm_rec):
@@ -2559,7 +2558,7 @@ def migrate_vhd(session, instance, vdi_uuid, dest, sr_path, seq_num,
                 instance_uuid=chain_label, host=dest, vdi_uuid=vdi_uuid,
                 sr_path=sr_path, seq_num=seq_num)
     except session.XenAPI.Failure:
-        msg = _("Failed to transfer vhd to new host")
+        msg = "Failed to transfer vhd to new host"
         LOG.debug(msg, instance=instance, exc_info=True)
         raise exception.MigrationError(reason=msg)
 

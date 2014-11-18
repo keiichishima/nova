@@ -686,6 +686,9 @@ class ComputeManager(manager.Manager):
             filters = {}
         try:
             driver_uuids = self.driver.list_instance_uuids()
+            if len(driver_uuids) == 0:
+                # Short circuit, don't waste a DB call
+                return objects.InstanceList()
             filters['uuid'] = driver_uuids
             local_instances = objects.InstanceList.get_by_filters(
                 context, filters, use_slave=True)
@@ -1150,7 +1153,7 @@ class ComputeManager(manager.Manager):
         """Retrieve the power state for the given instance."""
         LOG.debug('Checking state', instance=instance)
         try:
-            return self.driver.get_info(instance)["state"]
+            return self.driver.get_info(instance).state
         except exception.NotFound:
             return power_state.NOSTATE
 
@@ -1412,14 +1415,14 @@ class ComputeManager(manager.Manager):
                         instance, requested_networks_obj, macs,
                         security_groups, dhcp_options)
 
-                instance.vm_state = vm_states.BUILDING
-                instance.task_state = task_states.BLOCK_DEVICE_MAPPING
-                instance.save()
-
                 # Verify that all the BDMs have a device_name set and assign a
                 # default to the ones missing it with the help of the driver.
                 self._default_block_device_names(context, instance, image_meta,
                                                  bdms)
+
+                instance.vm_state = vm_states.BUILDING
+                instance.task_state = task_states.BLOCK_DEVICE_MAPPING
+                instance.save()
 
                 block_device_info = self._prep_block_device(
                         context, instance, bdms)
@@ -1428,10 +1431,14 @@ class ComputeManager(manager.Manager):
                                  not instance.access_ip_v4 and
                                  not instance.access_ip_v6)
 
+                instance_type = None
+                if filter_properties is not None:
+                    instance_type = filter_properties.get('instance_type')
                 instance = self._spawn(context, instance, image_meta,
                                        network_info, block_device_info,
                                        injected_files, admin_password,
-                                       set_access_ip=set_access_ip)
+                                       set_access_ip=set_access_ip,
+                                       instance_type=instance_type)
         except (exception.InstanceNotFound,
                 exception.UnexpectedDeletingTaskStateError):
             # the instance got deleted during the spawn
@@ -1751,13 +1758,11 @@ class ComputeManager(manager.Manager):
 
         # Get the root_device_name from the root BDM or the instance
         root_device_name = None
-        update_instance = False
         update_root_bdm = False
 
         if root_bdm.device_name:
             root_device_name = root_bdm.device_name
             instance.root_device_name = root_device_name
-            update_instance = True
         elif instance.root_device_name:
             root_device_name = instance.root_device_name
             root_bdm.device_name = root_device_name
@@ -1769,10 +1774,8 @@ class ComputeManager(manager.Manager):
 
             instance.root_device_name = root_device_name
             root_bdm.device_name = root_device_name
-            update_instance = update_root_bdm = True
+            update_root_bdm = True
 
-        if update_instance:
-            instance.save()
         if update_root_bdm:
             root_bdm.save()
 
@@ -1844,17 +1847,17 @@ class ComputeManager(manager.Manager):
     @object_compat
     def _spawn(self, context, instance, image_meta, network_info,
                block_device_info, injected_files, admin_password,
-               set_access_ip=False):
+               set_access_ip=False, instance_type=None):
         """Spawn an instance with error logging and update its power state."""
         instance.vm_state = vm_states.BUILDING
         instance.task_state = task_states.SPAWNING
         instance.save(expected_task_state=task_states.BLOCK_DEVICE_MAPPING)
-
         try:
             self.driver.spawn(context, instance, image_meta,
                               injected_files, admin_password,
                               network_info,
-                              block_device_info)
+                              block_device_info,
+                              instance_type=instance_type)
         except Exception:
             with excutils.save_and_reraise_exception():
                 LOG.exception(_LE('Instance failed to spawn'),
@@ -2101,10 +2104,14 @@ class ComputeManager(manager.Manager):
                             task_states.BLOCK_DEVICE_MAPPING)
                     block_device_info = resources['block_device_info']
                     network_info = resources['network_info']
+                    instance_type = None
+                    if filter_properties is not None:
+                        instance_type = filter_properties.get('instance_type')
                     self.driver.spawn(context, instance, image,
                                       injected_files, admin_password,
                                       network_info=network_info,
-                                      block_device_info=block_device_info)
+                                      block_device_info=block_device_info,
+                                      instance_type=instance_type)
         except (exception.InstanceNotFound,
                 exception.UnexpectedDeletingTaskStateError) as e:
             with excutils.save_and_reraise_exception():
@@ -3989,8 +3996,7 @@ class ComputeManager(manager.Manager):
     @wrap_exception()
     def host_power_action(self, context, action):
         """Reboots, shuts down or powers up the host."""
-        # TODO(russellb) Remove the unused host parameter from the driver API
-        return self.driver.host_power_action(None, action)
+        return self.driver.host_power_action(action)
 
     @wrap_exception()
     def host_maintenance_mode(self, context, host, mode):
@@ -4002,8 +4008,7 @@ class ComputeManager(manager.Manager):
     @wrap_exception()
     def set_host_enabled(self, context, enabled):
         """Sets the specified host's ability to accept new instances."""
-        # TODO(russellb) Remove the unused host parameter from the driver API
-        return self.driver.set_host_enabled(None, enabled)
+        return self.driver.set_host_enabled(enabled)
 
     @wrap_exception()
     def get_host_uptime(self, context):
@@ -4075,12 +4080,15 @@ class ComputeManager(manager.Manager):
         context = context.elevated()
         LOG.audit(_('Resuming'), context=context, instance=instance)
 
+        self._notify_about_instance_usage(context, instance, 'resume.start')
         network_info = self._get_instance_nw_info(context, instance)
         block_device_info = self._get_instance_block_device_info(
                             context, instance)
 
-        self.driver.resume(context, instance, network_info,
-                           block_device_info)
+        with self._error_out_instance_on_exception(context, instance,
+             instance_state=instance.vm_state):
+            self.driver.resume(context, instance, network_info,
+                               block_device_info)
 
         instance.power_state = self._get_power_state(context, instance)
 
@@ -4090,7 +4098,7 @@ class ComputeManager(manager.Manager):
 
         instance.task_state = None
         instance.save(expected_task_state=task_states.RESUMING)
-        self._notify_about_instance_usage(context, instance, 'resume')
+        self._notify_about_instance_usage(context, instance, 'resume.end')
 
     @wrap_exception()
     @reverts_task_state
@@ -4107,6 +4115,7 @@ class ComputeManager(manager.Manager):
         :param context: request context
         :param instance: an Instance object
         :param image_id: an image id to snapshot to.
+        :param clean_shutdown: give the GuestOS a chance to stop
         """
         self.conductor_api.notify_usage_exists(
             context, obj_base.obj_to_primitive(instance),
@@ -4144,12 +4153,13 @@ class ComputeManager(manager.Manager):
         self._notify_about_instance_usage(context, instance, 'shelve.end')
 
         if CONF.shelved_offload_time == 0:
-            self.shelve_offload_instance(context, instance)
+            self.shelve_offload_instance(context, instance,
+                                         clean_shutdown=False)
 
     @wrap_exception()
     @reverts_task_state
     @wrap_instance_fault
-    def shelve_offload_instance(self, context, instance):
+    def shelve_offload_instance(self, context, instance, clean_shutdown=True):
         """Remove a shelved instance from the hypervisor.
 
         This frees up those resources for use by other instances, but may lead
@@ -4159,11 +4169,12 @@ class ComputeManager(manager.Manager):
 
         :param context: request context
         :param instance: nova.objects.instance.Instance
+        :param clean_shutdown: give the GuestOS a chance to stop
         """
         self._notify_about_instance_usage(context, instance,
                 'shelve_offload.start')
 
-        self.driver.power_off(instance)
+        self._power_off_instance(context, instance, clean_shutdown)
         current_power_state = self._get_power_state(context, instance)
 
         network_info = self._get_instance_nw_info(context, instance)
@@ -4248,10 +4259,14 @@ class ComputeManager(manager.Manager):
         network_info = self._get_instance_nw_info(context, instance)
         try:
             with rt.instance_claim(context, instance, limits):
+                instance_type = None
+                if filter_properties is not None:
+                    instance_type = filter_properties.get('instance_type')
                 self.driver.spawn(context, instance, image, injected_files=[],
                                   admin_password=None,
                                   network_info=network_info,
-                                  block_device_info=block_device_info)
+                                  block_device_info=block_device_info,
+                                  instance_type=instance_type)
         except Exception:
             with excutils.save_and_reraise_exception():
                 LOG.exception(_LE('Instance failed to spawn'),
@@ -5341,6 +5356,11 @@ class ComputeManager(manager.Manager):
                 self._get_instance_nw_info(context, instance, use_slave=True)
                 LOG.debug('Updated the network info_cache for instance',
                           instance=instance)
+            except exception.InstanceNotFound:
+                # Instance is gone.
+                LOG.debug('Instance no longer exists. Unable to refresh',
+                          instance=instance)
+                return
             except Exception:
                 LOG.error(_LE('An error occurred while refreshing the network '
                               'cache.'), instance=instance, exc_info=True)
@@ -5487,7 +5507,8 @@ class ComputeManager(manager.Manager):
             try:
                 instance.task_state = task_states.SHELVING_OFFLOADING
                 instance.save()
-                self.shelve_offload_instance(context, instance)
+                self.shelve_offload_instance(context, instance,
+                                             clean_shutdown=False)
             except Exception:
                 LOG.exception(_LE('Periodic task failed to offload instance.'),
                         instance=instance)
@@ -5623,7 +5644,7 @@ class ComputeManager(manager.Manager):
                     else:
                         bw_out += (bw_ctr['bw_out'] - last_ctr_out)
 
-                objects.BandwidthUsage.create(context,
+                objects.BandwidthUsage(context=context).create(
                                               bw_ctr['uuid'],
                                               bw_ctr['mac_address'],
                                               bw_in,
@@ -5743,7 +5764,7 @@ class ComputeManager(manager.Manager):
         # No pending tasks. Now try to figure out the real vm_power_state.
         try:
             vm_instance = self.driver.get_info(db_instance)
-            vm_power_state = vm_instance['state']
+            vm_power_state = vm_instance.state
         except exception.InstanceNotFound:
             vm_power_state = power_state.NOSTATE
         # Note(maoy): the above get_info call might take a long time,

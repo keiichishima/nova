@@ -655,11 +655,29 @@ def instance_get_all_by_filters(context, filters, sort_key='created_at',
                                 sort_dir='desc', limit=None, marker=None,
                                 columns_to_join=None, use_slave=False):
     """Get all instances that match all filters."""
+    # Note: This function exists for backwards compatibility since calls to
+    # the instance layer coming in over RPC may specify the single sort
+    # key/direction values; in this case, this function is invoked instead
+    # of the 'instance_get_all_by_filters_sort' function.
     return IMPL.instance_get_all_by_filters(context, filters, sort_key,
                                             sort_dir, limit=limit,
                                             marker=marker,
                                             columns_to_join=columns_to_join,
                                             use_slave=use_slave)
+
+
+def instance_get_all_by_filters_sort(context, filters, limit=None,
+                                     marker=None, columns_to_join=None,
+                                     use_slave=False, sort_keys=None,
+                                     sort_dirs=None):
+    """Get all instances that match all filters sorted by multiple keys.
+
+    sort_keys and sort_dirs must be a list of strings.
+    """
+    return IMPL.instance_get_all_by_filters_sort(
+        context, filters, limit=limit, marker=marker,
+        columns_to_join=columns_to_join, use_slave=use_slave,
+        sort_keys=sort_keys, sort_dirs=sort_dirs)
 
 
 def instance_get_active_by_window_joined(context, begin, end=None,
@@ -685,9 +703,11 @@ def instance_get_all_by_host(context, host,
                                          use_slave=use_slave)
 
 
-def instance_get_all_by_host_and_node(context, host, node):
+def instance_get_all_by_host_and_node(context, host, node,
+                                      columns_to_join=None):
     """Get all instances belonging to a node."""
-    return IMPL.instance_get_all_by_host_and_node(context, host, node)
+    return IMPL.instance_get_all_by_host_and_node(
+        context, host, node, columns_to_join=columns_to_join)
 
 
 def instance_get_all_by_host_and_not_type(context, host, type_id=None):
@@ -1505,11 +1525,6 @@ def flavor_access_remove(context, flavor_id, project_id):
 def flavor_extra_specs_get(context, flavor_id):
     """Get all extra specs for an instance type."""
     return IMPL.flavor_extra_specs_get(context, flavor_id)
-
-
-def flavor_extra_specs_get_item(context, flavor_id, key):
-    """Get extra specs by key and flavor_id."""
-    return IMPL.flavor_extra_specs_get_item(context, flavor_id, key)
 
 
 def flavor_extra_specs_delete(context, flavor_id, key):

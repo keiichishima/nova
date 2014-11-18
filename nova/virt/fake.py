@@ -41,6 +41,7 @@ from nova.openstack.common import log as logging
 from nova import utils
 from nova.virt import diagnostics
 from nova.virt import driver
+from nova.virt import hardware
 from nova.virt import virtapi
 
 CONF = cfg.CONF
@@ -142,7 +143,8 @@ class FakeDriver(driver.ComputeDriver):
         pass
 
     def spawn(self, context, instance, image_meta, injected_files,
-              admin_password, network_info=None, block_device_info=None):
+              admin_password, network_info=None, block_device_info=None,
+              instance_type=None):
         name = instance['name']
         state = power_state.RUNNING
         fake_instance = FakeInstance(name, state, instance['uuid'])
@@ -276,11 +278,11 @@ class FakeDriver(driver.ComputeDriver):
         if instance['name'] not in self.instances:
             raise exception.InstanceNotFound(instance_id=instance['name'])
         i = self.instances[instance['name']]
-        return {'state': i.state,
-                'max_mem': 0,
-                'mem': 0,
-                'num_cpu': 2,
-                'cpu_time': 0}
+        return hardware.InstanceInfo(state=i.state,
+                                     max_mem_kb=0,
+                                     mem_kb=0,
+                                     num_cpu=2,
+                                     cpu_time_ns=0)
 
     def get_diagnostics(self, instance_name):
         return {'cpu0_time': 17300000000,
@@ -448,7 +450,7 @@ class FakeDriver(driver.ComputeDriver):
         """Removes the named VM, as if it crashed. For testing."""
         self.instances.pop(instance_name)
 
-    def host_power_action(self, host, action):
+    def host_power_action(self, action):
         """Reboots, shuts down or powers up the host."""
         return action
 
@@ -460,7 +462,7 @@ class FakeDriver(driver.ComputeDriver):
             return 'off_maintenance'
         return 'on_maintenance'
 
-    def set_host_enabled(self, host, enabled):
+    def set_host_enabled(self, enabled):
         """Sets the specified host's ability to accept new instances."""
         if enabled:
             return 'enabled'

@@ -1631,6 +1631,12 @@ def instance_create(context, values):
     if info_cache is not None:
         instance_ref['info_cache'].update(info_cache)
     security_groups = values.pop('security_groups', [])
+    instance_ref['extra'] = models.InstanceExtra()
+    instance_ref['extra'].update(
+        {'numa_topology': None,
+         'pci_requests': None,
+         })
+    instance_ref['extra'].update(values.pop('extra', {}))
     instance_ref.update(values)
 
     def _get_sec_group_models(session, security_groups):
@@ -1655,8 +1661,6 @@ def instance_create(context, values):
 
     # create the instance uuid to ec2_id mapping entry for instance
     ec2_instance_create(context, instance_ref['uuid'])
-
-    _instance_extra_create(context, {'instance_uuid': instance_ref['uuid']})
 
     return instance_ref
 
@@ -1850,9 +1854,27 @@ def instance_get_all(context, columns_to_join=None):
 def instance_get_all_by_filters(context, filters, sort_key, sort_dir,
                                 limit=None, marker=None, columns_to_join=None,
                                 use_slave=False):
-    """Return instances that match all filters.  Deleted instances
-    will be returned by default, unless there's a filter that says
-    otherwise.
+    """Return instances matching all filters sorted by the primary key.
+
+    See instance_get_all_by_filters_sort for more information.
+    """
+    # Invoke the API with the multiple sort keys and directions using the
+    # single sort key/direction
+    return instance_get_all_by_filters_sort(context, filters, limit=limit,
+                                            marker=marker,
+                                            columns_to_join=columns_to_join,
+                                            use_slave=use_slave,
+                                            sort_keys=[sort_key],
+                                            sort_dirs=[sort_dir])
+
+
+@require_context
+def instance_get_all_by_filters_sort(context, filters, limit=None, marker=None,
+                                     columns_to_join=None, use_slave=False,
+                                     sort_keys=None, sort_dirs=None):
+    """Return instances that match all filters sorted the the given keys.
+    Deleted instances will be returned by default, unless there's a filter that
+    says otherwise.
 
     Depending on the name of a filter, matching for that filter is
     performed using either exact matching or as regular expression
@@ -1889,7 +1911,9 @@ def instance_get_all_by_filters(context, filters, sort_key, sort_dir,
     if limit == 0:
         return []
 
-    sort_fn = {'desc': desc, 'asc': asc}
+    sort_keys, sort_dirs = process_sort_params(sort_keys,
+                                               sort_dirs,
+                                               default_dir='desc')
 
     if CONF.database.slave_connection == '':
         use_slave = False
@@ -1906,8 +1930,8 @@ def instance_get_all_by_filters(context, filters, sort_key, sort_dir,
     for column in columns_to_join:
         query_prefix = query_prefix.options(joinedload(column))
 
-    query_prefix = query_prefix.order_by(sort_fn[sort_dir](
-            getattr(models.Instance, sort_key)))
+    # Note: order_by is done in the sqlalchemy.utils.py paginate_query(),
+    # no need to do it here as well
 
     # Make a copy of the filters dictionary to use going forward, as we'll
     # be modifying it and we shouldn't affect the caller's use of it.
@@ -1982,9 +2006,9 @@ def instance_get_all_by_filters(context, filters, sort_key, sort_dir,
             raise exception.MarkerNotFound(marker)
     query_prefix = sqlalchemyutils.paginate_query(query_prefix,
                            models.Instance, limit,
-                           [sort_key, 'created_at', 'id'],
+                           sort_keys,
                            marker=marker,
-                           sort_dir=sort_dir)
+                           sort_dirs=sort_dirs)
 
     return _instances_fill_metadata(context, query_prefix.all(), manual_joins)
 
@@ -2213,10 +2237,20 @@ def _instance_get_all_uuids_by_host(context, host, session=None):
 
 
 @require_admin_context
-def instance_get_all_by_host_and_node(context, host, node):
+def instance_get_all_by_host_and_node(context, host, node,
+                                      columns_to_join=None):
+    if columns_to_join is None:
+        manual_joins = []
+    else:
+        candidates = ['system_metadata', 'metadata']
+        manual_joins = filter(lambda x: x in candidates,
+                              columns_to_join)
+        columns_to_join = list(set(columns_to_join) - set(candidates))
     return _instances_fill_metadata(context,
-        _instance_get_all_query(context, joins=[]).filter_by(host=host).
-            filter_by(node=node).all(), manual_joins=[])
+            _instance_get_all_query(
+                context,
+                joins=columns_to_join).filter_by(host=host).
+                filter_by(node=node).all(), manual_joins=manual_joins)
 
 
 @require_admin_context
@@ -4680,18 +4714,6 @@ def _flavor_extra_specs_get_query(context, flavor_id, session=None):
 def flavor_extra_specs_get(context, flavor_id):
     rows = _flavor_extra_specs_get_query(context, flavor_id).all()
     return dict([(row['key'], row['value']) for row in rows])
-
-
-@require_context
-def flavor_extra_specs_get_item(context, flavor_id, key):
-    result = _flavor_extra_specs_get_query(context, flavor_id).\
-                filter(models.InstanceTypeExtraSpecs.key == key).\
-                first()
-    if not result:
-        raise exception.FlavorExtraSpecsNotFound(
-                extra_specs_key=key, flavor_id=flavor_id)
-
-    return {result["key"]: result["value"]}
 
 
 @require_context

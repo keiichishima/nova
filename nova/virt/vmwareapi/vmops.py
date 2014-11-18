@@ -47,6 +47,7 @@ from nova import utils
 from nova.virt import configdrive
 from nova.virt import diagnostics
 from nova.virt import driver
+from nova.virt import hardware
 from nova.virt.vmwareapi import constants
 from nova.virt.vmwareapi import ds_util
 from nova.virt.vmwareapi import error_util
@@ -219,7 +220,7 @@ class VMwareVMOps(object):
                                                       admin_password,
                                                       datastore.name,
                                                       dc_info.name,
-                                                      instance['uuid'],
+                                                      instance.uuid,
                                                       cookies)
         uploaded_iso_path = datastore.build_path(uploaded_iso_path)
         self._attach_cdrom_to_vm(
@@ -753,7 +754,7 @@ class VMwareVMOps(object):
         # Get the instance name. In some cases this may differ from the 'uuid',
         # for example when the spawn of a rescue instance takes place.
         if instance_name is None:
-            instance_name = instance['uuid']
+            instance_name = instance.uuid
         try:
             vm_ref = vm_util.get_vm_ref_from_name(self._session, instance_name)
             if vm_ref is None:
@@ -833,7 +834,7 @@ class VMwareVMOps(object):
                 self.unrescue(instance, power_on=False)
                 LOG.debug("Rescue VM destroyed", instance=instance)
             except Exception:
-                rescue_name = instance['uuid'] + self._rescue_suffix
+                rescue_name = instance.uuid + self._rescue_suffix
                 self._destroy_instance(instance,
                                        destroy_disks=destroy_disks,
                                        instance_name=rescue_name)
@@ -841,11 +842,12 @@ class VMwareVMOps(object):
         # triggered by the revert resize api call. This prevents
         # the uuid-orig VM to be deleted to be able to associate it later.
         if instance.task_state != task_states.RESIZE_REVERTING:
-            # When VM deletion is triggered in middle of VM resize before VM
-            # arrive RESIZED state, uuid-orig VM need to deleted to avoid
-            # VM leak. Within method _destroy_instance it will check vmref
-            # exist or not before attempt deletion.
-            resize_orig_vmname = instance['uuid'] + self._migrate_suffix
+            # When a VM deletion is triggered in the middle of VM resize and
+            # before the state is set to RESIZED, the uuid-orig VM needs
+            # to be deleted. This will avoid VM leaks.
+            # The method _destroy_instance will check that the vmref
+            # exists before attempting the deletion.
+            resize_orig_vmname = instance.uuid + self._migrate_suffix
             vm_orig_ref = vm_util.get_vm_ref_from_name(self._session,
                                                        resize_orig_vmname)
             if vm_orig_ref:
@@ -1152,11 +1154,11 @@ class VMwareVMOps(object):
                 self._session, vm_props)
         max_mem = int(query.get('summary.config.memorySizeMB', 0)) * 1024
         num_cpu = int(query.get('summary.config.numCpu', 0))
-        return {'state': VMWARE_POWER_STATES[query['runtime.powerState']],
-                'max_mem': max_mem,
-                'mem': max_mem,
-                'num_cpu': num_cpu,
-                'cpu_time': 0}
+        return hardware.InstanceInfo(
+            state=VMWARE_POWER_STATES[query['runtime.powerState']],
+            max_mem_kb=max_mem,
+            mem_kb=max_mem,
+            num_cpu=num_cpu)
 
     def _get_diagnostics(self, instance):
         """Return data about VM diagnostics."""
@@ -1423,7 +1425,7 @@ class VMwareVMOps(object):
                               ' %s'),
                           e, instance=instance)
                 raise exception.InterfaceAttachFailed(
-                        instance_uuid=instance['uuid'])
+                        instance_uuid=instance.uuid)
         LOG.debug("Reconfigured VM to attach interface", instance=instance)
 
     def detach_interface(self, instance, vif):
@@ -1463,7 +1465,7 @@ class VMwareVMOps(object):
                               '%s'),
                           e, instance=instance)
                 raise exception.InterfaceDetachFailed(
-                        instance_uuid=instance['uuid'])
+                        instance_uuid=instance.uuid)
         LOG.debug("Reconfigured VM to detach interface", instance=instance)
 
     def _use_disk_image_as_full_clone(self, vm_ref, vi):

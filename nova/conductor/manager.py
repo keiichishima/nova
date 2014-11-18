@@ -466,7 +466,8 @@ class ComputeTaskManager(base.Base):
                                    exception.InvalidSharedStorage,
                                    exception.HypervisorUnavailable,
                                    exception.InstanceNotRunning,
-                                   exception.MigrationPreCheckError)
+                                   exception.MigrationPreCheckError,
+                                   exception.LiveMigrationWithOldNovaNotSafe)
     def migrate_server(self, context, instance, scheduler_hint, live, rebuild,
             flavor, block_migration, disk_over_commit, reservations=None):
         if instance and not isinstance(instance, nova_object.NovaObject):
@@ -570,7 +571,8 @@ class ComputeTaskManager(base.Base):
                 exception.InvalidSharedStorage,
                 exception.HypervisorUnavailable,
                 exception.InstanceNotRunning,
-                exception.MigrationPreCheckError) as ex:
+                exception.MigrationPreCheckError,
+                exception.LiveMigrationWithOldNovaNotSafe) as ex:
             with excutils.save_and_reraise_exception():
                 # TODO(johngarbutt) - eventually need instance actions here
                 request_spec = {'instance_properties': {
@@ -587,7 +589,7 @@ class ComputeTaskManager(base.Base):
                           ' %(dest)s unexpectedly failed.'),
                       {'instance_id': instance['uuid'], 'dest': destination},
                       exc_info=True)
-            raise exception.MigrationError(reason=ex)
+            raise exception.MigrationError(reason=six.text_type(ex))
 
     def build_instances(self, context, instances, image, filter_properties,
             admin_password, injected_files, requested_networks,
@@ -596,6 +598,16 @@ class ComputeTaskManager(base.Base):
         #                 2.0 of the RPC API.
         request_spec = scheduler_utils.build_request_spec(context, image,
                                                           instances)
+        # NOTE(sbauza): filter_properties['hints'] can be None
+        hints = filter_properties.get('scheduler_hints', {}) or {}
+        group_hint = hints.get('group')
+        group_hosts = filter_properties.get('group_hosts')
+        group_info = scheduler_utils.setup_instance_group(context, group_hint,
+                                                          group_hosts)
+        if isinstance(group_info, tuple):
+            filter_properties['group_updated'] = True
+            (filter_properties['group_hosts'],
+             filter_properties['group_policies']) = group_info
         # TODO(danms): Remove this in version 2.0 of the RPC API
         if (requested_networks and
                 not isinstance(requested_networks,

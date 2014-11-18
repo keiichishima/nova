@@ -55,7 +55,8 @@ class HyperVDriver(driver.ComputeDriver):
         return self._vmops.list_instances()
 
     def spawn(self, context, instance, image_meta, injected_files,
-              admin_password, network_info=None, block_device_info=None):
+              admin_password, network_info=None, block_device_info=None,
+              instance_type=None):
         self._vmops.spawn(context, instance, image_meta, injected_files,
                           admin_password, network_info, block_device_info)
 
@@ -95,8 +96,8 @@ class HyperVDriver(driver.ComputeDriver):
     def get_available_nodes(self, refresh=False):
         return [platform.node()]
 
-    def host_power_action(self, host, action):
-        return self._hostops.host_power_action(host, action)
+    def host_power_action(self, action):
+        return self._hostops.host_power_action(action)
 
     def snapshot(self, context, instance, image_id, update_task_state):
         self._snapshotops.snapshot(context, instance, image_id,

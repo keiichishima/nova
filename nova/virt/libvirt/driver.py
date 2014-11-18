@@ -51,6 +51,7 @@ from lxml import etree
 from oslo.concurrency import processutils
 from oslo.config import cfg
 from oslo.serialization import jsonutils
+from oslo.utils import encodeutils
 from oslo.utils import excutils
 from oslo.utils import importutils
 from oslo.utils import strutils
@@ -1054,8 +1055,8 @@ class LibvirtDriver(driver.ComputeDriver):
             #             never fail.
             try:
                 dom_info = self.get_info(instance)
-                state = dom_info['state']
-                new_domid = dom_info['id']
+                state = dom_info.state
+                new_domid = dom_info.id
             except exception.InstanceNotFound:
                 LOG.warning(_LW("During wait destroy, instance disappeared."),
                             instance=instance)
@@ -1139,7 +1140,7 @@ class LibvirtDriver(driver.ComputeDriver):
                                                     network_info=network_info)
             except libvirt.libvirtError as e:
                 try:
-                    state = self.get_info(instance)['state']
+                    state = self.get_info(instance).state
                 except exception.InstanceNotFound:
                     state = power_state.SHUTDOWN
 
@@ -2397,7 +2398,7 @@ class LibvirtDriver(driver.ComputeDriver):
 
         def _wait_for_reboot():
             """Called at an interval until the VM is running again."""
-            state = self.get_info(instance)['state']
+            state = self.get_info(instance).state
 
             if state == power_state.RUNNING:
                 LOG.info(_LI("Instance rebooted successfully."),
@@ -2621,7 +2622,8 @@ class LibvirtDriver(driver.ComputeDriver):
     # NOTE(ilyaalekseyev): Implementation like in multinics
     # for xenapi(tr3buchet)
     def spawn(self, context, instance, image_meta, injected_files,
-              admin_password, network_info=None, block_device_info=None):
+              admin_password, network_info=None, block_device_info=None,
+              instance_type=None):
         disk_info = blockinfo.get_disk_info(CONF.libvirt.virt_type,
                                             instance,
                                             block_device_info,
@@ -2642,7 +2644,7 @@ class LibvirtDriver(driver.ComputeDriver):
 
         def _wait_for_boot():
             """Called at an interval until the VM is running."""
-            state = self.get_info(instance)['state']
+            state = self.get_info(instance).state
 
             if state == power_state.RUNNING:
                 LOG.info(_LI("Instance spawned successfully."),
@@ -3707,12 +3709,12 @@ class LibvirtDriver(driver.ComputeDriver):
         libvirt XML config object representing the NUMA topology selected
         for the guest. Returns a tuple of:
 
-            (cpu_set, guest_cpu_tune, guest_cpu_numa)
+            (cpu_set, guest_cpu_tune, guest_cpu_numa, guest_numa_tune)
 
         With the following caveats:
 
             a) If there is no specified guest NUMA topology, then
-               guest_cpu_tune and guest_cpu_numa shall be None. cpu_set
+               all tuple elements except cpu_set shall be None. cpu_set
                will be populated with the chosen CPUs that the guest
                allowed CPUs fit within, which could be the supplied
                allowed_cpus value if the host doesn't support NUMA
@@ -3725,7 +3727,8 @@ class LibvirtDriver(driver.ComputeDriver):
                will contain a LibvirtConfigGuestCPUTune object representing
                the optimized chosen cells that match the host capabilities
                with the instance's requested topology. If the host does
-               not support NUMA, then guest_cpu_tune will be None.
+               not support NUMA, then guest_cpu_tune and guest_numa_tune
+               will be None.
         """
         topology = self._get_host_numa_topology()
         # We have instance NUMA so translate it to the config class
@@ -3749,29 +3752,46 @@ class LibvirtDriver(driver.ComputeDriver):
                     # TODO(ndipanov): Attempt to spread the instance accross
                     # NUMA nodes and expose the topology to the instance as an
                     # optimisation
-                    return allowed_cpus, None, None
+                    return allowed_cpus, None, None, None
                 else:
                     pin_cpuset = random.choice(viable_cells_cpus)
-                    return pin_cpuset, None, None
+                    return pin_cpuset, None, None, None
             else:
                 # We have no NUMA topology in the host either
-                return allowed_cpus, None, None
+                return allowed_cpus, None, None, None
         else:
             if topology:
                 # Now get the CpuTune configuration from the numa_topology
                 guest_cpu_tune = vconfig.LibvirtConfigGuestCPUTune()
+                guest_numa_tune = vconfig.LibvirtConfigGuestNUMATune()
+
+                numa_mem = vconfig.LibvirtConfigGuestNUMATuneMemory()
+                numa_memnodes = []
+
                 for host_cell in topology.cells:
                     for guest_cell in guest_cpu_numa.cells:
                         if guest_cell.id == host_cell.id:
+                            node = vconfig.LibvirtConfigGuestNUMATuneMemNode()
+                            node.cellid = guest_cell.id
+                            node.nodeset = [host_cell.id]
+                            node.mode = "strict"
+                            numa_memnodes.append(node)
+
+                            numa_mem.nodeset.append(host_cell.id)
+
                             for cpu in guest_cell.cpus:
                                 pin_cpuset = (
                                     vconfig.LibvirtConfigGuestCPUTuneVCPUPin())
                                 pin_cpuset.id = cpu
                                 pin_cpuset.cpuset = host_cell.cpuset
                                 guest_cpu_tune.vcpupin.append(pin_cpuset)
-                return None, guest_cpu_tune, guest_cpu_numa
+
+                guest_numa_tune.memory = numa_mem
+                guest_numa_tune.memnodes = numa_memnodes
+
+                return None, guest_cpu_tune, guest_cpu_numa, guest_numa_tune
             else:
-                return allowed_cpus, None, guest_cpu_numa
+                return allowed_cpus, None, guest_cpu_numa, None
 
     def _get_guest_os_type(self, virt_type):
         """Returns the guest OS type based on virt type."""
@@ -3943,9 +3963,10 @@ class LibvirtDriver(driver.ComputeDriver):
             'ramdisk_id' if a ramdisk is needed for the rescue image and
             'kernel_id' if a kernel is needed for the rescue image.
         """
-        flavor = objects.Flavor.get_by_id(
-            nova_context.get_admin_context(read_deleted='yes'),
-            instance['instance_type_id'])
+        context = context or nova_context.get_admin_context()
+        with utils.temporary_mutation(context, read_deleted="yes"):
+            flavor = objects.Flavor.get_by_id(context,
+                                              instance['instance_type_id'])
         inst_path = libvirt_utils.get_instance_path(instance)
         disk_mapping = disk_info['mapping']
         img_meta_prop = image_meta.get('properties', {}) if image_meta else {}
@@ -3960,10 +3981,12 @@ class LibvirtDriver(driver.ComputeDriver):
         guest.vcpus = flavor.vcpus
         allowed_cpus = hardware.get_vcpu_pin_set()
 
-        cpuset, cputune, guest_cpu_numa = self._get_guest_numa_config(
+        cpuset, cputune, guest_cpu_numa, guest_numa_tune = \
+            self._get_guest_numa_config(
                 context, instance, flavor, allowed_cpus)
         guest.cpuset = cpuset
         guest.cputune = cputune
+        guest.numatune = guest_numa_tune
 
         guest.metadata.append(self._get_guest_config_meta(context,
                                                           instance,
@@ -4274,12 +4297,12 @@ class LibvirtDriver(driver.ComputeDriver):
                     'ex': ex})
             raise exception.NovaException(msg)
 
-        return {'state': LIBVIRT_POWER_STATE[dom_info[0]],
-                'max_mem': dom_info[1],
-                'mem': dom_info[2],
-                'num_cpu': dom_info[3],
-                'cpu_time': dom_info[4],
-                'id': virt_dom.ID()}
+        return hardware.InstanceInfo(state=LIBVIRT_POWER_STATE[dom_info[0]],
+                                     max_mem_kb=dom_info[1],
+                                     mem_kb=dom_info[2],
+                                     num_cpu=dom_info[3],
+                                     cpu_time_ns=dom_info[4],
+                                     id=virt_dom.ID())
 
     def _create_domain_setup_lxc(self, instance, block_device_info, disk_info):
         inst_path = libvirt_utils.get_instance_path(instance)
@@ -4325,7 +4348,7 @@ class LibvirtDriver(driver.ComputeDriver):
         container_dir = os.path.join(inst_path, 'rootfs')
 
         try:
-            state = self.get_info(instance)['state']
+            state = self.get_info(instance).state
         except exception.InstanceNotFound:
             # The domain may not be present if the instance failed to start
             state = None
@@ -4375,12 +4398,14 @@ class LibvirtDriver(driver.ComputeDriver):
 
             if power_on:
                 err = _LE('Error launching a defined domain with XML: %s') \
-                          % domain.XMLDesc(0)
+                          % encodeutils.safe_decode(domain.XMLDesc(0),
+                                                    errors='ignore')
                 domain.createWithFlags(launch_flags)
 
             if not utils.is_neutron():
                 err = _LE('Error enabling hairpin mode with XML: %s') \
-                          % domain.XMLDesc(0)
+                          % encodeutils.safe_decode(domain.XMLDesc(0),
+                                                    errors='ignore')
                 self._enable_hairpin(domain.XMLDesc(0))
         except Exception:
             with excutils.save_and_reraise_exception():
@@ -5498,7 +5523,7 @@ class LibvirtDriver(driver.ComputeDriver):
         def wait_for_live_migration():
             """waiting for live migration completion."""
             try:
-                self.get_info(instance)['state']
+                self.get_info(instance).state
             except exception.InstanceNotFound:
                 timer.stop()
                 post_method(context, instance, dest, block_migration,
@@ -6015,7 +6040,7 @@ class LibvirtDriver(driver.ComputeDriver):
         return disk_info_text
 
     def _wait_for_running(self, instance):
-        state = self.get_info(instance)['state']
+        state = self.get_info(instance).state
 
         if state == power_state.RUNNING:
             LOG.info(_LI("Instance running successfully."), instance=instance)

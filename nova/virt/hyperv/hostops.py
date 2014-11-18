@@ -28,6 +28,7 @@ from oslo.utils import units
 from nova.compute import arch
 from nova.compute import hvtype
 from nova.compute import vm_mode
+from nova.i18n import _
 from nova.openstack.common import log as logging
 from nova.virt.hyperv import constants
 from nova.virt.hyperv import utilsfactory
@@ -138,9 +139,15 @@ class HostOps(object):
 
         return dic
 
-    def host_power_action(self, host, action):
+    def host_power_action(self, action):
         """Reboots, shuts down or powers up the host."""
-        pass
+        if action in [constants.HOST_POWER_ACTION_SHUTDOWN,
+                      constants.HOST_POWER_ACTION_REBOOT]:
+            self._hostutils.host_power_action(action)
+        else:
+            if action == constants.HOST_POWER_ACTION_STARTUP:
+                raise NotImplementedError(
+                    _("Host PowerOn is not supported by the Hyper-V driver"))
 
     def get_host_ip_addr(self):
         host_ip = CONF.my_ip
