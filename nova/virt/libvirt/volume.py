@@ -745,18 +745,28 @@ class LibvirtUkaiVolumeDriver(LibvirtBaseVolumeDriver):
         super(LibvirtUkaiVolumeDriver,
               self).__init__(connection, is_block_dev=False)
 
-    def connect_volume(self, connection_info, disk_info):
-        """Connect the volume. Returns xml for libvirt."""
-        conf = super(LibvirtUkaiVolumeDriver,
-                     self).connect_volume(connection_info,
-                                          disk_info)
-        options = connection_info['data'].get('options')
-        path = self._ensure_mounted(connection_info['data']['export'], options)
+    def _get_device_path(self, connection_info):
+        path = os.path.join(CONF.libvirt.ukai_mount_point_base,
+            utils.get_hash_str(connection_info['data']['export']))
         path = os.path.join(path, connection_info['data']['name'])
+        return path
+
+    def get_config(self, connection_info, disk_info):
+        """Returns xml for libvirt."""
+        conf = super(LibvirtUkaiVolumeDriver,
+                     self).get_config(connection_info, disk_info)
+
         conf.source_type = 'file'
-        conf.source_path = path
+        conf.source_path = connection_info['data']['device_path']
         conf.driver_format = connection_info['data'].get('format', 'raw')
         return conf
+
+    def connect_volume(self, connection_info, disk_info):
+        """Connect the volume. Returns xml for libvirt."""
+        options = connection_info['data'].get('options')
+        self._ensure_mounted(connection_info['data']['export'], options)
+
+        connection_info['data']['device_path'] = self._get_device_path(connection_info)
 
     def disconnect_volume(self, connection_info, disk_dev):
         """Disconnect the volume."""
